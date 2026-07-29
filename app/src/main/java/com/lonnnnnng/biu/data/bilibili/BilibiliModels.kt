@@ -38,6 +38,27 @@ data class BilibiliAccount(
     val isLoggedIn: Boolean,
     val name: String,
     val faceUrl: String,
+    val mid: Long = 0L,
+)
+
+enum class AccountLibrarySection(val label: String) {
+    FAVORITES("收藏夹"),
+    WATCH_LATER("稍后再看"),
+    ONLINE_HISTORY("在线历史"),
+    LOCAL_HISTORY("本地历史"),
+}
+
+data class BilibiliFavoriteFolder(
+    val id: Long,
+    val title: String,
+    val coverUrl: String,
+    val mediaCount: Int,
+)
+
+data class BilibiliLibraryVideo(
+    val video: BilibiliVideo,
+    val progressSeconds: Int? = null,
+    val savedAtEpochSeconds: Long? = null,
 )
 
 data class WbiKeys(

@@ -51,12 +51,74 @@ class BilibiliRepository(
 
     suspend fun account(): BilibiliAccount {
         val root = request("/x/web-interface/nav")
+        val code = root.optInt("code", Int.MIN_VALUE)
+        if (code != 0 && code != -101) {
+            throw BilibiliApiException(code, root.optString("message", "账号状态获取失败"))
+        }
         val data = root.optJSONObject("data") ?: JSONObject()
         return BilibiliAccount(
             isLoggedIn = data.optBoolean("isLogin", false),
             name = data.optString("uname"),
             faceUrl = BilibiliText.httpsUrl(data.optString("face")),
+            mid = data.optLong("mid", 0L),
         )
+    }
+
+    suspend fun favoriteFolders(mid: Long, page: Int = 1): List<BilibiliFavoriteFolder> {
+        require(mid > 0L) { "登录账号缺少 mid" }
+        val root = request(
+            path = "/x/v3/fav/folder/created/list",
+            parameters = mapOf("up_mid" to mid, "pn" to page, "ps" to 20),
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parseFavoriteFolder)
+    }
+
+    suspend fun favoriteVideos(folderId: Long, page: Int = 1): List<BilibiliLibraryVideo> {
+        val root = request(
+            path = "/x/v3/fav/resource/list",
+            parameters = mapOf(
+                "media_id" to folderId,
+                "pn" to page,
+                "ps" to 20,
+                "order" to "mtime",
+                "platform" to "web",
+            ),
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("medias")
+            .toObjects()
+            .mapNotNull(::parseFavoriteVideo)
+    }
+
+    suspend fun watchLater(page: Int = 1): List<BilibiliLibraryVideo> {
+        val root = request(
+            path = "/x/v2/history/toview/web",
+            parameters = mapOf("pn" to page, "ps" to 20),
+            useWbi = true,
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parseWatchLaterVideo)
+    }
+
+    suspend fun onlineHistory(): List<BilibiliLibraryVideo> {
+        val root = request(
+            path = "/x/web-interface/history/cursor",
+            parameters = mapOf(
+                "max" to 0,
+                "view_at" to 0,
+                "type" to "archive",
+                "ps" to 20,
+            ),
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parseOnlineHistoryVideo)
     }
 
     suspend fun videoDetail(bvid: String): BilibiliVideoDetail {
@@ -110,6 +172,24 @@ class BilibiliRepository(
             artworkUrl = page.coverUrl ?: detail.coverUrl.ifBlank { video.coverUrl },
             qualityLabel = stream.qualityLabel,
             source = BilibiliTrackSource(detail.bvid, page.cid, qualityPreference),
+        )
+    }
+
+    suspend fun resolveTrack(
+        source: BilibiliTrackSource,
+        title: String,
+        artist: String,
+        artworkUrl: String?,
+    ): Track {
+        val stream = resolveAudioStream(source.bvid, source.cid, source.qualityPreference)
+        return Track(
+            id = "${source.bvid}:${source.cid}",
+            title = title,
+            artist = artist,
+            streamUrl = stream.url,
+            artworkUrl = artworkUrl,
+            qualityLabel = stream.qualityLabel,
+            source = source,
         )
     }
 
@@ -277,6 +357,70 @@ class BilibiliRepository(
             coverUrl = BilibiliText.httpsUrl(item.optString("pic")),
             durationSeconds = parseDuration(item.optString("duration")),
             playCount = item.optLongOrNull("play"),
+        )
+    }
+
+    internal fun parseFavoriteFolder(item: JSONObject): BilibiliFavoriteFolder? {
+        val id = item.optLong("id", 0L).takeIf { it > 0L } ?: return null
+        return BilibiliFavoriteFolder(
+            id = id,
+            title = BilibiliText.plainTitle(item.optString("title")).ifBlank { "未命名收藏夹" },
+            coverUrl = BilibiliText.httpsUrl(item.optString("cover")),
+            mediaCount = item.optInt("media_count", 0),
+        )
+    }
+
+    internal fun parseFavoriteVideo(item: JSONObject): BilibiliLibraryVideo? {
+        // long: 收藏夹还可能包含音频、合集和已失效稿件；当前播放器只接收可重新解析 DASH 的普通视频。
+        if (item.optInt("type", 0) != 2 || item.optInt("attr", 0) != 0) return null
+        val bvid = item.optString("bvid").ifBlank { item.optString("bv_id") }
+            .takeIf(String::isNotBlank) ?: return null
+        val video = BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("id"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optJSONObject("upper")?.optString("name").orEmpty(),
+            coverUrl = BilibiliText.httpsUrl(item.optString("cover")),
+            durationSeconds = item.optIntOrNull("duration"),
+            playCount = item.optJSONObject("cnt_info")?.optLongOrNull("play"),
+        )
+        return BilibiliLibraryVideo(video, savedAtEpochSeconds = item.optLongOrNull("fav_time"))
+    }
+
+    internal fun parseWatchLaterVideo(item: JSONObject): BilibiliLibraryVideo? {
+        val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        val video = BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optJSONObject("owner")?.optString("name").orEmpty(),
+            coverUrl = BilibiliText.httpsUrl(item.optString("pic")),
+            durationSeconds = item.optIntOrNull("duration"),
+            playCount = item.optJSONObject("stat")?.optLongOrNull("view"),
+        )
+        return BilibiliLibraryVideo(
+            video = video,
+            progressSeconds = item.optIntOrNull("progress"),
+            savedAtEpochSeconds = item.optLongOrNull("add_at"),
+        )
+    }
+
+    internal fun parseOnlineHistoryVideo(item: JSONObject): BilibiliLibraryVideo? {
+        val history = item.optJSONObject("history") ?: return null
+        val bvid = history.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        val video = BilibiliVideo(
+            bvid = bvid,
+            aid = history.optLongOrNull("oid"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optString("author_name"),
+            coverUrl = BilibiliText.firstHttpsUrl(item.optString("cover"), item.optJSONArray("covers")?.optString(0)),
+            durationSeconds = item.optIntOrNull("duration"),
+            playCount = null,
+        )
+        return BilibiliLibraryVideo(
+            video = video,
+            progressSeconds = item.optIntOrNull("progress"),
+            savedAtEpochSeconds = item.optLongOrNull("view_at"),
         )
     }
 

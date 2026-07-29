@@ -51,6 +51,17 @@ class BilibiliRequestHeadersInterceptorTest {
         assertNull(server.takeRequest().getHeader("Cookie"))
     }
 
+    @Test
+    fun `Bilibili CDN 携带来源头但不携带账号 Cookie`() {
+        execute("upos.mcdn.bilivideo.cn")
+
+        val request = server.takeRequest()
+        assertEquals("https://www.bilibili.com/", request.getHeader("Referer"))
+        assertEquals("https://www.bilibili.com", request.getHeader("Origin"))
+        assertEquals(true, request.getHeader("User-Agent")?.contains("Chrome/141.0.0.0"))
+        assertNull(request.getHeader("Cookie"))
+    }
+
     private fun execute(host: String) {
         server.enqueue(MockResponse().setResponseCode(200))
         val url = server.url("/probe").newBuilder().host(host).build()

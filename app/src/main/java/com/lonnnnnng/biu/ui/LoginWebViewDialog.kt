@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.graphics.Color
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
-import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Column
@@ -19,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,12 +28,14 @@ import androidx.compose.ui.window.DialogProperties
 import com.lonnnnnng.biu.appContainer
 import com.lonnnnnng.biu.data.bilibili.BilibiliCookieStore
 import java.net.URI
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun LoginWebViewDialog(
     onDismiss: () -> Unit,
+    onSessionAvailable: () -> Unit,
 ) {
     val context = LocalContext.current
     val cookieStore = context.appContainer.cookieStore
@@ -42,9 +44,9 @@ fun LoginWebViewDialog(
             setBackgroundColor(Color.WHITE)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            // long: H5 登录页依赖移动 UA 和移动视口适配表单；播放请求仍单独使用桌面 UA，二者不能共用配置。
             settings.allowFileAccess = false
             settings.allowContentAccess = false
-            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             val loginWebView = this
             CookieManager.getInstance().apply {
                 setAcceptCookie(true)
@@ -62,11 +64,27 @@ fun LoginWebViewDialog(
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
+                    // long: Android System WebView 会把该 H5 页的 100vh 计算为 0，需用实际可视高度保持协议文案位于页面底部。
+                    view?.evaluateJavascript(BILIBILI_LOGIN_VIEWPORT_FIX, null)
                     // long: 登录页和主站跨域写入同一 .bilibili.com Cookie；每次页面完成后立刻落盘供 OkHttp 使用。
                     cookieStore.flush()
                 }
             }
             loadUrl(BilibiliCookieStore.BILIBILI_LOGIN_URL)
+        }
+    }
+
+    LaunchedEffect(cookieStore) {
+        var checkedSessionVersion: Int? = null
+        while (true) {
+            val currentSessionVersion = cookieStore.sessionVersion()
+            if (currentSessionVersion != null && currentSessionVersion != checkedSessionVersion) {
+                // long: H5 通过 XHR 写入登录 Cookie 时不会重新加载页面，只在 Cookie 变化后请求服务端确认登录态。
+                checkedSessionVersion = currentSessionVersion
+                cookieStore.flush()
+                onSessionAvailable()
+            }
+            delay(LOGIN_SESSION_POLL_INTERVAL_MS)
         }
     }
 
@@ -100,6 +118,37 @@ fun LoginWebViewDialog(
         }
     }
 }
+
+private const val LOGIN_SESSION_POLL_INTERVAL_MS = 750L
+
+internal val BILIBILI_LOGIN_VIEWPORT_FIX =
+    """
+    (() => {
+        if (location.hostname !== "passport.bilibili.com" ||
+            !location.pathname.startsWith("/h5-app/passport/login")) return;
+
+        const applyViewportHeight = () => {
+            const viewportHeight = Math.round(window.visualViewport?.height || window.innerHeight || 0);
+            if (viewportHeight <= 0) return;
+
+            let style = document.getElementById("biu-mobile-login-viewport");
+            if (!style) {
+                style = document.createElement("style");
+                style.id = "biu-mobile-login-viewport";
+                document.head.appendChild(style);
+            }
+            style.textContent =
+                "html,body,#app,.login-wrap{min-height:" + viewportHeight + "px!important}";
+        };
+
+        applyViewportHeight();
+        if (!window.__biuLoginViewportBound) {
+            window.__biuLoginViewportBound = true;
+            window.addEventListener("resize", applyViewportHeight);
+            window.visualViewport?.addEventListener("resize", applyViewportHeight);
+        }
+    })();
+    """.trimIndent()
 
 internal object BilibiliLoginNavigation {
     fun isAllowed(url: String): Boolean {

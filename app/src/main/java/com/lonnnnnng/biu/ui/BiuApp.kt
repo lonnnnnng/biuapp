@@ -3,6 +3,7 @@ package com.lonnnnnng.biu.ui
 import android.content.ComponentName
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -25,12 +27,18 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.WatchLater
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -79,8 +87,12 @@ import coil3.compose.AsyncImage
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.core.model.toMediaItem
+import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
+import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
+import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
+import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.playback.PlaybackService
 import kotlinx.coroutines.delay
 
@@ -135,7 +147,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     LaunchedEffect(uiState.playbackRequest?.eventId, controller) {
         val request = uiState.playbackRequest ?: return@LaunchedEffect
         val activeController = controller ?: return@LaunchedEffect
-        activeController.setMediaItem(request.track.toMediaItem())
+        if (request.startPositionMs > 0L) {
+            activeController.setMediaItem(request.track.toMediaItem(), request.startPositionMs)
+        } else {
+            activeController.setMediaItem(request.track.toMediaItem())
+        }
         activeController.prepare()
         activeController.play()
         viewModel.consumePlaybackRequest(request.eventId)
@@ -156,12 +172,18 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         }
     }
 
+    LaunchedEffect(showLogin, uiState.account.isLoggedIn) {
+        // long: 账号接口确认登录成功后立即退出 WebView，避免 H5 的 XHR 登录停留在原表单页面。
+        if (showLogin && uiState.account.isLoggedIn) showLogin = false
+    }
+
     if (showLogin) {
         LoginWebViewDialog(
             onDismiss = {
                 showLogin = false
                 viewModel.refreshAccount()
             },
+            onSessionAvailable = viewModel::refreshAccount,
         )
     }
 
@@ -263,6 +285,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 onLogin = { showLogin = true },
                 onRefresh = viewModel::refreshAccount,
                 onLogout = viewModel::logout,
+                onLoadLibrary = viewModel::loadLibrary,
+                onOpenFavoriteFolder = viewModel::openFavoriteFolder,
+                onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
+                onPlay = viewModel::play,
+                onPlayHistory = viewModel::play,
+                onClearLocalHistory = viewModel::clearLocalHistory,
                 modifier = Modifier.padding(contentPadding),
             )
         }
@@ -359,41 +387,298 @@ private fun AccountScreen(
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
+    onLoadLibrary: (AccountLibrarySection) -> Unit,
+    onOpenFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
+    onCloseFavoriteFolder: () -> Unit,
+    onPlay: (BilibiliVideo) -> Unit,
+    onPlayHistory: (PlaybackHistoryEntity) -> Unit,
+    onClearLocalHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
         modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .fillMaxSize(),
     ) {
         if (state.isAccountLoading) {
-            CircularProgressIndicator()
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         } else if (state.account.isLoggedIn) {
-            AsyncImage(
-                model = state.account.faceUrl,
-                contentDescription = null,
+            Row(
                 modifier = Modifier
-                    .size(88.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop,
-            )
-            Text(state.account.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("已登录 Bilibili", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedButton(onClick = onLogout) { Text("退出登录") }
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                AsyncImage(
+                    model = state.account.faceUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(6.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(state.account.name, fontWeight = FontWeight.Bold)
+                    Text("已登录 Bilibili", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新账号音乐库") }
+                TextButton(onClick = onLogout) { Text("退出") }
+            }
         } else {
-            Icon(
-                Icons.Rounded.AccountCircle,
-                contentDescription = null,
-                modifier = Modifier.size(88.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Text("未登录", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("公开推荐和搜索可以直接使用，登录后可获得账号画质与后续收藏能力。")
-            OutlinedButton(onClick = onLogin) { Text("登录 Bilibili") }
-            TextButton(onClick = onRefresh) { Text("刷新状态") }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.Rounded.AccountCircle, contentDescription = null, modifier = Modifier.size(52.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("未登录", fontWeight = FontWeight.Bold)
+                    Text("登录后可浏览账号收藏和历史", style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(onClick = onLogin) { Text("登录") }
+                IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新登录状态") }
+            }
         }
+
+        HorizontalDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AccountLibrarySection.entries.forEach { section ->
+                FilterChip(
+                    selected = state.librarySection == section,
+                    onClick = { onLoadLibrary(section) },
+                    label = { Text(section.label) },
+                    leadingIcon = {
+                        Icon(
+                            when (section) {
+                                AccountLibrarySection.FAVORITES -> Icons.Rounded.Favorite
+                                AccountLibrarySection.WATCH_LATER -> Icons.Rounded.WatchLater
+                                AccountLibrarySection.ONLINE_HISTORY -> Icons.Rounded.History
+                                AccountLibrarySection.LOCAL_HISTORY -> Icons.Rounded.Album
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                )
+            }
+        }
+
+        if (state.isLibraryLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        val onlineSection = state.librarySection != AccountLibrarySection.LOCAL_HISTORY
+        if (onlineSection && !state.account.isLoggedIn) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("登录后可浏览${state.librarySection.label}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            when (state.librarySection) {
+                AccountLibrarySection.FAVORITES -> FavoriteLibrary(
+                    folders = state.favoriteFolders,
+                    selectedFolder = state.selectedFavoriteFolder,
+                    videos = state.libraryVideos,
+                    resolvingBvid = state.resolvingBvid,
+                    loading = state.isLibraryLoading,
+                    onOpenFolder = onOpenFavoriteFolder,
+                    onCloseFolder = onCloseFavoriteFolder,
+                    onPlay = onPlay,
+                    modifier = Modifier.weight(1f),
+                )
+                AccountLibrarySection.WATCH_LATER,
+                AccountLibrarySection.ONLINE_HISTORY,
+                -> LibraryVideoList(
+                    videos = state.libraryVideos,
+                    resolvingBvid = state.resolvingBvid,
+                    loading = state.isLibraryLoading,
+                    onPlay = onPlay,
+                    modifier = Modifier.weight(1f),
+                )
+                AccountLibrarySection.LOCAL_HISTORY -> LocalHistoryList(
+                    history = state.localHistory,
+                    resolvingBvid = state.resolvingBvid,
+                    onPlay = onPlayHistory,
+                    onClear = onClearLocalHistory,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoriteLibrary(
+    folders: List<BilibiliFavoriteFolder>,
+    selectedFolder: BilibiliFavoriteFolder?,
+    videos: List<BilibiliLibraryVideo>,
+    resolvingBvid: String?,
+    loading: Boolean,
+    onOpenFolder: (BilibiliFavoriteFolder) -> Unit,
+    onCloseFolder: () -> Unit,
+    onPlay: (BilibiliVideo) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (selectedFolder != null) {
+        Column(modifier) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onCloseFolder)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = null)
+                Text(selectedFolder.title, fontWeight = FontWeight.Bold)
+            }
+            LibraryVideoList(videos, resolvingBvid, loading, onPlay, Modifier.weight(1f))
+        }
+    } else if (!loading && folders.isEmpty()) {
+        EmptyLibrary("收藏夹为空", modifier)
+    } else {
+        LazyColumn(modifier.fillMaxWidth()) {
+            items(folders, key = BilibiliFavoriteFolder::id) { folder ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenFolder(folder) }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Text(folder.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${folder.mediaCount} 首", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null)
+                }
+                HorizontalDivider(modifier = Modifier.padding(start = 52.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryVideoList(
+    videos: List<BilibiliLibraryVideo>,
+    resolvingBvid: String?,
+    loading: Boolean,
+    onPlay: (BilibiliVideo) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (!loading && videos.isEmpty()) {
+        EmptyLibrary("暂无内容", modifier)
+        return
+    }
+    LazyColumn(modifier.fillMaxWidth()) {
+        items(videos, key = { item -> "${item.video.bvid}:${item.savedAtEpochSeconds ?: 0L}" }) { item ->
+            VideoRow(
+                video = item.video,
+                resolving = resolvingBvid == item.video.bvid,
+                enabled = resolvingBvid == null,
+                contextLabel = item.progressSeconds
+                    ?.takeIf { progress -> progress > 0 }
+                    ?.let { progress -> "已看 ${formatDuration(progress)}" },
+                onClick = { onPlay(item.video) },
+            )
+            HorizontalDivider(modifier = Modifier.padding(start = 132.dp))
+        }
+    }
+}
+
+@Composable
+private fun LocalHistoryList(
+    history: List<PlaybackHistoryEntity>,
+    resolvingBvid: String?,
+    onPlay: (PlaybackHistoryEntity) -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var showClearConfirmation by remember { mutableStateOf(false) }
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text("清空本地历史？") },
+            text = { Text("此操作只删除本机的播放记录，不影响 Bilibili 在线历史。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirmation = false
+                        onClear()
+                    },
+                ) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmation = false }) { Text("取消") }
+            },
+        )
+    }
+    Column(modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("最近播放", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+            IconButton(onClick = { showClearConfirmation = true }, enabled = history.isNotEmpty()) {
+                Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空本地历史")
+            }
+        }
+        if (history.isEmpty()) {
+            EmptyLibrary("播放内容后会出现在这里", Modifier.weight(1f))
+        } else {
+            LazyColumn(Modifier.weight(1f)) {
+                items(history, key = PlaybackHistoryEntity::mediaId) { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = resolvingBvid == null) { onPlay(item) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        AsyncImage(
+                            model = item.artworkUrl,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentScale = ContentScale.Crop,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                listOf(item.artist, formatProgress(item.lastPositionMs, item.durationMs), "播放 ${item.playCount} 次")
+                                    .filter(String::isNotBlank)
+                                    .joinToString(" · "),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (resolvingBvid == item.bvid) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "播放 ${item.title}")
+                        }
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(start = 84.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyLibrary(message: String, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -422,6 +707,7 @@ private fun VideoRow(
     video: BilibiliVideo,
     resolving: Boolean,
     enabled: Boolean,
+    contextLabel: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -451,6 +737,7 @@ private fun VideoRow(
             Spacer(Modifier.height(4.dp))
             Text(
                 buildList {
+                    contextLabel?.takeIf(String::isNotBlank)?.let(::add)
                     if (video.author.isNotBlank()) add(video.author)
                     video.playCount?.let { add(formatCount(it)) }
                     video.durationSeconds?.let { add(formatDuration(it)) }
@@ -569,4 +856,12 @@ private fun formatCount(value: Long): String {
         value >= 10_000 -> "%.1f 万".format(value / 10_000.0)
         else -> value.toString()
     }
+}
+
+private fun formatProgress(positionMs: Long, durationMs: Long): String {
+    if (positionMs <= 0L) return "刚刚开始"
+    val position = formatDuration((positionMs / 1000L).toInt())
+    val duration = durationMs.takeIf { it > 0L }
+        ?.let { formatDuration((it / 1000L).toInt()) }
+    return if (duration == null) "已听 $position" else "$position / $duration"
 }

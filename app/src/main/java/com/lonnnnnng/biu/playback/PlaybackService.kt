@@ -1,5 +1,6 @@
 package com.lonnnnnng.biu.playback
 
+import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -26,6 +27,7 @@ class PlaybackService : MediaSessionService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var refreshInFlight = false
     private var retryConsumedForCurrentItem = false
+    private var recordedMediaId: String? = null
     private val sessionCallback = object : MediaSession.Callback {
         @UnstableApi
         override fun onConnect(
@@ -50,16 +52,40 @@ class PlaybackService : MediaSessionService() {
     private val playerListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             if (!refreshInFlight) retryConsumedForCurrentItem = false
+            val isNewPlaybackRequest = !refreshInFlight && reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+            if (isNewPlaybackRequest) recordedMediaId = null
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) {
+                val mediaItem = player?.currentMediaItem ?: return
+                val mediaId = mediaItem.mediaId.takeIf(String::isNotBlank)
+                if (mediaId != recordedMediaId) {
+                    recordedMediaId = mediaId
+                    serviceScope.launch {
+                        // long: 只有解码器真正进入播放态后才写历史，403、解析失败或未开始播放的点击不会污染记录。
+                        appContainer.playbackHistoryRepository.recordStarted(mediaItem)
+                    }
+                }
+            } else {
+                persistCurrentProgress()
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 // long: 播放结束是一次性业务事件；递增 ID 可供后续自动续播层去重，不能依赖可重复的展示文案。
                 endEventClock.recordEnded()
+                persistCurrentProgress()
             }
         }
 
+        @UnstableApi
         override fun onPlayerError(error: PlaybackException) {
+            error.httpFailure()?.let { failure ->
+                // long: 日志只记录 CDN 主机和状态码，不输出带签名的完整 DASH URL、Cookie 或账号信息。
+                Log.w(LOG_TAG, "DASH request failed: host=${failure.host}, code=${failure.code}")
+            }
             if (error.isExpiredDashUrlError()) {
                 refreshCurrentBilibiliTrack()
             }
@@ -128,6 +154,29 @@ class PlaybackService : MediaSessionService() {
             refreshInFlight = false
         }
     }
+
+    private fun persistCurrentProgress() {
+        val activePlayer = player ?: return
+        val mediaItem = activePlayer.currentMediaItem ?: return
+        val positionMs = activePlayer.currentPosition
+        val durationMs = activePlayer.duration
+        serviceScope.launch {
+            // long: 暂停或播放结束时保存最后位置，用户下次进入本地历史即可判断是否听过和听到哪里。
+            appContainer.playbackHistoryRepository.recordProgress(mediaItem, positionMs, durationMs)
+        }
+    }
+}
+
+@UnstableApi
+private fun PlaybackException.httpFailure(): DashHttpFailure? {
+    var current: Throwable? = this
+    while (current != null) {
+        if (current is HttpDataSource.InvalidResponseCodeException) {
+            return DashHttpFailure(current.dataSpec.uri.host.orEmpty(), current.responseCode)
+        }
+        current = current.cause
+    }
+    return null
 }
 
 private fun PlaybackException.isExpiredDashUrlError(): Boolean {
@@ -155,3 +204,7 @@ class ControllerTrustPolicy(
             (controllerPackage == applicationPackage && controllerUid == applicationUid)
     }
 }
+
+private data class DashHttpFailure(val host: String, val code: Int)
+
+private const val LOG_TAG = "BiuPlayback"

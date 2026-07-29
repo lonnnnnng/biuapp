@@ -5,7 +5,7 @@ import okhttp3.Response
 
 class BilibiliRequestHeadersInterceptor(
     private val cookieProvider: () -> String? = { null },
-    private val userAgent: String = DEFAULT_USER_AGENT,
+    private val userAgent: String = BILIBILI_WEB_USER_AGENT,
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
@@ -31,14 +31,15 @@ class BilibiliRequestHeadersInterceptor(
 
     private companion object {
         const val BILIBILI_WEB_ORIGIN = "https://www.bilibili.com/"
-        const val DEFAULT_USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/138.0 Mobile Safari/537.36"
     }
 }
 
+internal const val BILIBILI_WEB_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+
 object BilibiliDomains {
-    private val ownedSuffixes = setOf("bilibili.com", "bilivideo.com", "hdslb.com")
+    private val ownedSuffixes = setOf("bilibili.com", "bilivideo.com", "bilivideo.cn", "hdslb.com")
 
     fun isOwnedHost(host: String): Boolean = ownedSuffixes.any { suffix ->
         host == suffix || host.endsWith(".$suffix")

@@ -33,6 +33,7 @@
 com.lonnnnnng.biu
 ├── core/model        领域对象与播放模式
 ├── data/bilibili     API、Cookie、WBI、响应模型
+├── data/local         Room 数据库、DAO 与本地播放历史
 ├── playback          Media3 Service、Controller、播放状态
 ├── download          下载队列、前台服务、合并与存储
 └── ui                Compose 页面与主题
@@ -55,6 +56,8 @@ UI 不直接请求 Bilibili，也不持有 `ExoPlayer`。所有播放命令通�
 DASH URL 可能过期。播放失败且响应符合链接失效特征时，解析器必须按 `bvid + cid` 重新请求地址，并限制单曲自动重试次数，防止无限循环。
 
 播放结束属于一次性业务事件，不能依赖 `message == "Ended"` 这类展示字符串。状态层使用单调递增事件 ID，确保自动下一首不会重复触发或漏触发。
+
+播放历史由 `PlaybackService` 在 Media3 真正切入媒体项后写入 Room，暂停和结束时更新最后进度。数据库只保存 `bvid/cid`、标题、作者、封面、音质偏好与进度，不保存会过期的 DASH URL；从历史重播时重新解析地址，距离结尾 30 秒以内的记录从头播放。
 
 ## 5. 登录方案
 
