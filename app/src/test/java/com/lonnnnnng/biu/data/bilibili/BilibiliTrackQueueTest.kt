@@ -39,6 +39,7 @@ class BilibiliTrackQueueTest {
 
         assertEquals(listOf("BVQUEUE:101", "BVQUEUE:202"), tracks.map { it.id })
         assertEquals(listOf("长视频 · 第一首", "长视频 · 第二首"), tracks.map { it.title })
+        assertEquals(listOf("P1 · 第一首", "P2 · 第二首"), tracks.map { it.pageTitle })
         assertEquals(listOf(101L, 202L), tracks.map { it.source?.cid })
         val requests = List(4) { server.takeRequest(1, TimeUnit.SECONDS) }
         assertEquals("101", requests[2]?.requestUrl?.queryParameter("cid"))

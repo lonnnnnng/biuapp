@@ -192,6 +192,12 @@ class BilibiliRepository(
         } else {
             detail.title
         }
+        // long: 多 P 名称独立写入 Media3 subtitle，避免总视频标题过长时看不到当前播放的具体歌曲。
+        val pageTitle = if (detail.pages.size > 1) {
+            page.title.takeIf(String::isNotBlank)?.let { "P${page.page} · $it" } ?: "P${page.page}"
+        } else {
+            null
+        }
         return Track(
             id = "${detail.bvid}:${page.cid}",
             title = title,
@@ -199,6 +205,7 @@ class BilibiliRepository(
             streamUrl = stream.url,
             artworkUrl = page.coverUrl ?: detail.coverUrl.ifBlank { video.coverUrl },
             qualityLabel = stream.qualityLabel,
+            pageTitle = pageTitle,
             source = BilibiliTrackSource(detail.bvid, page.cid, qualityPreference),
         )
     }

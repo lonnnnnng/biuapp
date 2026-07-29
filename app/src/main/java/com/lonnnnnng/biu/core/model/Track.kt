@@ -12,6 +12,7 @@ data class Track(
     val streamUrl: String,
     val artworkUrl: String? = null,
     val qualityLabel: String? = null,
+    val pageTitle: String? = null,
     val source: BilibiliTrackSource? = null,
 )
 
@@ -33,6 +34,7 @@ fun Track.toMediaItem(): MediaItem {
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(title)
+                .setSubtitle(pageTitle)
                 .setArtist(artist)
                 .setArtworkUri(artworkUrl?.toUri())
                 .setDescription(qualityLabel)

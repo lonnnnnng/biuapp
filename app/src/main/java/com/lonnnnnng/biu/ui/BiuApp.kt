@@ -107,6 +107,7 @@ private data class PlaybackSnapshot(
     val title: String = "还没有播放",
     val artist: String = "选择内容开始播放",
     val quality: String = "",
+    val pageTitle: String? = null,
     val artworkUrl: String? = null,
     val isPlaying: Boolean = false,
     val hasPrevious: Boolean = false,
@@ -137,6 +138,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     title = activeController.mediaMetadata.title?.toString() ?: "还没有播放",
                     artist = activeController.mediaMetadata.artist?.toString() ?: "选择内容开始播放",
                     quality = activeController.mediaMetadata.description?.toString().orEmpty(),
+                    pageTitle = activeController.mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank),
                     artworkUrl = activeController.mediaMetadata.artworkUri?.toString(),
                     isPlaying = activeController.isPlaying,
                     hasPrevious = activeController.hasPreviousMediaItem(),
@@ -938,6 +940,9 @@ private fun MiniPlayer(
     } else {
         progress.positionMs
     }
+    // long: 多 P 优先展示当前分集名称；单 P 没有 subtitle 时保留原来的作者和音质信息。
+    val secondaryText = snapshot.pageTitle
+        ?: listOf(snapshot.artist, snapshot.quality).filter(String::isNotBlank).joinToString(" · ")
 
     Column(
         modifier = Modifier
@@ -985,11 +990,15 @@ private fun MiniPlayer(
             ) {
                 Text(snapshot.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                 Text(
-                    listOf(snapshot.artist, snapshot.quality).filter(String::isNotBlank).joinToString(" · "),
+                    secondaryText,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (snapshot.pageTitle == null) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
                 )
             }
             IconButton(onClick = onPrevious, enabled = controllerReady && snapshot.hasPrevious) {
