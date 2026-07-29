@@ -15,9 +15,13 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliVideoDetail
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -27,16 +31,26 @@ enum class MainSection(val label: String) {
     ACCOUNT("账号"),
 }
 
-data class PlaybackRequest(
-    val eventId: Long,
-    val tracks: List<Track>,
-    val startIndex: Int = 0,
-    val startPositionMs: Long = 0L,
-) {
-    init {
-        require(tracks.isNotEmpty()) { "播放队列不能为空" }
-        require(startIndex in tracks.indices) { "播放起始索引越界" }
+internal sealed interface PlaybackCommand {
+    val queueId: Long
+
+    data class Replace(
+        override val queueId: Long,
+        val tracks: List<Track>,
+        val startIndex: Int = 0,
+        val startPositionMs: Long = 0L,
+    ) : PlaybackCommand {
+        init {
+            require(tracks.isNotEmpty()) { "播放队列不能为空" }
+            require(startIndex in tracks.indices) { "播放起始索引越界" }
+        }
     }
+
+    data class Expand(
+        override val queueId: Long,
+        val placement: QueuePlacement,
+        val track: Track,
+    ) : PlaybackCommand
 }
 
 data class VideoPageSelection(
@@ -65,16 +79,19 @@ data class BiuUiState(
     val isPageQueueLoading: Boolean = false,
     val resolvingBvid: String? = null,
     val message: String? = null,
-    val playbackRequest: PlaybackRequest? = null,
 )
 
 class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val container = application.appContainer
     private val repository = container.bilibiliRepository
     private val playbackEventIds = AtomicLong(0L)
+    private val playbackQueueSnapshots = PlaybackQueueSnapshotStore<Track>(Track::id)
     private val mutableState = MutableStateFlow(BiuUiState())
+    private val mutablePlaybackCommands = Channel<PlaybackCommand>(Channel.UNLIMITED)
+    private var pageQueueJob: Job? = null
 
     val state: StateFlow<BiuUiState> = mutableState.asStateFlow()
+    internal val playbackCommands = mutablePlaybackCommands.receiveAsFlow()
 
     init {
         loadRecommendations(RecommendFeed.MUSIC)
@@ -148,6 +165,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 } else {
+                    cancelPageQueueExpansion()
                     val tracks = repository.resolveTracks(video, detail, qualityPreference)
                     publishPlaybackRequest(tracks)
                 }
@@ -167,6 +185,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val qualityPreference = state.value.qualityPreference
+        cancelPageQueueExpansion()
         mutableState.update {
             it.copy(
                 resolvingBvid = selection.video.bvid,
@@ -174,17 +193,42 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 message = null,
             )
         }
-        viewModelScope.launch {
-            runCatching {
-                repository.resolveTracks(selection.video, selection.detail, qualityPreference)
-            }.onSuccess { tracks ->
-                publishPlaybackRequest(tracks, startIndex)
-            }.onFailure { error ->
+        pageQueueJob = viewModelScope.launch {
+            var queueStarted = false
+            try {
+                var queueId = 0L
+                ProgressivePageQueueLoader(
+                    resolve = { pageIndex ->
+                        repository.resolveTrack(selection.video, selection.detail, pageIndex, qualityPreference)
+                    },
+                ).load(
+                    pageCount = selection.detail.pages.size,
+                    startIndex = startIndex,
+                    onSelected = { selectedTrack ->
+                        queueId = publishPlaybackRequest(listOf(selectedTrack))
+                        queueStarted = true
+                    },
+                    onExpansion = { expansion ->
+                        val command = PlaybackCommand.Expand(
+                            queueId = queueId,
+                            placement = expansion.placement,
+                            track = expansion.item,
+                        )
+                        if (playbackQueueSnapshots.expand(queueId, command.placement, command.track) != null) {
+                            mutablePlaybackCommands.send(command)
+                        }
+                    },
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
                 mutableState.update {
                     it.copy(
                         resolvingBvid = null,
                         isPageQueueLoading = false,
-                        message = error.userMessage("分 P 播放队列解析失败"),
+                        message = error.userMessage(
+                            if (queueStarted) "部分分 P 加载失败，当前播放不受影响" else "分 P 播放地址解析失败",
+                        ),
                     )
                 }
             }
@@ -198,6 +242,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun play(history: PlaybackHistoryEntity) {
         if (state.value.resolvingBvid != null) return
+        cancelPageQueueExpansion()
         mutableState.update { it.copy(resolvingBvid = history.bvid, message = null) }
         viewModelScope.launch {
             runCatching {
@@ -219,12 +264,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     fun selectQualityPreference(preference: AudioQualityPreference) {
         mutableState.update {
             it.copy(qualityPreference = preference, message = "播放音质 · ${preference.label}（下一次播放生效）")
-        }
-    }
-
-    fun consumePlaybackRequest(eventId: Long) {
-        mutableState.update { current ->
-            if (current.playbackRequest?.eventId == eventId) current.copy(playbackRequest = null) else current
         }
     }
 
@@ -322,26 +361,46 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(message = null) }
     }
 
+    internal fun isActivePlaybackQueue(queueId: Long): Boolean = playbackEventIds.get() == queueId
+
+    internal fun currentPlaybackQueue(queueId: Long? = null): PlaybackQueueSnapshot<Track>? {
+        return playbackQueueSnapshots.current(queueId)
+    }
+
+    internal fun updatePlaybackQueuePosition(mediaId: String, positionMs: Long) {
+        playbackQueueSnapshots.updateResumePosition(mediaId, positionMs)
+    }
+
     private fun publishPlaybackRequest(
         tracks: List<Track>,
         startIndex: Int = 0,
         startPositionMs: Long = 0L,
-    ) {
-        val activeTrack = tracks.getOrNull(startIndex) ?: return
+    ): Long {
+        val activeTrack = tracks.getOrNull(startIndex) ?: error("播放起始索引越界")
+        val queueId = playbackEventIds.incrementAndGet()
+        playbackQueueSnapshots.replace(queueId, tracks, startIndex, startPositionMs)
+        mutablePlaybackCommands.trySend(
+            PlaybackCommand.Replace(
+                queueId = queueId,
+                tracks = tracks,
+                startIndex = startIndex,
+                startPositionMs = startPositionMs,
+            ),
+        ).getOrThrow()
         mutableState.update {
             it.copy(
                 resolvingBvid = null,
                 pageSelection = null,
                 isPageQueueLoading = false,
-                playbackRequest = PlaybackRequest(
-                    eventId = playbackEventIds.incrementAndGet(),
-                    tracks = tracks,
-                    startIndex = startIndex,
-                    startPositionMs = startPositionMs,
-                ),
                 message = activeTrack.qualityLabel?.let { quality -> "正在播放 · $quality" },
             )
         }
+        return queueId
+    }
+
+    private fun cancelPageQueueExpansion() {
+        pageQueueJob?.cancel()
+        pageQueueJob = null
     }
 
     private fun publishLibraryVideos(videos: List<BilibiliLibraryVideo>) {

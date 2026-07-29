@@ -1,0 +1,101 @@
+package com.lonnnnnng.biu.ui
+
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+
+internal enum class QueuePlacement {
+    PREPEND,
+    APPEND,
+}
+
+internal data class QueueExpansion<T>(
+    val placement: QueuePlacement,
+    val item: T,
+)
+
+internal data class PlaybackQueueSnapshot<T>(
+    val queueId: Long,
+    val items: List<T>,
+    val startIndex: Int,
+    val startPositionMs: Long,
+) {
+    init {
+        require(items.isNotEmpty()) { "播放队列不能为空" }
+        require(startIndex in items.indices) { "播放起始索引越界" }
+    }
+}
+
+internal class PlaybackQueueSnapshotStore<T>(
+    private val itemId: (T) -> String,
+) {
+    private var snapshot: PlaybackQueueSnapshot<T>? = null
+
+    @Synchronized
+    fun replace(
+        queueId: Long,
+        items: List<T>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): PlaybackQueueSnapshot<T> {
+        return PlaybackQueueSnapshot(queueId, items, startIndex, startPositionMs).also { snapshot = it }
+    }
+
+    @Synchronized
+    fun expand(queueId: Long, placement: QueuePlacement, item: T): PlaybackQueueSnapshot<T>? {
+        val current = snapshot?.takeIf { it.queueId == queueId } ?: return null
+        // long: 重连窗口可能重放已经进入快照的补齐结果，按媒体 ID 去重可避免队列出现重复分 P。
+        if (current.items.any { itemId(it) == itemId(item) }) return current
+        val updatedItems = when (placement) {
+            QueuePlacement.PREPEND -> listOf(item) + current.items
+            QueuePlacement.APPEND -> current.items + item
+        }
+        return current.copy(
+            items = updatedItems,
+            startIndex = current.startIndex + if (placement == QueuePlacement.PREPEND) 1 else 0,
+        ).also { snapshot = it }
+    }
+
+    @Synchronized
+    fun updateResumePosition(mediaId: String, positionMs: Long) {
+        val current = snapshot ?: return
+        val activeIndex = current.items.indexOfFirst { itemId(it) == mediaId }
+        if (activeIndex < 0) return
+        // long: 服务若在控制器断开期间重建，恢复到用户当前所在的 P 和最近进度，而不是回到最初选择页。
+        snapshot = current.copy(startIndex = activeIndex, startPositionMs = positionMs.coerceAtLeast(0L))
+    }
+
+    @Synchronized
+    fun current(queueId: Long? = null): PlaybackQueueSnapshot<T>? {
+        return snapshot?.takeIf { queueId == null || it.queueId == queueId }
+    }
+}
+
+internal class ProgressivePageQueueLoader<T>(
+    private val resolve: suspend (pageIndex: Int) -> T,
+) {
+    suspend fun load(
+        pageCount: Int,
+        startIndex: Int,
+        onSelected: suspend (T) -> Unit,
+        onExpansion: suspend (QueueExpansion<T>) -> Unit,
+    ) = coroutineScope {
+        require(pageCount > 0) { "分 P 数量必须大于 0" }
+        require(startIndex in 0 until pageCount) { "分 P 起始索引越界" }
+
+        // long: 首次只等待用户选中的 P，避免 100P 视频在所有 DASH 地址解析完成前一直无法起播。
+        onSelected(resolve(startIndex))
+
+        launch {
+            // long: 前置 P 从近到远解析并持续插入队首，最终顺序仍还原为详情接口的原始 pages 顺序。
+            for (pageIndex in startIndex - 1 downTo 0) {
+                onExpansion(QueueExpansion(QueuePlacement.PREPEND, resolve(pageIndex)))
+            }
+        }
+        launch {
+            // long: 后置 P 按原顺序追加；与前置链路最多形成两路并发，避免 100P 同时请求触发接口限流。
+            for (pageIndex in startIndex + 1 until pageCount) {
+                onExpansion(QueueExpansion(QueuePlacement.APPEND, resolve(pageIndex)))
+            }
+        }
+    }
+}

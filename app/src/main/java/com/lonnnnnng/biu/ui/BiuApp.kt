@@ -165,6 +165,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         while (true) {
             controller?.let { activeController ->
                 val progress = activeController.currentPlaybackProgress()
+                viewModel.updatePlaybackQueuePosition(activeController.currentMediaItem?.mediaId.orEmpty(), progress.positionMs)
                 playback = playback.copy(
                     positionMs = progress.positionMs,
                     durationMs = progress.durationMs,
@@ -176,18 +177,55 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         }
     }
 
-    LaunchedEffect(uiState.playbackRequest?.eventId, controller) {
-        val request = uiState.playbackRequest ?: return@LaunchedEffect
+    LaunchedEffect(controller, viewModel) {
         val activeController = controller ?: return@LaunchedEffect
-        // long: 多 P 请求一次写入完整 Media3 队列，startIndex 决定用户选择的起播分 P，前后键即可沿队列切换。
-        activeController.setMediaItems(
-            request.tracks.map(Track::toMediaItem),
-            request.startIndex,
-            request.startPositionMs,
-        )
-        activeController.prepare()
-        activeController.play()
-        viewModel.consumePlaybackRequest(request.eventId)
+        var appliedQueueId: Long? = null
+        var restoredQueueId: Long? = null
+        viewModel.currentPlaybackQueue()?.let { snapshot ->
+            if (activeController.matchesPlaybackQueue(snapshot)) {
+                appliedQueueId = snapshot.queueId
+            } else {
+                activeController.restorePlaybackQueue(snapshot)
+                appliedQueueId = snapshot.queueId
+                restoredQueueId = snapshot.queueId
+            }
+        }
+        viewModel.playbackCommands.collect { command ->
+            when (command) {
+                is PlaybackCommand.Replace -> {
+                    if (restoredQueueId == command.queueId) {
+                        restoredQueueId = null
+                        return@collect
+                    }
+                    activeController.restorePlaybackQueue(
+                        PlaybackQueueSnapshot(
+                            queueId = command.queueId,
+                            items = command.tracks,
+                            startIndex = command.startIndex,
+                            startPositionMs = command.startPositionMs,
+                        ),
+                    )
+                    appliedQueueId = command.queueId
+                }
+                is PlaybackCommand.Expand -> {
+                    if (!viewModel.isActivePlaybackQueue(command.queueId)) {
+                        return@collect
+                    }
+                    if (appliedQueueId != command.queueId || activeController.mediaItemCount == 0) {
+                        val snapshot = viewModel.currentPlaybackQueue(command.queueId) ?: return@collect
+                        activeController.restorePlaybackQueue(snapshot)
+                        appliedQueueId = command.queueId
+                        return@collect
+                    }
+                    if (activeController.containsMediaId(command.track.id)) return@collect
+                    // long: 前置 P 插入队首、后置 P 追加队尾，不替换当前媒体项，因此后台补齐不会打断已开始的播放。
+                    when (command.placement) {
+                        QueuePlacement.PREPEND -> activeController.addMediaItem(0, command.track.toMediaItem())
+                        QueuePlacement.APPEND -> activeController.addMediaItem(command.track.toMediaItem())
+                    }
+                }
+            }
+        }
     }
 
     LaunchedEffect(uiState.message) {
@@ -1055,5 +1093,22 @@ private fun MediaController.currentPlaybackProgress(): PlaybackProgress = Playba
     bufferedPositionMs = bufferedPosition,
     isSeekable = isCurrentMediaItemSeekable,
 )
+
+private fun MediaController.restorePlaybackQueue(snapshot: PlaybackQueueSnapshot<Track>) {
+    // long: 控制器重连且服务队列为空时按 ViewModel 快照恢复，保证大型分 P 后台补齐不会因连接切换而丢失。
+    setMediaItems(snapshot.items.map(Track::toMediaItem), snapshot.startIndex, snapshot.startPositionMs)
+    prepare()
+    play()
+}
+
+private fun MediaController.containsMediaId(mediaId: String): Boolean {
+    if (mediaId.isBlank()) return false
+    return (0 until mediaItemCount).any { getMediaItemAt(it).mediaId == mediaId }
+}
+
+private fun MediaController.matchesPlaybackQueue(snapshot: PlaybackQueueSnapshot<Track>): Boolean {
+    if (mediaItemCount != snapshot.items.size) return false
+    return snapshot.items.indices.all { index -> getMediaItemAt(index).mediaId == snapshot.items[index].id }
+}
 
 private const val PLAYBACK_PROGRESS_TICK_MS = 500L

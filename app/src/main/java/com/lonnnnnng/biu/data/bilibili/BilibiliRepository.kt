@@ -178,7 +178,7 @@ class BilibiliRepository(
         }
     }
 
-    private suspend fun resolveTrack(
+    internal suspend fun resolveTrack(
         video: BilibiliVideo,
         detail: BilibiliVideoDetail,
         pageIndex: Int,
