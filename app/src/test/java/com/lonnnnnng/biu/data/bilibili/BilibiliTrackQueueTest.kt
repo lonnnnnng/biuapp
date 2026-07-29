@@ -1,5 +1,7 @@
 package com.lonnnnnng.biu.data.bilibili
 
+import com.lonnnnnng.biu.core.model.BilibiliTrackSource
+import com.lonnnnnng.biu.core.model.mediaText
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -44,6 +46,32 @@ class BilibiliTrackQueueTest {
         val requests = List(4) { server.takeRequest(1, TimeUnit.SECONDS) }
         assertEquals("101", requests[2]?.requestUrl?.queryParameter("cid"))
         assertEquals("202", requests[3]?.requestUrl?.queryParameter("cid"))
+    }
+
+    @Test
+    fun `历史播放按cid恢复当前分P标题`() = runBlocking {
+        server.enqueue(jsonResponse(videoDetailPayload()))
+        server.enqueue(jsonResponse(wbiKeyPayload()))
+        server.enqueue(jsonResponse(playUrlPayload("https://cdn.example/202.m4s", 128_000)))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            nowEpochSeconds = { 1_700_000_000L },
+            apiBase = server.url("/"),
+        )
+
+        val track = repository.resolveTrack(
+            source = BilibiliTrackSource(bvid = "BVQUEUE", cid = 202L),
+            title = "历史主标题",
+            artist = "历史作者",
+            artworkUrl = "https://example.com/history.jpg",
+        )
+
+        assertEquals("长视频 · 第二首", track.title)
+        assertEquals("P2 · 第二首", track.pageTitle)
+        assertEquals("第二首", track.mediaText().title)
+        val requests = List(3) { server.takeRequest(1, TimeUnit.SECONDS) }
+        assertEquals("/x/web-interface/view", requests[0]?.requestUrl?.encodedPath)
+        assertEquals("202", requests[2]?.requestUrl?.queryParameter("cid"))
     }
 
     private fun video() = BilibiliVideo(

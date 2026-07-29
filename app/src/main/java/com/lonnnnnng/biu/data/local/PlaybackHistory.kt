@@ -102,7 +102,10 @@ class PlaybackHistoryRepository(
                 mediaId = mediaId,
                 bvid = source.bvid,
                 cid = source.cid,
-                title = mediaItem.mediaMetadata.title?.toString().orEmpty().ifBlank { source.bvid },
+                // long: 多 P 的媒体 title 会随分 P 切换，历史继续保存 albumTitle 中的视频总标题，避免恢复播放后资源名称退化为单个分 P 名称。
+                title = mediaItem.mediaMetadata.albumTitle?.toString().orEmpty()
+                    .ifBlank { mediaItem.mediaMetadata.title?.toString().orEmpty() }
+                    .ifBlank { source.bvid },
                 artist = mediaItem.mediaMetadata.artist?.toString().orEmpty(),
                 artworkUrl = mediaItem.mediaMetadata.artworkUri?.toString(),
                 qualityPreference = source.qualityPreference.name,

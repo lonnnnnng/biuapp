@@ -28,13 +28,15 @@ data class BilibiliTrackSource(
 )
 
 fun Track.toMediaItem(): MediaItem {
+    val mediaText = mediaText()
     return MediaItem.Builder()
         .setMediaId(id)
         .setUri(streamUrl.toUri())
         .setMediaMetadata(
             MediaMetadata.Builder()
-                .setTitle(title)
-                .setSubtitle(pageTitle)
+                .setTitle(mediaText.title)
+                .setAlbumTitle(mediaText.albumTitle)
+                .setSubtitle(mediaText.subtitle)
                 .setArtist(artist)
                 .setArtworkUri(artworkUrl?.toUri())
                 .setDescription(qualityLabel)
@@ -43,6 +45,36 @@ fun Track.toMediaItem(): MediaItem {
                 .build(),
         )
         .build()
+}
+
+internal data class TrackMediaText(
+    val title: String,
+    val albumTitle: String?,
+    val subtitle: String?,
+)
+
+internal fun Track.mediaText(): TrackMediaText {
+    val pageDisplayTitle = pageTitle
+        ?.substringAfter(PAGE_TITLE_SEPARATOR, missingDelimiterValue = pageTitle)
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+    val albumTitle = pageDisplayTitle?.let { pageName ->
+        val exactPageSuffix = "$PAGE_TITLE_SEPARATOR$pageName"
+        val titleWithoutPage = if (title.endsWith(exactPageSuffix)) {
+            title.removeSuffix(exactPageSuffix)
+        } else {
+            // long: B 站可能只返回 P 序号而没有分 P 名称，此时按最后一个分隔符去掉仓库生成的“第 N P”兜底名称。
+            title.substringBeforeLast(PAGE_TITLE_SEPARATOR, missingDelimiterValue = title)
+        }
+        titleWithoutPage.trim().ifBlank { title }
+    }
+
+    // long: 锁屏媒体卡片把 title 当作主标题；多 P 必须把当前分 P 名称放这里，同时用 albumTitle 保留视频总标题供 App 和历史继续展示。
+    return TrackMediaText(
+        title = pageDisplayTitle ?: title,
+        albumTitle = albumTitle,
+        subtitle = pageTitle,
+    )
 }
 
 fun MediaItem.bilibiliSource(): BilibiliTrackSource? {
@@ -66,3 +98,4 @@ private fun BilibiliTrackSource.toExtras(): Bundle {
 private const val EXTRA_BVID = "biu.bilibili.bvid"
 private const val EXTRA_CID = "biu.bilibili.cid"
 private const val EXTRA_QUALITY_PREFERENCE = "biu.bilibili.quality_preference"
+private const val PAGE_TITLE_SEPARATOR = " · "

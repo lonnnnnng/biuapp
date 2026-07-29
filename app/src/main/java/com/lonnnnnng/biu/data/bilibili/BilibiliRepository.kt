@@ -264,15 +264,23 @@ class BilibiliRepository(
         artist: String,
         artworkUrl: String?,
     ): Track {
-        val stream = resolveAudioStream(source.bvid, source.cid, source.qualityPreference)
-        return Track(
-            id = "${source.bvid}:${source.cid}",
-            title = title,
-            artist = artist,
-            streamUrl = stream.url,
-            artworkUrl = artworkUrl,
-            qualityLabel = stream.qualityLabel,
-            source = source,
+        // long: 本地历史只持久化稳定的 bvid/cid；恢复时重新读取视频详情，才能按 cid 找回当前分 P 名称并同步给锁屏媒体卡片。
+        val detail = videoDetail(source.bvid)
+        val pageIndex = detail.pages.indexOfFirst { page -> page.cid == source.cid }
+        if (pageIndex < 0) throw BilibiliApiException(-404, "历史对应的分 P 已不存在")
+        return resolveTrack(
+            video = BilibiliVideo(
+                bvid = source.bvid,
+                aid = null,
+                title = title,
+                author = artist,
+                coverUrl = artworkUrl.orEmpty(),
+                durationSeconds = null,
+                playCount = null,
+            ),
+            detail = detail,
+            pageIndex = pageIndex,
+            qualityPreference = source.qualityPreference,
         )
     }
 

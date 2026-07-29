@@ -191,7 +191,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 val progress = activeController.currentPlaybackProgress()
                 PlaybackSnapshot(
                     mediaId = activeController.currentMediaItem?.mediaId.orEmpty(),
-                    title = activeController.mediaMetadata.title?.toString() ?: "还没有播放",
+                    // long: 多 P 的媒体 title 专供系统锁屏显示当前分 P，App 内仍以 albumTitle 展示视频总标题。
+                    title = activeController.mediaMetadata.albumTitle?.toString()
+                        ?: activeController.mediaMetadata.title?.toString()
+                        ?: "还没有播放",
                     artist = activeController.mediaMetadata.artist?.toString() ?: "选择内容开始播放",
                     quality = activeController.mediaMetadata.description?.toString().orEmpty(),
                     pageTitle = activeController.mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank),
@@ -209,7 +212,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         PlaybackQueueItem(
                             index = index,
                             mediaId = item.mediaId,
-                            title = item.mediaMetadata.title?.toString().orEmpty().ifBlank { "未知内容" },
+                            title = item.mediaMetadata.albumTitle?.toString().orEmpty()
+                                .ifBlank { item.mediaMetadata.title?.toString().orEmpty() }
+                                .ifBlank { "未知内容" },
                             artist = item.mediaMetadata.artist?.toString().orEmpty(),
                             pageTitle = item.mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank),
                             artworkUrl = item.mediaMetadata.artworkUri?.toString(),
