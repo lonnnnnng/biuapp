@@ -1,8 +1,13 @@
 package com.lonnnnnng.biu.ui
 
 import android.content.ComponentName
+import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,6 +33,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -53,6 +59,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -95,6 +102,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -138,11 +147,14 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
+import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.playback.PlaybackService
+import com.lonnnnnng.biu.update.AppUpdateInstaller
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private data class PlaybackQueueItem(
     val index: Int,
@@ -175,6 +187,9 @@ private data class PlaybackSnapshot(
 @Composable
 fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val updateInstaller = remember(context.applicationContext) { AppUpdateInstaller(context.applicationContext) }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val controller = rememberMediaController()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -184,6 +199,72 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showCreatorConfig by remember { mutableStateOf(false) }
     var showNowPlaying by remember { mutableStateOf(false) }
     var playbackErrorEventId by remember { mutableLongStateOf(0L) }
+    var activeUpdateDownloadId by rememberSaveable {
+        mutableLongStateOf(updateInstaller.pendingDownloadId())
+    }
+    var pendingInstallDownloadId by rememberSaveable { mutableLongStateOf(-1L) }
+
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val downloadId = pendingInstallDownloadId
+        if (downloadId < 0L) return@rememberLauncherForActivityResult
+        when (val result = updateInstaller.installDownloaded(downloadId)) {
+            AppUpdateInstaller.InstallResult.Started -> pendingInstallDownloadId = -1L
+            AppUpdateInstaller.InstallResult.PermissionRequired -> coroutineScope.launch {
+                snackbarHostState.showSnackbar("请允许 BiuApp 安装未知来源应用后重试")
+            }
+            is AppUpdateInstaller.InstallResult.Failed -> coroutineScope.launch {
+                snackbarHostState.showSnackbar(result.message)
+            }
+        }
+    }
+    val installDownloadedUpdate: (Long) -> Unit = { downloadId ->
+        when (val result = updateInstaller.installDownloaded(downloadId)) {
+            AppUpdateInstaller.InstallResult.Started -> pendingInstallDownloadId = -1L
+            AppUpdateInstaller.InstallResult.PermissionRequired -> {
+                pendingInstallDownloadId = downloadId
+                // long: 未获安装权限时只打开当前 App 的系统授权页，返回后继续同一个下载任务的安装。
+                installPermissionLauncher.launch(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${context.packageName}"),
+                    ),
+                )
+            }
+            is AppUpdateInstaller.InstallResult.Failed -> coroutineScope.launch {
+                snackbarHostState.showSnackbar(result.message)
+            }
+        }
+    }
+
+    LaunchedEffect(activeUpdateDownloadId) {
+        val downloadId = activeUpdateDownloadId
+        if (downloadId < 0L) return@LaunchedEffect
+        // long: 轮询系统下载状态可避免开放广播被伪造；任务 ID 已持久化，进程重启后也能继续进入安装流程。
+        while (true) {
+            when (val downloadState = updateInstaller.downloadState(downloadId)) {
+                AppUpdateInstaller.DownloadState.Pending -> delay(1_000)
+                AppUpdateInstaller.DownloadState.Successful -> {
+                    activeUpdateDownloadId = -1L
+                    installDownloadedUpdate(downloadId)
+                    break
+                }
+                AppUpdateInstaller.DownloadState.Missing -> {
+                    updateInstaller.clearPendingDownload(downloadId)
+                    activeUpdateDownloadId = -1L
+                    snackbarHostState.showSnackbar("找不到更新包下载任务，请重新下载")
+                    break
+                }
+                is AppUpdateInstaller.DownloadState.Failed -> {
+                    updateInstaller.clearPendingDownload(downloadId)
+                    activeUpdateDownloadId = -1L
+                    snackbarHostState.showSnackbar(downloadState.message)
+                    break
+                }
+            }
+        }
+    }
 
     DisposableEffect(controller) {
         fun publishSnapshot() {
@@ -323,6 +404,28 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         if (showLogin && uiState.account.isLoggedIn) showLogin = false
     }
 
+    uiState.availableUpdate?.let { update ->
+        AppUpdateDialog(
+            update = update,
+            onDismiss = viewModel::dismissUpdate,
+            onDownload = {
+                runCatching { updateInstaller.enqueue(update) }
+                    .onSuccess { downloadId ->
+                        activeUpdateDownloadId = downloadId
+                        viewModel.dismissUpdate()
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("更新包开始下载，完成后将打开系统安装界面")
+                        }
+                    }
+                    .onFailure { error ->
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar(error.message ?: "更新包下载启动失败")
+                        }
+                    }
+            },
+        )
+    }
+
     if (showLogin) {
         LoginWebViewDialog(
             onDismiss = {
@@ -447,6 +550,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     state = uiState,
                     onLogin = { showLogin = true },
                     onRefresh = viewModel::refreshAccount,
+                    onCheckUpdate = viewModel::checkForUpdate,
                     onLogout = viewModel::logout,
                     onLoadLibrary = viewModel::loadLibrary,
                     onOpenFavoriteFolder = viewModel::openFavoriteFolder,
@@ -488,6 +592,36 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             }
         }
     }
+}
+
+@Composable
+private fun AppUpdateDialog(
+    update: AppUpdate,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.SystemUpdate, contentDescription = null) },
+        title = { Text("发现新版本 ${update.version}") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("更新内容", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    update.releaseNotes,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { Button(onClick = onDownload) { Text("立即更新") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("稍后") } },
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -833,6 +967,7 @@ private fun AccountScreen(
     state: BiuUiState,
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
+    onCheckUpdate: () -> Unit,
     onLogout: () -> Unit,
     onLoadLibrary: (AccountLibrarySection) -> Unit,
     onOpenFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
@@ -850,6 +985,7 @@ private fun AccountScreen(
             state = state,
             onLogin = onLogin,
             onRefresh = onRefresh,
+            onCheckUpdate = onCheckUpdate,
             onLogout = onLogout,
         )
         Row(
@@ -926,6 +1062,7 @@ private fun AccountHeader(
     state: BiuUiState,
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
+    onCheckUpdate: () -> Unit,
     onLogout: () -> Unit,
 ) {
     Surface(
@@ -976,6 +1113,16 @@ private fun AccountHeader(
             }
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Rounded.Refresh, contentDescription = "刷新账号状态")
+            }
+            IconButton(onClick = onCheckUpdate, enabled = !state.isUpdateChecking) {
+                if (state.isUpdateChecking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Icon(Icons.Rounded.SystemUpdate, contentDescription = "检查更新")
+                }
             }
             if (state.account.isLoggedIn) {
                 TextButton(onClick = onLogout) { Text("退出") }
