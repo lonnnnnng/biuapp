@@ -11,16 +11,16 @@
 | 播放队列 | Media3 playlist + Room 镜像 | M1/M3 | 本地播放历史完成，持久队列待开发 |
 | 后台播放 | MediaSessionService | M1 | 已完成 |
 | 快捷键、任务栏 | 通知栏、锁屏、耳机、蓝牙 MediaSession | M1 | 已完成 |
-| 全屏播放器 | Compose Now Playing 页面 | M3 | 待开发 |
+| 全屏播放器 | Compose Now Playing 页面 | M3 | 已完成 |
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |
 | 歌词 | LRCLIB/网易搜索 + 本地缓存 | M3 | 待开发 |
-| 本地音乐 | MediaStore 查询 + SAF 目录授权 | M4 | 待开发 |
+| 本地音乐 | MediaStore 查询 + SAF 目录授权 | M4 | MediaStore 扫描、权限和播放完成；SAF 待开发 |
 | 音频下载 | 前台下载服务 + MediaStore.Audio | M4 | 待开发 |
 | 视频下载 | 分轨下载 + Media3 Muxer/Transformer | M5 | 待开发 |
 | 批量下载 | Room 队列 + 并发限制 + 网络约束 | M5 | 待开发 |
 | 系统托盘 | Android 无对应能力 | - | 不迁移 |
 | 桌面窗口控制 | Android Activity/系统返回栈 | - | 平台替代 |
-| Electron 自动更新 | 应用商店或受控 APK 更新 | M6 | 平台替代 |
+| Electron 自动更新 | GitHub Release + DownloadManager + 系统安装器 | M6 | 已完成首版 |
 
 ## 不能机械复制的实现
 

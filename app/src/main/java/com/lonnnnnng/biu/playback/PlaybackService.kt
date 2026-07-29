@@ -8,10 +8,11 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.lonnnnnng.biu.appContainer
@@ -123,7 +124,11 @@ class PlaybackService : MediaSessionService() {
     @UnstableApi
     override fun onCreate() {
         super.onCreate()
-        val dataSourceFactory = OkHttpDataSource.Factory(appContainer.bilibiliHttpClient)
+        // long: 组合数据源同时支持 Bilibili HTTPS 和 MediaStore content Uri，本地音乐无需复制到应用私有目录。
+        val dataSourceFactory = DefaultDataSource.Factory(
+            this,
+            OkHttpDataSource.Factory(appContainer.bilibiliHttpClient),
+        )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
         val exoPlayer = ExoPlayer.Builder(this)
             .setMediaSourceFactory(mediaSourceFactory)

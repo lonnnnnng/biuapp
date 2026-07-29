@@ -52,6 +52,7 @@ enum class AccountLibrarySection(val label: String) {
     FAVORITES("收藏夹"),
     ONLINE_HISTORY("在线历史"),
     LOCAL_HISTORY("本地历史"),
+    LOCAL_MUSIC("本地音乐"),
 }
 
 data class BilibiliFavoriteFolder(

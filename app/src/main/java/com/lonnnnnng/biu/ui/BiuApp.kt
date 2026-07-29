@@ -2,6 +2,7 @@ package com.lonnnnnng.biu.ui
 
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
 import android.provider.Settings
@@ -53,6 +54,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -130,6 +132,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
@@ -147,6 +150,8 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
+import com.lonnnnnng.biu.data.local.LocalAudio
+import com.lonnnnnng.biu.data.local.LocalMediaPermissionPolicy
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.playback.PlaybackService
 import com.lonnnnnng.biu.update.AppUpdateInstaller
@@ -190,6 +195,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val updateInstaller = remember(context.applicationContext) { AppUpdateInstaller(context.applicationContext) }
+    val localAudioPermission = LocalMediaPermissionPolicy.permissionFor()
+    var localAudioPermissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, localAudioPermission) == PackageManager.PERMISSION_GRANTED,
+        )
+    }
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val controller = rememberMediaController()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -218,6 +229,30 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 snackbarHostState.showSnackbar(result.message)
             }
         }
+    }
+    val localAudioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        localAudioPermissionGranted = granted
+        if (granted) {
+            viewModel.loadLocalAudio()
+        } else {
+            viewModel.localAudioPermissionDenied()
+        }
+    }
+    LifecycleResumeEffect(localAudioPermission) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            localAudioPermission,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted != localAudioPermissionGranted) {
+            localAudioPermissionGranted = granted
+            if (granted && viewModel.state.value.librarySection == AccountLibrarySection.LOCAL_MUSIC) {
+                // long: 用户可能在系统设置中修改权限；返回前台后立即重新扫描，避免页面继续停留在过期的未授权状态。
+                viewModel.loadLocalAudio()
+            }
+        }
+        onPauseOrDispose { }
     }
     val installDownloadedUpdate: (Long) -> Unit = { downloadId ->
         when (val result = updateInstaller.installDownloaded(downloadId)) {
@@ -548,15 +583,28 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 )
                 MainSection.ACCOUNT -> AccountScreen(
                     state = uiState,
+                    localAudioPermissionGranted = localAudioPermissionGranted,
                     onLogin = { showLogin = true },
                     onRefresh = viewModel::refreshAccount,
                     onCheckUpdate = viewModel::checkForUpdate,
                     onLogout = viewModel::logout,
-                    onLoadLibrary = viewModel::loadLibrary,
+                    onLoadLibrary = { section ->
+                        if (section == AccountLibrarySection.LOCAL_MUSIC && !localAudioPermissionGranted) {
+                            viewModel.showLocalAudioPermission()
+                            localAudioPermissionLauncher.launch(localAudioPermission)
+                        } else {
+                            viewModel.loadLibrary(section)
+                        }
+                    },
+                    onRequestLocalAudioPermission = {
+                        viewModel.showLocalAudioPermission()
+                        localAudioPermissionLauncher.launch(localAudioPermission)
+                    },
                     onOpenFavoriteFolder = viewModel::openFavoriteFolder,
                     onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
                     onPlay = viewModel::play,
                     onPlayHistory = viewModel::play,
+                    onPlayLocalAudio = viewModel::play,
                     onClearLocalHistory = viewModel::clearLocalHistory,
                     modifier = pageModifier,
                 )
@@ -965,15 +1013,18 @@ private fun FeedSelector(
 @Composable
 private fun AccountScreen(
     state: BiuUiState,
+    localAudioPermissionGranted: Boolean,
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
     onCheckUpdate: () -> Unit,
     onLogout: () -> Unit,
     onLoadLibrary: (AccountLibrarySection) -> Unit,
+    onRequestLocalAudioPermission: () -> Unit,
     onOpenFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
     onCloseFavoriteFolder: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onPlayHistory: (PlaybackHistoryEntity) -> Unit,
+    onPlayLocalAudio: (LocalAudio) -> Unit,
     onClearLocalHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -992,8 +1043,8 @@ private fun AccountScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             AccountLibrarySection.entries.forEach { section ->
                 FilterChip(
@@ -1006,6 +1057,7 @@ private fun AccountScreen(
                                 AccountLibrarySection.FAVORITES -> Icons.Rounded.Favorite
                                 AccountLibrarySection.ONLINE_HISTORY -> Icons.Rounded.History
                                 AccountLibrarySection.LOCAL_HISTORY -> Icons.Rounded.Album
+                                AccountLibrarySection.LOCAL_MUSIC -> Icons.Rounded.MusicNote
                             },
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
@@ -1016,7 +1068,10 @@ private fun AccountScreen(
         }
 
         if (state.isLibraryLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        val onlineSection = state.librarySection != AccountLibrarySection.LOCAL_HISTORY
+        val onlineSection = state.librarySection in setOf(
+            AccountLibrarySection.FAVORITES,
+            AccountLibrarySection.ONLINE_HISTORY,
+        )
         if (onlineSection && !state.account.isLoggedIn) {
             BiuEmptyState(
                 icon = Icons.Rounded.AccountCircle,
@@ -1052,6 +1107,126 @@ private fun AccountScreen(
                     onClear = onClearLocalHistory,
                     modifier = Modifier.weight(1f),
                 )
+                AccountLibrarySection.LOCAL_MUSIC -> LocalAudioList(
+                    audio = state.localAudio,
+                    permissionGranted = localAudioPermissionGranted,
+                    loading = state.isLocalAudioLoading,
+                    onRequestPermission = onRequestLocalAudioPermission,
+                    onRefresh = { onLoadLibrary(AccountLibrarySection.LOCAL_MUSIC) },
+                    onPlay = onPlayLocalAudio,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalAudioList(
+    audio: List<LocalAudio>,
+    permissionGranted: Boolean,
+    loading: Boolean,
+    onRequestPermission: () -> Unit,
+    onRefresh: () -> Unit,
+    onPlay: (LocalAudio) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (permissionGranted) "本机音频 · ${audio.size}" else "本机音频",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            IconButton(onClick = onRefresh, enabled = permissionGranted && !loading) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "重新扫描本地音乐")
+            }
+        }
+        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        when {
+            !permissionGranted -> BiuEmptyState(
+                icon = Icons.Rounded.MusicNote,
+                title = "允许读取本机音乐",
+                message = "Biu 只读取系统媒体库中的音频，不会修改或上传本地文件。",
+                actionLabel = "授权读取音频",
+                onAction = onRequestPermission,
+                modifier = Modifier.weight(1f),
+            )
+            !loading && audio.isEmpty() -> BiuEmptyState(
+                icon = Icons.Rounded.MusicNote,
+                title = "没有发现本地音乐",
+                message = "把音频保存到系统 Music 目录后点击右上角重新扫描。",
+                modifier = Modifier.weight(1f),
+            )
+            else -> LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
+                items(audio, key = LocalAudio::mediaStoreId) { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPlay(item) }
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Rounded.MusicNote,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            item.artworkUri?.let { artworkUri ->
+                                AsyncImage(
+                                    model = artworkUri,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(1.dp),
+                        ) {
+                            Text(
+                                item.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                listOf(formatDurationMs(item.durationMs), item.album)
+                                    .filter(String::isNotBlank)
+                                    .joinToString(" · "),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                item.artist,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    MediaDivider(start = 84.dp)
+                }
             }
         }
     }

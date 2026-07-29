@@ -17,6 +17,8 @@ import com.lonnnnnng.biu.data.bilibili.CreatorFeedPolicy
 import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
+import com.lonnnnnng.biu.data.local.LocalAudio
+import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.data.update.AppVersionPolicy
 import java.util.concurrent.atomic.AtomicLong
@@ -82,6 +84,7 @@ data class BiuUiState(
     val selectedFavoriteFolder: BilibiliFavoriteFolder? = null,
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
+    val localAudio: List<LocalAudio> = emptyList(),
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     val isFeedLoading: Boolean = true,
@@ -91,6 +94,7 @@ data class BiuUiState(
     val isAccountLoading: Boolean = true,
     val isLibraryLoading: Boolean = false,
     val isPageQueueLoading: Boolean = false,
+    val isLocalAudioLoading: Boolean = false,
     val availableUpdate: AppUpdate? = null,
     val isUpdateChecking: Boolean = false,
     val resolvingBvid: String? = null,
@@ -396,13 +400,28 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update {
             it.copy(
                 librarySection = section,
-                isLibraryLoading = section != AccountLibrarySection.LOCAL_HISTORY,
+                isLibraryLoading = section !in setOf(
+                    AccountLibrarySection.LOCAL_HISTORY,
+                    AccountLibrarySection.LOCAL_MUSIC,
+                ),
                 selectedFavoriteFolder = if (section == AccountLibrarySection.FAVORITES) it.selectedFavoriteFolder else null,
-                libraryVideos = if (section == AccountLibrarySection.LOCAL_HISTORY) it.libraryVideos else emptyList(),
+                libraryVideos = if (section in setOf(
+                        AccountLibrarySection.LOCAL_HISTORY,
+                        AccountLibrarySection.LOCAL_MUSIC,
+                    )
+                ) {
+                    it.libraryVideos
+                } else {
+                    emptyList()
+                },
                 message = null,
             )
         }
         if (section == AccountLibrarySection.LOCAL_HISTORY) return
+        if (section == AccountLibrarySection.LOCAL_MUSIC) {
+            loadLocalAudio()
+            return
+        }
         val account = state.value.account
         if (!account.isLoggedIn) {
             mutableState.update { it.copy(isLibraryLoading = false) }
@@ -424,6 +443,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     AccountLibrarySection.ONLINE_HISTORY -> publishLibraryVideos(repository.onlineHistory())
                     AccountLibrarySection.LOCAL_HISTORY -> Unit
+                    AccountLibrarySection.LOCAL_MUSIC -> Unit
                 }
             }.onFailure { error ->
                 mutableState.update {
@@ -431,6 +451,63 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun showLocalAudioPermission() {
+        mutableState.update {
+            it.copy(
+                librarySection = AccountLibrarySection.LOCAL_MUSIC,
+                isLibraryLoading = false,
+                isLocalAudioLoading = false,
+                message = null,
+            )
+        }
+    }
+
+    fun localAudioPermissionDenied() {
+        mutableState.update {
+            it.copy(
+                librarySection = AccountLibrarySection.LOCAL_MUSIC,
+                isLocalAudioLoading = false,
+                message = "需要音频权限才能读取本机音乐",
+            )
+        }
+    }
+
+    fun loadLocalAudio() {
+        mutableState.update {
+            it.copy(
+                librarySection = AccountLibrarySection.LOCAL_MUSIC,
+                isLocalAudioLoading = true,
+                message = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching { container.localAudioRepository.audioTracks() }
+                .onSuccess { audio ->
+                    mutableState.update { it.copy(localAudio = audio, isLocalAudioLoading = false) }
+                }
+                .onFailure { error ->
+                    mutableState.update {
+                        it.copy(
+                            isLocalAudioLoading = false,
+                            message = error.userMessage("本地音乐扫描失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun play(audio: LocalAudio) {
+        val audioItems = state.value.localAudio
+        val startIndex = audioItems.indexOfFirst { it.mediaStoreId == audio.mediaStoreId }
+        if (startIndex < 0) return
+        cancelPageQueueExpansion()
+        // long: 点击任意本地歌曲时把当前扫描结果整体作为队列，系统上一首/下一首可直接浏览本机音乐。
+        publishPlaybackRequest(
+            tracks = audioItems.map(LocalAudio::toTrack),
+            startIndex = startIndex,
+        )
     }
 
     fun openFavoriteFolder(folder: BilibiliFavoriteFolder) {
