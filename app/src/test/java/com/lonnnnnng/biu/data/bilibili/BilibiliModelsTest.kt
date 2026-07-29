@@ -1,0 +1,86 @@
+package com.lonnnnnng.biu.data.bilibili
+
+import com.lonnnnnng.biu.core.model.AudioQualityPreference
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class BilibiliModelsTest {
+    @Test
+    fun `搜索标题去掉高亮标签并解码常见实体`() {
+        assertEquals(
+            "周杰伦 & 五月天",
+            BilibiliText.plainTitle("<em class=\"keyword\">周杰伦</em> &amp; 五月天"),
+        )
+    }
+
+    @Test
+    fun `封面地址统一为 HTTPS`() {
+        assertEquals("https://i0.hdslb.com/a.jpg", BilibiliText.httpsUrl("//i0.hdslb.com/a.jpg"))
+        assertEquals("https://i0.hdslb.com/a.jpg", BilibiliText.httpsUrl("http://i0.hdslb.com/a.jpg"))
+    }
+
+    @Test
+    fun `封面字段变体取第一个非空地址`() {
+        assertEquals(
+            "https://i0.hdslb.com/fallback.jpg",
+            BilibiliText.firstHttpsUrl("", null, "//i0.hdslb.com/fallback.jpg"),
+        )
+    }
+
+    @Test
+    fun `WBI 图片地址提取实时 key`() {
+        val keys = WbiKeyParser.fromImageUrls(
+            "https://i0.hdslb.com/bfs/wbi/abc123.png",
+            "https://i0.hdslb.com/bfs/wbi/def456.png",
+        )
+
+        assertEquals(WbiKeys("abc123", "def456"), keys)
+    }
+
+    @Test
+    fun `DASH 音频优先无损其次杜比最后普通最高码率`() {
+        val standard = listOf(stream("normal-low", 64_000), stream("normal-high", 192_000))
+        val dolby = listOf(stream("dolby", 256_000))
+        val flac = stream("flac", 900_000)
+
+        assertEquals("flac", DashAudioSelector.select(AudioQualityPreference.HIGHEST, flac, dolby, standard)?.url)
+        assertEquals("dolby", DashAudioSelector.select(AudioQualityPreference.HIGHEST, null, dolby, standard)?.url)
+        assertEquals("normal-high", DashAudioSelector.select(AudioQualityPreference.HIGHEST, null, emptyList(), standard)?.url)
+    }
+
+    @Test
+    fun `省流量音质选择普通流最低码率`() {
+        val standard = listOf(stream("normal-low", 64_000), stream("normal-high", 192_000))
+
+        assertEquals(
+            "normal-low",
+            DashAudioSelector.select(AudioQualityPreference.DATA_SAVER, stream("flac", 900_000), emptyList(), standard)?.url,
+        )
+    }
+
+    @Test
+    fun `播放地址提取过期时间`() {
+        assertEquals(1_702_204_169L, StreamUrlExpiry.epochSeconds("https://example.com/audio?deadline=1702204169&foo=1"))
+        assertNull(StreamUrlExpiry.epochSeconds("https://example.com/audio"))
+    }
+
+    @Test
+    fun `主播放地址失败后切换备用 CDN`() {
+        val stream = DashAudioStream(
+            url = "https://primary.example/audio",
+            bandwidth = 192_000,
+            codecs = "mp4a.40.2",
+            qualityLabel = "192 kbps",
+            expiresAtEpochSeconds = null,
+            backupUrls = listOf("https://backup.example/audio"),
+        )
+
+        assertEquals("https://backup.example/audio", stream.replacementUrl(stream.url))
+        assertEquals(stream.url, stream.replacementUrl("https://old.example/audio"))
+    }
+
+    private fun stream(url: String, bandwidth: Long): DashAudioStream {
+        return DashAudioStream(url, bandwidth, "mp4a.40.2", "test", null)
+    }
+}

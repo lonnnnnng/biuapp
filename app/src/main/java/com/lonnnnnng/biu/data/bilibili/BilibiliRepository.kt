@@ -1,0 +1,357 @@
+package com.lonnnnnng.biu.data.bilibili
+
+import com.lonnnnnng.biu.core.model.BilibiliTrackSource
+import com.lonnnnnng.biu.core.model.AudioQualityPreference
+import com.lonnnnnng.biu.core.model.Track
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+
+class BilibiliRepository(
+    private val client: OkHttpClient,
+    private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000L },
+) {
+    private val wbiKeyMutex = Mutex()
+    private var cachedWbiKeys: CachedWbiKeys? = null
+
+    suspend fun recommendations(feed: RecommendFeed, page: Int = 1): List<BilibiliVideo> {
+        return when (feed) {
+            RecommendFeed.MUSIC -> regionRecommendations(page)
+            RecommendFeed.POPULAR -> popularRecommendations(page)
+        }
+    }
+
+    suspend fun searchVideos(keyword: String, page: Int = 1): List<BilibiliVideo> {
+        val root = request(
+            path = "/x/web-interface/wbi/search/type",
+            parameters = mapOf(
+                "search_type" to "video",
+                "keyword" to keyword,
+                "page" to page,
+                "page_size" to 24,
+                "order" to "totalrank",
+                "tids" to 3,
+            ),
+            useWbi = true,
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("result")
+            .toObjects()
+            .mapNotNull(::parseSearchVideo)
+    }
+
+    suspend fun account(): BilibiliAccount {
+        val root = request("/x/web-interface/nav")
+        val data = root.optJSONObject("data") ?: JSONObject()
+        return BilibiliAccount(
+            isLoggedIn = data.optBoolean("isLogin", false),
+            name = data.optString("uname"),
+            faceUrl = BilibiliText.httpsUrl(data.optString("face")),
+        )
+    }
+
+    suspend fun videoDetail(bvid: String): BilibiliVideoDetail {
+        val root = request(
+            path = "/x/web-interface/view",
+            parameters = mapOf("bvid" to bvid),
+        ).requireSuccess()
+        val data = root.getJSONObject("data")
+        val cover = BilibiliText.httpsUrl(data.optString("pic"))
+        val pages = data.optJSONArray("pages")
+            .toObjects()
+            .mapNotNull { page ->
+                val cid = page.optLong("cid", 0L)
+                if (cid == 0L) return@mapNotNull null
+                BilibiliVideoPage(
+                    cid = cid,
+                    page = page.optInt("page", 1),
+                    title = BilibiliText.plainTitle(page.optString("part")),
+                    durationSeconds = page.optInt("duration", 0),
+                    coverUrl = BilibiliText.httpsUrl(page.optString("first_frame")).ifBlank { null },
+                )
+            }
+        return BilibiliVideoDetail(
+            bvid = data.optString("bvid", bvid),
+            title = BilibiliText.plainTitle(data.optString("title")),
+            author = data.optJSONObject("owner")?.optString("name").orEmpty(),
+            coverUrl = cover,
+            pages = pages,
+        )
+    }
+
+    suspend fun resolveTrack(
+        video: BilibiliVideo,
+        pageIndex: Int = 0,
+        qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    ): Track {
+        val detail = videoDetail(video.bvid)
+        val page = detail.pages.getOrNull(pageIndex)
+            ?: throw BilibiliApiException(-404, "视频没有可播放分 P")
+        val stream = resolveAudioStream(detail.bvid, page.cid, qualityPreference)
+        val title = if (detail.pages.size > 1) {
+            "${detail.title} · ${page.title.ifBlank { "第 ${page.page} P" }}"
+        } else {
+            detail.title
+        }
+        return Track(
+            id = "${detail.bvid}:${page.cid}",
+            title = title,
+            artist = detail.author.ifBlank { video.author },
+            streamUrl = stream.url,
+            artworkUrl = page.coverUrl ?: detail.coverUrl.ifBlank { video.coverUrl },
+            qualityLabel = stream.qualityLabel,
+            source = BilibiliTrackSource(detail.bvid, page.cid, qualityPreference),
+        )
+    }
+
+    suspend fun resolveAudioStream(
+        bvid: String,
+        cid: Long,
+        qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    ): DashAudioStream {
+        val root = request(
+            path = "/x/player/wbi/playurl",
+            parameters = mapOf(
+                "bvid" to bvid,
+                "cid" to cid,
+                "fnval" to 4048,
+                "fnver" to 0,
+                "fourk" to 1,
+            ),
+            useWbi = true,
+        ).requireSuccess()
+        val dash = root.optJSONObject("data")?.optJSONObject("dash")
+            ?: throw BilibiliApiException(-404, "没有 DASH 音频")
+        val flac = dash.optJSONObject("flac")
+            ?.optJSONObject("audio")
+            ?.let { parseAudio(it, "无损") }
+        val dolby = dash.optJSONObject("dolby")
+            ?.optJSONArray("audio")
+            .toObjects()
+            .mapNotNull { parseAudio(it, "杜比") }
+        val standard = dash.optJSONArray("audio")
+            .toObjects()
+            .mapNotNull { parseAudio(it, "${it.optInt("bandwidth") / 1000} kbps") }
+        return DashAudioSelector.select(qualityPreference, flac, dolby, standard)
+            ?: throw BilibiliApiException(-404, "没有可用音频流")
+    }
+
+    private suspend fun regionRecommendations(page: Int): List<BilibiliVideo> {
+        val root = request(
+            path = "/x/web-interface/region/feed/rcmd",
+            parameters = mapOf(
+                "display_id" to page,
+                "request_cnt" to 15,
+                "from_region" to 1003,
+                "device" to "web",
+                "plat" to 30,
+                "web_location" to "333.40138",
+            ),
+            useWbi = true,
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("archives")
+            .toObjects()
+            .mapNotNull(::parseRegionVideo)
+    }
+
+    private suspend fun popularRecommendations(page: Int): List<BilibiliVideo> {
+        val root = request(
+            path = "/x/centralization/interface/music/comprehensive/web/rank",
+            parameters = mapOf(
+                "pn" to page,
+                "ps" to 20,
+                "web_location" to "333.1351",
+            ),
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parsePopularVideo)
+    }
+
+    private suspend fun request(
+        path: String,
+        parameters: Map<String, Any?> = emptyMap(),
+        useWbi: Boolean = false,
+    ): JSONObject {
+        val url = if (useWbi) {
+            val keys = currentWbiKeys()
+            val signed = WbiSigner.sign(parameters, keys.imgKey, keys.subKey, nowEpochSeconds())
+            "$API_BASE$path?${signed.encodedQuery}".toHttpUrl()
+        } else {
+            buildUrl(path, parameters)
+        }
+        return execute(url)
+    }
+
+    private suspend fun currentWbiKeys(): WbiKeys = wbiKeyMutex.withLock {
+        cachedWbiKeys
+            ?.takeIf { cached -> nowEpochSeconds() < cached.expiresAtEpochSeconds }
+            ?.keys
+            ?: fetchWbiKeys().also { keys ->
+                cachedWbiKeys = CachedWbiKeys(keys, nowEpochSeconds() + WBI_CACHE_SECONDS)
+            }
+    }
+
+    private suspend fun fetchWbiKeys(): WbiKeys {
+        val root = execute(buildUrl("/x/web-interface/nav", emptyMap()))
+        val wbi = root.optJSONObject("data")?.optJSONObject("wbi_img")
+            ?: throw BilibiliApiException(root.optInt("code", -1), "无法获取 WBI key")
+        return WbiKeyParser.fromImageUrls(
+            imgUrl = wbi.optString("img_url"),
+            subUrl = wbi.optString("sub_url"),
+        )
+    }
+
+    private suspend fun execute(url: HttpUrl): JSONObject = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url(url).get().build()
+        client.newCall(request).execute().use { response ->
+            val payload = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IOException("Bilibili HTTP ${response.code}")
+            }
+            runCatching { JSONObject(payload) }
+                .getOrElse { throw IOException("Bilibili response is not JSON", it) }
+        }
+    }
+
+    private fun buildUrl(path: String, parameters: Map<String, Any?>): HttpUrl {
+        return "$API_BASE$path".toHttpUrl().newBuilder().apply {
+            parameters.forEach { (key, value) ->
+                if (value != null) addQueryParameter(key, value.toString())
+            }
+        }.build()
+    }
+
+    private fun parseRegionVideo(item: JSONObject): BilibiliVideo? {
+        val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        return BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optJSONObject("author")?.optString("name").orEmpty(),
+            // long: 音乐区推荐会随卡片版本切换封面字段，按兼容顺序取第一个有效地址，避免列表只显示占位色块。
+            coverUrl = BilibiliText.firstHttpsUrl(
+                item.optString("cover"),
+                item.optString("cover_pic"),
+                item.optString("pic"),
+            ),
+            durationSeconds = item.optIntOrNull("duration"),
+            playCount = item.optJSONObject("stat")?.optLongOrNull("view"),
+        )
+    }
+
+    private fun parsePopularVideo(item: JSONObject): BilibiliVideo? {
+        val archive = item.optJSONObject("related_archive")
+        val bvid = archive?.optString("bvid").orEmpty()
+            .ifBlank { item.optString("bvid") }
+            .takeIf(String::isNotBlank) ?: return null
+        return BilibiliVideo(
+            bvid = bvid,
+            aid = archive?.optLongOrNull("aid") ?: item.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(archive?.optString("title").orEmpty().ifBlank { item.optString("music_title") }),
+            author = archive?.optString("username").orEmpty().ifBlank { item.optString("author") },
+            coverUrl = BilibiliText.httpsUrl(archive?.optString("cover").orEmpty().ifBlank { item.optString("cover") }),
+            durationSeconds = archive?.optIntOrNull("duration"),
+            playCount = archive?.optLongOrNull("vv_count"),
+        )
+    }
+
+    private fun parseSearchVideo(item: JSONObject): BilibiliVideo? {
+        val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        return BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optString("author"),
+            coverUrl = BilibiliText.httpsUrl(item.optString("pic")),
+            durationSeconds = parseDuration(item.optString("duration")),
+            playCount = item.optLongOrNull("play"),
+        )
+    }
+
+    private fun parseAudio(item: JSONObject, qualityLabel: String): DashAudioStream? {
+        val backupUrls = (item.optJSONArray("backupUrl").toStrings() + item.optJSONArray("backup_url").toStrings())
+            .map(BilibiliText::httpsUrl)
+            .filter(String::isNotBlank)
+            .distinct()
+        val url = BilibiliText.firstHttpsUrl(
+            item.optString("baseUrl"),
+            item.optString("base_url"),
+            backupUrls.firstOrNull(),
+        )
+        if (url.isBlank()) return null
+        return DashAudioStream(
+            url = url,
+            bandwidth = item.optLong("bandwidth", 0L),
+            codecs = item.optString("codecs"),
+            qualityLabel = qualityLabel,
+            expiresAtEpochSeconds = StreamUrlExpiry.epochSeconds(url),
+            backupUrls = backupUrls.filterNot { backupUrl -> backupUrl == url },
+        )
+    }
+
+    private fun JSONObject.requireSuccess(): JSONObject {
+        val code = optInt("code", Int.MIN_VALUE)
+        if (code != 0) throw BilibiliApiException(code, optString("message", "请求失败"))
+        return this
+    }
+
+    private data class CachedWbiKeys(
+        val keys: WbiKeys,
+        val expiresAtEpochSeconds: Long,
+    )
+
+    private companion object {
+        const val API_BASE = "https://api.bilibili.com"
+        val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
+    }
+}
+
+private fun JSONArray?.toObjects(): List<JSONObject> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (index in 0 until length()) {
+            optJSONObject(index)?.let(::add)
+        }
+    }
+}
+
+private fun JSONArray?.toStrings(): List<String> {
+    if (this == null) return emptyList()
+    return buildList {
+        for (index in 0 until length()) {
+            optString(index).takeIf(String::isNotBlank)?.let(::add)
+        }
+    }
+}
+
+private fun JSONObject.optLongOrNull(name: String): Long? {
+    if (!has(name) || isNull(name)) return null
+    return optString(name).toLongOrNull() ?: optLong(name).takeIf { it != 0L }
+}
+
+private fun JSONObject.optIntOrNull(name: String): Int? {
+    if (!has(name) || isNull(name)) return null
+    return optInt(name).takeIf { it != 0 }
+}
+
+private fun parseDuration(value: String): Int? {
+    if (value.isBlank()) return null
+    val parts = value.split(':').mapNotNull(String::toIntOrNull)
+    return when (parts.size) {
+        2 -> parts[0] * 60 + parts[1]
+        3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+        else -> value.toIntOrNull()
+    }
+}
