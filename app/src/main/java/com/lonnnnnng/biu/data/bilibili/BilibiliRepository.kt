@@ -19,6 +19,7 @@ import org.json.JSONObject
 class BilibiliRepository(
     private val client: OkHttpClient,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000L },
+    private val apiBase: HttpUrl = API_BASE.toHttpUrl(),
 ) {
     private val wbiKeyMutex = Mutex()
     private var cachedWbiKeys: CachedWbiKeys? = null
@@ -156,6 +157,33 @@ class BilibiliRepository(
         qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     ): Track {
         val detail = videoDetail(video.bvid)
+        return resolveTrack(video, detail, pageIndex, qualityPreference)
+    }
+
+    suspend fun resolveTracks(
+        video: BilibiliVideo,
+        qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    ): List<Track> {
+        return resolveTracks(video, videoDetail(video.bvid), qualityPreference)
+    }
+
+    suspend fun resolveTracks(
+        video: BilibiliVideo,
+        detail: BilibiliVideoDetail,
+        qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    ): List<Track> {
+        if (detail.pages.isEmpty()) throw BilibiliApiException(-404, "视频没有可播放分 P")
+        return detail.pages.mapIndexed { pageIndex, _ ->
+            resolveTrack(video, detail, pageIndex, qualityPreference)
+        }
+    }
+
+    private suspend fun resolveTrack(
+        video: BilibiliVideo,
+        detail: BilibiliVideoDetail,
+        pageIndex: Int,
+        qualityPreference: AudioQualityPreference,
+    ): Track {
         val page = detail.pages.getOrNull(pageIndex)
             ?: throw BilibiliApiException(-404, "视频没有可播放分 P")
         val stream = resolveAudioStream(detail.bvid, page.cid, qualityPreference)
@@ -267,7 +295,9 @@ class BilibiliRepository(
         val url = if (useWbi) {
             val keys = currentWbiKeys()
             val signed = WbiSigner.sign(parameters, keys.imgKey, keys.subKey, nowEpochSeconds())
-            "$API_BASE$path?${signed.encodedQuery}".toHttpUrl()
+            buildUrl(path, emptyMap()).newBuilder()
+                .encodedQuery(signed.encodedQuery)
+                .build()
         } else {
             buildUrl(path, parameters)
         }
@@ -306,7 +336,9 @@ class BilibiliRepository(
     }
 
     private fun buildUrl(path: String, parameters: Map<String, Any?>): HttpUrl {
-        return "$API_BASE$path".toHttpUrl().newBuilder().apply {
+        return apiBase.newBuilder()
+            .addPathSegments(path.removePrefix("/"))
+            .apply {
             parameters.forEach { (key, value) ->
                 if (value != null) addQueryParameter(key, value.toString())
             }
@@ -457,7 +489,7 @@ class BilibiliRepository(
     )
 
     private companion object {
-        const val API_BASE = "https://api.bilibili.com"
+        const val API_BASE = "https://api.bilibili.com/"
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
     }
 }

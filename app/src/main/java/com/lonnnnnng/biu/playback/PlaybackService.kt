@@ -2,9 +2,11 @@ package com.lonnnnnng.biu.playback
 
 import android.util.Log
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -16,8 +18,11 @@ import com.lonnnnnng.biu.appContainer
 import com.lonnnnnng.biu.core.model.bilibiliSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class PlaybackService : MediaSessionService() {
@@ -28,6 +33,7 @@ class PlaybackService : MediaSessionService() {
     private var refreshInFlight = false
     private var retryConsumedForCurrentItem = false
     private var recordedMediaId: String? = null
+    private var progressPersistenceJob: Job? = null
     private val sessionCallback = object : MediaSession.Callback {
         @UnstableApi
         override fun onConnect(
@@ -50,30 +56,52 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val playerListener = object : Player.Listener {
+        @UnstableApi
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            val oldMediaItem = oldPosition.mediaItem ?: return
+            if (!PlaybackProgressPersistencePolicy.shouldPersistTransition(
+                    oldMediaId = oldMediaItem.mediaId,
+                    newMediaId = newPosition.mediaItem?.mediaId.orEmpty(),
+                )
+            ) {
+                return
+            }
+            // long: 自动播完、手动切 P 或替换队列都不会保证进入暂停态，跨媒体项时必须把旧 cid 的最终位置单独落盘。
+            persistProgress(
+                mediaItem = oldMediaItem,
+                positionMs = oldPosition.positionMs,
+                durationMs = durationForMediaItem(oldPosition.mediaItemIndex, oldPosition.positionMs),
+            )
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             if (!refreshInFlight) retryConsumedForCurrentItem = false
             val isNewPlaybackRequest = !refreshInFlight && reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
             if (isNewPlaybackRequest) recordedMediaId = null
+            if (!refreshInFlight && player?.isPlaying == true && mediaItem != null) {
+                // long: 分 P 队列切换时播放态可能始终为 true，必须在媒体项变化回调中单独登记新 cid 的播放历史。
+                recordStartedIfNeeded(mediaItem)
+            }
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
                 val mediaItem = player?.currentMediaItem ?: return
-                val mediaId = mediaItem.mediaId.takeIf(String::isNotBlank)
-                if (mediaId != recordedMediaId) {
-                    recordedMediaId = mediaId
-                    serviceScope.launch {
-                        // long: 只有解码器真正进入播放态后才写历史，403、解析失败或未开始播放的点击不会污染记录。
-                        appContainer.playbackHistoryRepository.recordStarted(mediaItem)
-                    }
-                }
+                recordStartedIfNeeded(mediaItem)
+                startProgressPersistence()
             } else {
+                stopProgressPersistence()
                 persistCurrentProgress()
             }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
+                stopProgressPersistence()
                 // long: 播放结束是一次性业务事件；递增 ID 可供后续自动续播层去重，不能依赖可重复的展示文案。
                 endEventClock.recordEnded()
                 persistCurrentProgress()
@@ -116,6 +144,7 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
+        stopProgressPersistence()
         serviceScope.cancel()
         player?.removeListener(playerListener)
         mediaSession?.release()
@@ -123,6 +152,32 @@ class PlaybackService : MediaSessionService() {
         mediaSession = null
         player = null
         super.onDestroy()
+    }
+
+    private fun recordStartedIfNeeded(mediaItem: MediaItem) {
+        val mediaId = mediaItem.mediaId.takeIf(String::isNotBlank)
+        if (mediaId == recordedMediaId) return
+        recordedMediaId = mediaId
+        serviceScope.launch {
+            // long: 只有解码器真正进入播放态后才写历史，403、解析失败或未开始播放的点击不会污染记录。
+            appContainer.playbackHistoryRepository.recordStarted(mediaItem)
+        }
+    }
+
+    private fun startProgressPersistence() {
+        if (progressPersistenceJob?.isActive == true) return
+        progressPersistenceJob = serviceScope.launch {
+            while (isActive) {
+                delay(PROGRESS_PERSIST_INTERVAL_MS)
+                // long: 长音频播放中周期落盘，把进程异常退出时最多丢失的进度控制在一个保存周期内。
+                persistCurrentProgress()
+            }
+        }
+    }
+
+    private fun stopProgressPersistence() {
+        progressPersistenceJob?.cancel()
+        progressPersistenceJob = null
     }
 
     private fun refreshCurrentBilibiliTrack() {
@@ -158,10 +213,22 @@ class PlaybackService : MediaSessionService() {
     private fun persistCurrentProgress() {
         val activePlayer = player ?: return
         val mediaItem = activePlayer.currentMediaItem ?: return
-        val positionMs = activePlayer.currentPosition
-        val durationMs = activePlayer.duration
+        persistProgress(mediaItem, activePlayer.currentPosition, activePlayer.duration)
+    }
+
+    private fun durationForMediaItem(mediaItemIndex: Int, fallbackPositionMs: Long): Long {
+        val timeline = player?.currentTimeline
+        val timelineDurationMs = if (timeline != null && mediaItemIndex in 0 until timeline.windowCount) {
+            timeline.getWindow(mediaItemIndex, Timeline.Window()).durationMs
+        } else {
+            C.TIME_UNSET
+        }
+        return PlaybackProgressPersistencePolicy.durationMs(timelineDurationMs, fallbackPositionMs)
+    }
+
+    private fun persistProgress(mediaItem: MediaItem, positionMs: Long, durationMs: Long) {
         serviceScope.launch {
-            // long: 暂停或播放结束时保存最后位置，用户下次进入本地历史即可判断是否听过和听到哪里。
+            // long: 保存具体媒体项而不是重新读取 currentMediaItem，避免分 P 转场后把上一 P 的进度写到下一 P。
             appContainer.playbackHistoryRepository.recordProgress(mediaItem, positionMs, durationMs)
         }
     }
@@ -208,3 +275,4 @@ class ControllerTrustPolicy(
 private data class DashHttpFailure(val host: String, val code: Int)
 
 private const val LOG_TAG = "BiuPlayback"
+private const val PROGRESS_PERSIST_INTERVAL_MS = 5_000L

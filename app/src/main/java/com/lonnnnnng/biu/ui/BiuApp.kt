@@ -12,10 +12,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -23,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Check
@@ -49,11 +52,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -62,6 +67,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -97,6 +103,7 @@ import com.lonnnnnng.biu.playback.PlaybackService
 import kotlinx.coroutines.delay
 
 private data class PlaybackSnapshot(
+    val mediaId: String = "",
     val title: String = "还没有播放",
     val artist: String = "选择内容开始播放",
     val quality: String = "",
@@ -104,6 +111,10 @@ private data class PlaybackSnapshot(
     val isPlaying: Boolean = false,
     val hasPrevious: Boolean = false,
     val hasNext: Boolean = false,
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val bufferedPositionMs: Long = 0L,
+    val isSeekable: Boolean = false,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -120,7 +131,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     DisposableEffect(controller) {
         fun publishSnapshot() {
             playback = controller?.let { activeController ->
+                val progress = activeController.currentPlaybackProgress()
                 PlaybackSnapshot(
+                    mediaId = activeController.currentMediaItem?.mediaId.orEmpty(),
                     title = activeController.mediaMetadata.title?.toString() ?: "还没有播放",
                     artist = activeController.mediaMetadata.artist?.toString() ?: "选择内容开始播放",
                     quality = activeController.mediaMetadata.description?.toString().orEmpty(),
@@ -128,6 +141,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     isPlaying = activeController.isPlaying,
                     hasPrevious = activeController.hasPreviousMediaItem(),
                     hasNext = activeController.hasNextMediaItem(),
+                    positionMs = progress.positionMs,
+                    durationMs = progress.durationMs,
+                    bufferedPositionMs = progress.bufferedPositionMs,
+                    isSeekable = progress.isSeekable,
                 )
             } ?: PlaybackSnapshot()
         }
@@ -144,14 +161,30 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         onDispose { controller?.removeListener(listener) }
     }
 
+    LaunchedEffect(controller) {
+        while (true) {
+            controller?.let { activeController ->
+                val progress = activeController.currentPlaybackProgress()
+                playback = playback.copy(
+                    positionMs = progress.positionMs,
+                    durationMs = progress.durationMs,
+                    bufferedPositionMs = progress.bufferedPositionMs,
+                    isSeekable = progress.isSeekable,
+                )
+            }
+            delay(PLAYBACK_PROGRESS_TICK_MS)
+        }
+    }
+
     LaunchedEffect(uiState.playbackRequest?.eventId, controller) {
         val request = uiState.playbackRequest ?: return@LaunchedEffect
         val activeController = controller ?: return@LaunchedEffect
-        if (request.startPositionMs > 0L) {
-            activeController.setMediaItem(request.track.toMediaItem(), request.startPositionMs)
-        } else {
-            activeController.setMediaItem(request.track.toMediaItem())
-        }
+        // long: 多 P 请求一次写入完整 Media3 队列，startIndex 决定用户选择的起播分 P，前后键即可沿队列切换。
+        activeController.setMediaItems(
+            request.tracks.map(Track::toMediaItem),
+            request.startIndex,
+            request.startPositionMs,
+        )
         activeController.prepare()
         activeController.play()
         viewModel.consumePlaybackRequest(request.eventId)
@@ -184,6 +217,15 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 viewModel.refreshAccount()
             },
             onSessionAvailable = viewModel::refreshAccount,
+        )
+    }
+
+    uiState.pageSelection?.let { selection ->
+        MultiPageSelectionSheet(
+            selection = selection,
+            loading = uiState.isPageQueueLoading,
+            onDismiss = viewModel::dismissPageSelection,
+            onPlayPage = viewModel::playPageQueue,
         )
     }
 
@@ -237,6 +279,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         }
                     },
                     onNext = { controller?.seekToNextMediaItem() },
+                    onSeek = { positionMs -> controller?.seekTo(positionMs) },
                 )
                 NavigationBar {
                     MainSection.entries.forEach { section ->
@@ -756,6 +799,84 @@ private fun VideoRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MultiPageSelectionSheet(
+    selection: VideoPageSelection,
+    loading: Boolean,
+    onDismiss: () -> Unit,
+    onPlayPage: (Int) -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = { if (!loading) onDismiss() },
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = null)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("分 P 列表", fontWeight = FontWeight.Bold)
+                    Text(
+                        selection.detail.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                OutlinedButton(
+                    onClick = { onPlayPage(0) },
+                    enabled = !loading && selection.detail.pages.isNotEmpty(),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("全部播放")
+                }
+            }
+            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp),
+            ) {
+                itemsIndexed(
+                    items = selection.detail.pages,
+                    key = { _, page -> page.cid },
+                ) { index, page ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !loading) { onPlayPage(index) }
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text("P${page.page}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Text(
+                            page.title.ifBlank { "第 ${page.page} P" },
+                            modifier = Modifier.weight(1f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            formatDuration(page.durationSeconds),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = "从 P${page.page} 开始播放")
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(start = 68.dp))
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
 @Composable
 private fun MiniPlayer(
     snapshot: PlaybackSnapshot,
@@ -763,13 +884,40 @@ private fun MiniPlayer(
     onPrevious: () -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
+    onSeek: (Long) -> Unit,
 ) {
-    Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+    var isDragging by remember(snapshot.mediaId) { mutableStateOf(false) }
+    var dragFraction by remember(snapshot.mediaId) { mutableFloatStateOf(0f) }
+    val progress = PlaybackProgressPolicy.normalize(
+        positionMs = snapshot.positionMs,
+        durationMs = snapshot.durationMs,
+        bufferedPositionMs = snapshot.bufferedPositionMs,
+        isSeekable = snapshot.isSeekable,
+    )
+    val sliderValue = if (isDragging) dragFraction else progress.fraction
+    val displayedPositionMs = if (isDragging) {
+        PlaybackProgressPolicy.seekPositionMs(dragFraction, progress.durationMs)
+    } else {
+        progress.positionMs
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(110.dp)
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
         HorizontalDivider()
+        LinearProgressIndicator(
+            progress = { progress.bufferedFraction },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp),
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(72.dp)
+                .height(63.dp)
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -819,6 +967,39 @@ private fun MiniPlayer(
                 Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = "下一首")
             }
         }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                formatDurationMs(displayedPositionMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = sliderValue,
+                onValueChange = { value ->
+                    isDragging = true
+                    dragFraction = value
+                },
+                onValueChangeFinished = {
+                    onSeek(PlaybackProgressPolicy.seekPositionMs(dragFraction, progress.durationMs))
+                    isDragging = false
+                },
+                modifier = Modifier.weight(1f),
+                enabled = controllerReady && progress.isSeekable,
+                valueRange = 0f..1f,
+            )
+            Text(
+                formatDurationMs(progress.durationMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -865,3 +1046,14 @@ private fun formatProgress(positionMs: Long, durationMs: Long): String {
         ?.let { formatDuration((it / 1000L).toInt()) }
     return if (duration == null) "已听 $position" else "$position / $duration"
 }
+
+private fun formatDurationMs(durationMs: Long): String = formatDuration((durationMs.coerceAtLeast(0L) / 1000L).toInt())
+
+private fun MediaController.currentPlaybackProgress(): PlaybackProgress = PlaybackProgressPolicy.normalize(
+    positionMs = currentPosition,
+    durationMs = duration,
+    bufferedPositionMs = bufferedPosition,
+    isSeekable = isCurrentMediaItemSeekable,
+)
+
+private const val PLAYBACK_PROGRESS_TICK_MS = 500L
