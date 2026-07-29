@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -128,11 +129,16 @@ import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.core.model.toMediaItem
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
+import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.playback.PlaybackService
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 
 private data class PlaybackQueueItem(
@@ -172,6 +178,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var playback by remember { mutableStateOf(PlaybackSnapshot()) }
     var showLogin by remember { mutableStateOf(false) }
     var showQualityMenu by remember { mutableStateOf(false) }
+    var showCreatorConfig by remember { mutableStateOf(false) }
     var showNowPlaying by remember { mutableStateOf(false) }
     var playbackErrorEventId by remember { mutableLongStateOf(0L) }
 
@@ -327,6 +334,26 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
+    if (showCreatorConfig) {
+        CreatorSelectionSheet(
+            accountLoggedIn = uiState.account.isLoggedIn,
+            creators = uiState.followedCreators,
+            selectedCreators = uiState.selectedCreators,
+            loading = uiState.isCreatorConfigLoading,
+            saving = uiState.isCreatorConfigSaving,
+            onDismiss = { showCreatorConfig = false },
+            onRetry = viewModel::loadFollowingCreators,
+            onOpenAccount = {
+                showCreatorConfig = false
+                viewModel.selectSection(MainSection.ACCOUNT)
+            },
+            onSave = { creators ->
+                showCreatorConfig = false
+                viewModel.saveCreatorSelection(creators)
+            },
+        )
+    }
+
     if (showNowPlaying && playback.mediaId.isNotBlank()) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
@@ -392,6 +419,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     searchResults = uiState.searchResults,
                     submittedKeyword = uiState.submittedKeyword,
                     feed = uiState.feed,
+                    homeFeedMode = uiState.homeFeedMode,
+                    selectedCreatorCount = uiState.selectedCreators.size,
                     loading = uiState.isFeedLoading,
                     searchLoading = uiState.isSearchLoading,
                     resolvingBvid = uiState.resolvingBvid,
@@ -399,6 +428,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onRefresh = { viewModel.loadRecommendations() },
                     onSearch = viewModel::search,
                     onClearSearch = viewModel::clearSearch,
+                    onOpenCreatorConfig = {
+                        showCreatorConfig = true
+                        viewModel.loadFollowingCreators()
+                    },
                     onPlay = viewModel::play,
                     modifier = pageModifier,
                 )
@@ -586,6 +619,8 @@ private fun RecommendationScreen(
     searchResults: List<BilibiliVideo>,
     submittedKeyword: String,
     feed: RecommendFeed,
+    homeFeedMode: HomeFeedMode,
+    selectedCreatorCount: Int,
     loading: Boolean,
     searchLoading: Boolean,
     resolvingBvid: String?,
@@ -593,6 +628,7 @@ private fun RecommendationScreen(
     onRefresh: () -> Unit,
     onSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
+    onOpenCreatorConfig: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -673,13 +709,26 @@ private fun RecommendationScreen(
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                FeedSelector(
-                    selected = feed,
-                    onSelected = onFeedChange,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 16.dp, top = 2.dp, bottom = 2.dp),
-                )
+                if (homeFeedMode == HomeFeedMode.FALLBACK) {
+                    FeedSelector(
+                        selected = feed,
+                        onSelected = onFeedChange,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 16.dp, top = 2.dp, bottom = 2.dp),
+                    )
+                } else {
+                    SingleFeedLabel(
+                        label = "我的关注",
+                        supportingText = "已选 $selectedCreatorCount 位 UP",
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 16.dp, top = 2.dp, bottom = 2.dp),
+                    )
+                }
+                IconButton(onClick = onOpenCreatorConfig) {
+                    Icon(Icons.Rounded.Tune, contentDescription = "设置首页内容范围")
+                }
                 IconButton(onClick = onRefresh, enabled = !loading) {
                     Icon(Icons.Rounded.Refresh, contentDescription = "刷新推荐")
                 }
@@ -700,6 +749,28 @@ private fun RecommendationScreen(
             )
         } else {
             VideoList(activeVideos, resolvingBvid, onPlay, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun SingleFeedLabel(
+    label: String,
+    supportingText: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+            Text(supportingText, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -1280,20 +1351,19 @@ private fun VideoRow(
     video: BilibiliVideo,
     resolving: Boolean,
     enabled: Boolean,
-    contextLabel: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(width = 112.dp, height = 72.dp)
+                .size(width = 104.dp, height = 64.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
@@ -1317,27 +1387,22 @@ private fun VideoRow(
                 )
             }
         }
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 video.title,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.bodySmall,
             )
-            contextLabel?.takeIf(String::isNotBlank)?.let { label ->
-                Text(
-                    label,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
             Text(
-                buildList {
-                    if (video.author.isNotBlank()) add(video.author)
-                    video.playCount?.let { add("${formatCount(it)} 播放") }
-                }.joinToString(" · "),
+                formatPublishedAt(video.publishedAtEpochSeconds),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                video.author.ifBlank { "未知 UP 主" },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
@@ -1375,6 +1440,193 @@ private fun MediaDivider(start: androidx.compose.ui.unit.Dp = 140.dp) {
         modifier = Modifier.padding(start = start, end = 16.dp),
         color = MaterialTheme.colorScheme.outlineVariant,
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CreatorSelectionSheet(
+    accountLoggedIn: Boolean,
+    creators: List<BilibiliCreator>,
+    selectedCreators: List<BilibiliCreator>,
+    loading: Boolean,
+    saving: Boolean,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onOpenAccount: () -> Unit,
+    onSave: (List<BilibiliCreator>) -> Unit,
+) {
+    var keyword by remember { mutableStateOf("") }
+    var selectedMids by remember(creators, selectedCreators) {
+        mutableStateOf(selectedCreators.map(BilibiliCreator::mid).toSet())
+    }
+    val visibleCreators = remember(creators, keyword) {
+        val normalized = keyword.trim()
+        if (normalized.isEmpty()) creators else creators.filter { creator ->
+            creator.name.contains(normalized, ignoreCase = true)
+        }
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.widthIn(max = 840.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("首页内容范围", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "从关注列表选择 UP，作品按发布时间倒排",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭首页内容范围设置")
+                }
+            }
+            if (!accountLoggedIn) {
+                BiuEmptyState(
+                    icon = Icons.Rounded.AccountCircle,
+                    title = "需要登录 Bilibili",
+                    message = "登录后才能读取你的关注列表并选择 UP",
+                    actionLabel = "前往账号页",
+                    onAction = onOpenAccount,
+                    modifier = Modifier.height(300.dp),
+                )
+                return@Column
+            }
+            OutlinedTextField(
+                value = keyword,
+                onValueChange = { keyword = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                singleLine = true,
+                placeholder = { Text("按 UP 名称搜索") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (keyword.isNotEmpty()) {
+                        IconButton(onClick = { keyword = "" }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "清空 UP 搜索")
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+            )
+            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            if (!loading && creators.isEmpty()) {
+                BiuEmptyState(
+                    icon = Icons.Rounded.AccountCircle,
+                    title = "暂时没有关注列表",
+                    message = "可以重试从 Bilibili 获取",
+                    actionLabel = "重新加载",
+                    onAction = onRetry,
+                    modifier = Modifier.height(260.dp),
+                )
+            } else if (!loading && visibleCreators.isEmpty()) {
+                BiuEmptyState(
+                    icon = Icons.Rounded.Search,
+                    title = "没有匹配的 UP",
+                    message = "换一个名称关键词再试试",
+                    modifier = Modifier.height(260.dp),
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 460.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp),
+                ) {
+                    items(visibleCreators, key = BilibiliCreator::mid) { creator ->
+                        val selected = creator.mid in selectedMids
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedMids = if (selected) {
+                                        selectedMids - creator.mid
+                                    } else {
+                                        selectedMids + creator.mid
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AsyncImage(
+                                model = creator.faceUrl,
+                                contentDescription = creator.name,
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(RoundedCornerShape(21.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentScale = ContentScale.Crop,
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                Text(
+                                    creator.name,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    "UID ${creator.mid}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Surface(
+                                modifier = Modifier.size(28.dp),
+                                shape = RoundedCornerShape(14.dp),
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerHighest
+                                },
+                                contentColor = if (selected) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    if (selected) {
+                                        Icon(
+                                            Icons.Rounded.Check,
+                                            contentDescription = "已选择 ${creator.name}",
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        MediaDivider(start = 70.dp)
+                    }
+                }
+            }
+            Button(
+                onClick = { onSave(creators.filter { creator -> creator.mid in selectedMids }) },
+                enabled = !loading && !saving,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    when {
+                        saving -> "正在保存"
+                        selectedMids.isEmpty() -> "恢复音乐区和音乐榜"
+                        else -> "保存 ${selectedMids.size} 位 UP"
+                    },
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2067,17 +2319,14 @@ private fun formatDuration(totalSeconds: Int): String {
     return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
 }
 
+private fun formatPublishedAt(epochSeconds: Long?): String {
+    val instant = epochSeconds?.takeIf { it > 0L }?.let(Instant::ofEpochSecond)
+    return instant?.let { "发布时间 · ${PUBLISHED_AT_FORMATTER.format(it)}" } ?: "发布时间 · 未知"
+}
+
 private fun displayResourceTitle(title: String, pageTitle: String?): String {
     val pageName = pageTitle?.substringAfter(" · ", missingDelimiterValue = "")?.takeIf(String::isNotBlank)
     return pageName?.let { title.removeSuffix(" · $it") } ?: title
-}
-
-private fun formatCount(value: Long): String {
-    return when {
-        value >= 100_000_000 -> "%.1f 亿".format(value / 100_000_000.0)
-        value >= 10_000 -> "%.1f 万".format(value / 10_000.0)
-        else -> value.toString()
-    }
 }
 
 private fun formatProgress(positionMs: Long, durationMs: Long): String {
@@ -2120,3 +2369,7 @@ private fun MediaController.matchesPlaybackQueue(snapshot: PlaybackQueueSnapshot
 }
 
 private const val PLAYBACK_PROGRESS_TICK_MS = 500L
+
+private val PUBLISHED_AT_FORMATTER: DateTimeFormatter = DateTimeFormatter
+    .ofPattern("yyyy-MM-dd HH:mm")
+    .withZone(ZoneId.systemDefault())

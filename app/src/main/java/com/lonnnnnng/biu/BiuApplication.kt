@@ -7,6 +7,8 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliCookieStore
 import com.lonnnnnng.biu.data.bilibili.BilibiliRepository
 import com.lonnnnnng.biu.data.bilibili.BilibiliRequestHeadersInterceptor
 import com.lonnnnnng.biu.data.local.BiuDatabase
+import com.lonnnnnng.biu.data.local.BiuDatabaseMigrations
+import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
 import com.lonnnnnng.biu.data.local.PlaybackHistoryRepository
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
@@ -33,8 +35,9 @@ class AppContainer(context: Context) {
         context.applicationContext,
         BiuDatabase::class.java,
         "biu.db",
-    ).build()
+    ).addMigrations(BiuDatabaseMigrations.MIGRATION_1_2).build()
     val playbackHistoryRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
+    val creatorSelectionRepository = CreatorSelectionRepository(database.creatorSelectionDao())
 }
 
 val Context.appContainer: AppContainer

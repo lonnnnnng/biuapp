@@ -16,6 +16,13 @@ data class BilibiliVideo(
     val coverUrl: String,
     val durationSeconds: Int?,
     val playCount: Long?,
+    val publishedAtEpochSeconds: Long? = null,
+)
+
+data class BilibiliCreator(
+    val mid: Long,
+    val name: String,
+    val faceUrl: String,
 )
 
 data class BilibiliVideoPage(

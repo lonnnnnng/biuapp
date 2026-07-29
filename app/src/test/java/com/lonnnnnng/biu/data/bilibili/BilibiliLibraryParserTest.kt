@@ -74,4 +74,48 @@ class BilibiliLibraryParserTest {
         assertEquals(1700001000L, result.savedAtEpochSeconds)
         assertEquals("作者", result.video.author)
     }
+
+    @Test
+    fun `关注列表保留UP主UID名称和头像`() {
+        val item = JSONObject(
+            """
+            {
+              "mid": 1001,
+              "uname": "关注的UP",
+              "face": "//i0.hdslb.com/face.jpg"
+            }
+            """.trimIndent(),
+        )
+
+        val result = repository.parseFollowingCreator(item)!!
+
+        assertEquals(1001L, result.mid)
+        assertEquals("关注的UP", result.name)
+        assertEquals("https://i0.hdslb.com/face.jpg", result.faceUrl)
+    }
+
+    @Test
+    fun `UP投稿保留发布时间并使用已选UP名称`() {
+        val item = JSONObject(
+            """
+            {
+              "aid": 42,
+              "bvid": "BV1CREATOR",
+              "title": "最新投稿",
+              "pic": "//i0.hdslb.com/video.jpg",
+              "length": "03:15",
+              "play": 1234,
+              "created": 1700003000
+            }
+            """.trimIndent(),
+        )
+        val creator = BilibiliCreator(1001L, "关注的UP", "")
+
+        val result = repository.parseCreatorVideo(item, creator)!!
+
+        assertEquals("BV1CREATOR", result.bvid)
+        assertEquals("关注的UP", result.author)
+        assertEquals(195, result.durationSeconds)
+        assertEquals(1700003000L, result.publishedAtEpochSeconds)
+    }
 }

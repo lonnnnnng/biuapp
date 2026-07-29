@@ -65,6 +65,54 @@ class BilibiliRepository(
         )
     }
 
+    suspend fun followingCreators(mid: Long): List<BilibiliCreator> {
+        require(mid > 0L) { "登录账号缺少 mid" }
+        val creators = mutableListOf<BilibiliCreator>()
+        var page = 1
+        var total = Int.MAX_VALUE
+        // long: 候选范围必须覆盖账号的完整关注列表，以接口 total 和空页共同收敛，避免关注超过 1000 位时静默漏人。
+        while (creators.size < total) {
+            val root = request(
+                path = "/x/relation/followings",
+                parameters = mapOf(
+                    "vmid" to mid,
+                    "pn" to page,
+                    "ps" to FOLLOWING_PAGE_SIZE,
+                    "order_type" to "",
+                ),
+            ).requireSuccess()
+            val data = root.optJSONObject("data") ?: break
+            total = data.optInt("total", 0).coerceAtLeast(0)
+            val pageCreators = data.optJSONArray("list")
+                .toObjects()
+                .mapNotNull(::parseFollowingCreator)
+            creators += pageCreators
+            if (pageCreators.isEmpty()) break
+            page += 1
+        }
+        return creators.distinctBy(BilibiliCreator::mid)
+    }
+
+    suspend fun creatorVideos(creator: BilibiliCreator, page: Int = 1): List<BilibiliVideo> {
+        require(creator.mid > 0L) { "UP 主 mid 无效" }
+        // long: 首页只读取每位 UP 最新一页投稿，再做跨 UP 时间线合并，控制刷新耗时和接口调用数量。
+        val root = request(
+            path = "/x/space/wbi/arc/search",
+            parameters = mapOf(
+                "mid" to creator.mid,
+                "pn" to page,
+                "ps" to CREATOR_VIDEO_PAGE_SIZE,
+                "order" to "pubdate",
+            ),
+            useWbi = true,
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.optJSONObject("list")
+            ?.optJSONArray("vlist")
+            .toObjects()
+            .mapNotNull { item -> parseCreatorVideo(item, creator) }
+    }
+
     suspend fun favoriteFolders(mid: Long, page: Int = 1): List<BilibiliFavoriteFolder> {
         require(mid > 0L) { "登录账号缺少 mid" }
         val root = request(
@@ -367,6 +415,7 @@ class BilibiliRepository(
             ),
             durationSeconds = item.optIntOrNull("duration"),
             playCount = item.optJSONObject("stat")?.optLongOrNull("view"),
+            publishedAtEpochSeconds = item.optLongOrNull("pubdate") ?: item.optLongOrNull("ctime"),
         )
     }
 
@@ -383,6 +432,9 @@ class BilibiliRepository(
             coverUrl = BilibiliText.httpsUrl(archive?.optString("cover").orEmpty().ifBlank { item.optString("cover") }),
             durationSeconds = archive?.optIntOrNull("duration"),
             playCount = archive?.optLongOrNull("vv_count"),
+            publishedAtEpochSeconds = archive?.optLongOrNull("pubdate")
+                ?: archive?.optLongOrNull("pubtime")
+                ?: item.optLongOrNull("pubdate"),
         )
     }
 
@@ -396,6 +448,33 @@ class BilibiliRepository(
             coverUrl = BilibiliText.httpsUrl(item.optString("pic")),
             durationSeconds = parseDuration(item.optString("duration")),
             playCount = item.optLongOrNull("play"),
+            publishedAtEpochSeconds = item.optLongOrNull("pubdate"),
+        )
+    }
+
+    internal fun parseFollowingCreator(item: JSONObject): BilibiliCreator? {
+        // long: 配置需要离线展示已选 UP，因此关注响应同时固化 UID、名称和头像，而不是只保存查询参数 UID。
+        val mid = item.optLong("mid", 0L).takeIf { it > 0L } ?: return null
+        val name = item.optString("uname").trim().takeIf(String::isNotBlank) ?: return null
+        return BilibiliCreator(
+            mid = mid,
+            name = name,
+            faceUrl = BilibiliText.httpsUrl(item.optString("face")),
+        )
+    }
+
+    internal fun parseCreatorVideo(item: JSONObject, creator: BilibiliCreator): BilibiliVideo? {
+        // long: 空间投稿响应可能不回传作者名，使用已保存的 UP 资料兜底，保证合并列表第三行始终可识别来源。
+        val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        return BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optString("author").ifBlank { creator.name },
+            coverUrl = BilibiliText.httpsUrl(item.optString("pic")),
+            durationSeconds = parseDuration(item.optString("length")) ?: item.optIntOrNull("duration"),
+            playCount = item.optLongOrNull("play"),
+            publishedAtEpochSeconds = item.optLongOrNull("created") ?: item.optLongOrNull("pubdate"),
         )
     }
 
@@ -497,6 +576,8 @@ class BilibiliRepository(
 
     private companion object {
         const val API_BASE = "https://api.bilibili.com/"
+        const val FOLLOWING_PAGE_SIZE = 50
+        const val CREATOR_VIDEO_PAGE_SIZE = 30
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
     }
 }

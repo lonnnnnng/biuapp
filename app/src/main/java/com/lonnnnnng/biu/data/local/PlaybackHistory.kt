@@ -9,6 +9,8 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.core.model.bilibiliSource
@@ -56,12 +58,32 @@ interface PlaybackHistoryDao {
 }
 
 @Database(
-    entities = [PlaybackHistoryEntity::class],
-    version = 1,
+    entities = [PlaybackHistoryEntity::class, CreatorSelectionEntity::class],
+    version = 2,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
     abstract fun playbackHistoryDao(): PlaybackHistoryDao
+    abstract fun creatorSelectionDao(): CreatorSelectionDao
+}
+
+object BiuDatabaseMigrations {
+    val MIGRATION_1_2 = object : Migration(1, 2) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 升级只新增首页 UP 配置表，已有播放历史必须原样保留，不能使用破坏性迁移。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `creator_selection` (
+                    `mid` INTEGER NOT NULL,
+                    `name` TEXT NOT NULL,
+                    `faceUrl` TEXT NOT NULL,
+                    `position` INTEGER NOT NULL,
+                    PRIMARY KEY(`mid`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
 }
 
 class PlaybackHistoryRepository(

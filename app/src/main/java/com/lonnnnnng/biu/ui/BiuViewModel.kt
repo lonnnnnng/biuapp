@@ -8,14 +8,20 @@ import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideoDetail
+import com.lonnnnnng.biu.data.bilibili.CreatorFeedPolicy
+import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +30,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 enum class MainSection(val label: String) {
     RECOMMEND("推荐"),
@@ -61,6 +69,9 @@ data class BiuUiState(
     val section: MainSection = MainSection.RECOMMEND,
     val feed: RecommendFeed = RecommendFeed.MUSIC,
     val recommendations: List<BilibiliVideo> = emptyList(),
+    val homeFeedMode: HomeFeedMode = HomeFeedMode.FALLBACK,
+    val followedCreators: List<BilibiliCreator> = emptyList(),
+    val selectedCreators: List<BilibiliCreator> = emptyList(),
     val searchResults: List<BilibiliVideo> = emptyList(),
     val submittedKeyword: String = "",
     val account: BilibiliAccount = BilibiliAccount(false, "", ""),
@@ -72,6 +83,8 @@ data class BiuUiState(
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     val isFeedLoading: Boolean = true,
+    val isCreatorConfigLoading: Boolean = false,
+    val isCreatorConfigSaving: Boolean = false,
     val isSearchLoading: Boolean = false,
     val isAccountLoading: Boolean = true,
     val isLibraryLoading: Boolean = false,
@@ -88,13 +101,31 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableState = MutableStateFlow(BiuUiState())
     private val mutablePlaybackCommands = Channel<PlaybackCommand>(Channel.UNLIMITED)
     private var pageQueueJob: Job? = null
+    private var recommendationsJob: Job? = null
+    private var creatorSelectionInitialized = false
 
     val state: StateFlow<BiuUiState> = mutableState.asStateFlow()
     internal val playbackCommands = mutablePlaybackCommands.receiveAsFlow()
 
     init {
-        loadRecommendations(RecommendFeed.MUSIC)
         refreshAccount()
+        viewModelScope.launch {
+            container.creatorSelectionRepository.selected.collect { selectedCreators ->
+                val changed = state.value.selectedCreators != selectedCreators
+                mutableState.update {
+                    it.copy(
+                        selectedCreators = selectedCreators,
+                        homeFeedMode = CreatorFeedPolicy.modeFor(selectedCreators),
+                        isCreatorConfigSaving = false,
+                    )
+                }
+                // long: 必须等本地配置首次读取完成再选首页来源，否则冷启动会先闪现旧推荐再切换“我的关注”。
+                if (!creatorSelectionInitialized || changed) {
+                    creatorSelectionInitialized = true
+                    loadHomeFeed(selectedCreators, state.value.feed)
+                }
+            }
+        }
         viewModelScope.launch {
             container.playbackHistoryRepository.recent.collect { history ->
                 mutableState.update { it.copy(localHistory = history) }
@@ -107,15 +138,40 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadRecommendations(feed: RecommendFeed = state.value.feed) {
-        mutableState.update { it.copy(feed = feed, isFeedLoading = true, message = null) }
+        if (!creatorSelectionInitialized) return
+        loadHomeFeed(state.value.selectedCreators, feed)
+    }
+
+    fun loadFollowingCreators() {
+        val account = state.value.account
+        if (!account.isLoggedIn || account.mid <= 0L) {
+            mutableState.update { it.copy(followedCreators = emptyList(), isCreatorConfigLoading = false) }
+            return
+        }
+        // long: 候选数据只在用户打开配置时按需读取，避免每次启动都分页扫描完整关注列表。
+        mutableState.update { it.copy(isCreatorConfigLoading = true, message = null) }
         viewModelScope.launch {
-            runCatching { repository.recommendations(feed) }
-                .onSuccess { videos ->
-                    mutableState.update { it.copy(recommendations = videos, isFeedLoading = false) }
+            runCatching { repository.followingCreators(account.mid) }
+                .onSuccess { creators ->
+                    mutableState.update { it.copy(followedCreators = creators, isCreatorConfigLoading = false) }
                 }
                 .onFailure { error ->
                     mutableState.update {
-                        it.copy(isFeedLoading = false, message = error.userMessage("推荐加载失败"))
+                        it.copy(isCreatorConfigLoading = false, message = error.userMessage("关注列表加载失败"))
+                    }
+                }
+        }
+    }
+
+    fun saveCreatorSelection(creators: List<BilibiliCreator>) {
+        if (state.value.isCreatorConfigSaving) return
+        // long: 保存结果由 Room Flow 统一回推并触发首页换源，避免 UI 与数据库分别维护两套选择状态。
+        mutableState.update { it.copy(isCreatorConfigSaving = true, message = null) }
+        viewModelScope.launch {
+            runCatching { container.creatorSelectionRepository.replaceAll(creators) }
+                .onFailure { error ->
+                    mutableState.update {
+                        it.copy(isCreatorConfigSaving = false, message = error.userMessage("首页范围保存失败"))
                     }
                 }
         }
@@ -281,7 +337,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { repository.account() }
                 .onSuccess { account ->
                     mutableState.update { it.copy(account = account, isAccountLoading = false) }
-                    if (account.isLoggedIn) loadLibrary(AccountLibrarySection.FAVORITES) else clearOnlineLibrary()
+                    if (account.isLoggedIn) {
+                        loadLibrary(AccountLibrarySection.FAVORITES)
+                    } else {
+                        clearOnlineLibrary()
+                        mutableState.update { it.copy(followedCreators = emptyList(), isCreatorConfigLoading = false) }
+                    }
                 }
                 .onFailure { error ->
                     mutableState.update {
@@ -413,6 +474,58 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun publishLibraryVideos(videos: List<BilibiliLibraryVideo>) {
         mutableState.update { it.copy(libraryVideos = videos, isLibraryLoading = false) }
+    }
+
+    private fun loadHomeFeed(selectedCreators: List<BilibiliCreator>, feed: RecommendFeed) {
+        // long: 切换来源或手动刷新时取消旧请求，防止较慢的旧响应覆盖用户刚保存的新范围。
+        recommendationsJob?.cancel()
+        mutableState.update {
+            it.copy(
+                feed = if (selectedCreators.isEmpty()) feed else it.feed,
+                isFeedLoading = true,
+                message = null,
+            )
+        }
+        recommendationsJob = viewModelScope.launch {
+            try {
+                val videos = if (selectedCreators.isEmpty()) {
+                    repository.recommendations(feed)
+                } else {
+                    loadCreatorFeed(selectedCreators)
+                }
+                mutableState.update { it.copy(recommendations = videos, isFeedLoading = false) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update {
+                    it.copy(isFeedLoading = false, message = error.userMessage("推荐加载失败"))
+                }
+            }
+        }
+    }
+
+    private suspend fun loadCreatorFeed(creators: List<BilibiliCreator>): List<BilibiliVideo> = coroutineScope {
+        val concurrency = Semaphore(3)
+        // long: 关注范围可能很大，限制同时访问空间投稿接口的数量，降低触发 Bilibili 风控的概率。
+        val results = creators.map { creator ->
+            async {
+                concurrency.withPermit {
+                    try {
+                        Result.success(repository.creatorVideos(creator))
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        Result.failure(error)
+                    }
+                }
+            }
+        }.awaitAll()
+        val successfulFeeds = results.mapNotNull(Result<List<BilibiliVideo>>::getOrNull)
+        if (successfulFeeds.isEmpty()) {
+            throw results.firstNotNullOfOrNull(Result<List<BilibiliVideo>>::exceptionOrNull)
+                ?: IllegalStateException("没有可加载的关注 UP")
+        }
+        CreatorFeedPolicy.merge(successfulFeeds)
     }
 
     private fun clearOnlineLibrary() {
