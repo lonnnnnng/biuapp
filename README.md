@@ -16,8 +16,11 @@ Biu Android 是桌面版 Biu 的原生 Android 重写项目。目标不是把 El
 - [x] 最高音质/省流量全局选择
 - [x] 播放地址过期刷新与备用 CDN 切换
 - [x] M2 真实 Bilibili 播放闭环
-- [ ] 收藏夹、稍后再看和历史接口
-- [ ] Room 队列、历史和下载任务持久化
+- [x] 收藏夹、在线历史和 Room 本地播放历史
+- [x] 单 P / 多 P 播放队列、进度显示与拖动
+- [x] 后台播放、锁屏媒体控制和全屏播放页
+- [x] 自定义关注 UP 首页与投稿时间线
+- [ ] Room 播放队列和下载任务持久化
 - [ ] 前台下载服务、MediaStore 保存和音视频合并
 
 ## 本地构建
@@ -29,16 +32,17 @@ JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
 bash ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-调试 APK 输出位置：`app/build/outputs/apk/debug/app-debug.apk`。
+调试 APK 输出位置：`app/build/outputs/apk/debug/app-debug.apk`。正式版本与校验文件从 [GitHub Releases](https://github.com/lonnnnnng/biuapp/releases) 下载。
 
 ## 验证状态
 
-- 已验证：JVM 单元测试、Android Lint、Debug APK 构建。
+- 已验证：JVM 单元测试、Android Lint、Debug/Release APK 构建。
 - 已在 Redmi Note 8 Pro（`wsvwypiz7xwslvl7`）验证：真实推荐及封面、`Jay Chou` 搜索、推荐与搜索结果 DASH 音频播放、切到后台继续播放、媒体通知、系统媒体暂停/恢复控制。
 - 已在同一设备验证顶栏音质菜单可在“最高音质”和“省流量”之间切换；选择对下一次播放生效，并随 MediaItem 传入后台失效刷新链路。
-- 已验证 WebView 可以打开 Bilibili 手机号登录页；本轮未输入用户账号凭据，登录后的账号态与 Cookie 回传保留为人工验收项。
+- 已验证 Bilibili H5 手机号登录、账号态与 Cookie 回传、收藏夹、在线历史和本地历史。
 - 实机当时没有可用默认网络，联网验收通过临时 ADB reverse HTTP CONNECT 代理完成；验证后已删除设备系统代理并移除端口转发。
-- 待后续实现：进程重启后的队列和进度恢复；该能力依赖 M3 的 Room 持久化。
+- 已在 Pixel_9 模拟器验证：首页关注范围配置、名称搜索、投稿时间倒排、保存后切换“我的关注”，以及重启后配置恢复。
+- 待后续实现：进程重启后的完整播放队列恢复和下载能力。
 
 ## 文档
 
@@ -46,3 +50,4 @@ bash ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDe
 - [功能迁移矩阵](docs/feature-migration-matrix.md)
 - [开发里程碑](docs/development-roadmap.md)
 - [安全与合规边界](docs/security-and-compliance.md)
+- [版本记录](CHANGELOG.md)
