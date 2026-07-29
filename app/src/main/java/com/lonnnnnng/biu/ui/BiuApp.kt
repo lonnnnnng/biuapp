@@ -1,12 +1,14 @@
 package com.lonnnnnng.biu.ui
 
 import android.content.ComponentName
+import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -35,34 +39,46 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HighQuality
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.WatchLater
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -76,8 +92,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -122,6 +144,7 @@ private data class PlaybackSnapshot(
 @Composable
 fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val controller = rememberMediaController()
     val snackbarHostState = remember { SnackbarHostState() }
     var playback by remember { mutableStateOf(PlaybackSnapshot()) }
@@ -271,113 +294,238 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
 
     Scaffold(
         topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Biu", fontWeight = FontWeight.Bold) },
-                actions = {
-                    Box {
-                        IconButton(onClick = { showQualityMenu = true }) {
-                            Icon(Icons.Rounded.HighQuality, contentDescription = "播放音质")
-                        }
-                        DropdownMenu(
-                            expanded = showQualityMenu,
-                            onDismissRequest = { showQualityMenu = false },
-                        ) {
-                            AudioQualityPreference.entries.forEach { preference ->
-                                DropdownMenuItem(
-                                    text = { Text(preference.label) },
-                                    leadingIcon = {
-                                        if (uiState.qualityPreference == preference) {
-                                            Icon(Icons.Rounded.Check, contentDescription = null)
-                                        } else {
-                                            Spacer(Modifier.size(24.dp))
-                                        }
-                                    },
-                                    onClick = {
-                                        showQualityMenu = false
-                                        viewModel.selectQualityPreference(preference)
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    IconButton(onClick = { viewModel.selectSection(MainSection.ACCOUNT) }) {
-                        Icon(Icons.Rounded.AccountCircle, contentDescription = "账号")
-                    }
+            BiuTopBar(
+                section = uiState.section,
+                qualityPreference = uiState.qualityPreference,
+                qualityMenuExpanded = showQualityMenu,
+                onShowQualityMenu = { showQualityMenu = true },
+                onDismissQualityMenu = { showQualityMenu = false },
+                onQualitySelected = { preference ->
+                    showQualityMenu = false
+                    viewModel.selectQualityPreference(preference)
                 },
+                onAccount = { viewModel.selectSection(MainSection.ACCOUNT) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            Column {
-                MiniPlayer(
-                    snapshot = playback,
-                    controllerReady = controller != null,
-                    onPrevious = { controller?.seekToPreviousMediaItem() },
-                    onToggle = {
-                        controller?.let { activeController ->
-                            if (activeController.isPlaying) activeController.pause() else activeController.play()
-                        }
-                    },
-                    onNext = { controller?.seekToNextMediaItem() },
-                    onSeek = { positionMs -> controller?.seekTo(positionMs) },
+            BiuBottomBar(
+                playback = playback,
+                controllerReady = controller != null,
+                selectedSection = uiState.section,
+                showNavigation = !isLandscape,
+                onPrevious = { controller?.seekToPreviousMediaItem() },
+                onToggle = {
+                    controller?.let { activeController ->
+                        if (activeController.isPlaying) activeController.pause() else activeController.play()
+                    }
+                },
+                onNext = { controller?.seekToNextMediaItem() },
+                onSeek = { positionMs -> controller?.seekTo(positionMs) },
+                onSectionSelected = viewModel::selectSection,
+            )
+        },
+    ) { contentPadding ->
+        val pageContent: @Composable () -> Unit = {
+            val pageModifier = Modifier.fillMaxSize().widthIn(max = 840.dp)
+            when (uiState.section) {
+                MainSection.RECOMMEND -> RecommendationScreen(
+                    videos = uiState.recommendations,
+                    feed = uiState.feed,
+                    loading = uiState.isFeedLoading,
+                    resolvingBvid = uiState.resolvingBvid,
+                    onFeedChange = viewModel::loadRecommendations,
+                    onRefresh = { viewModel.loadRecommendations() },
+                    onPlay = viewModel::play,
+                    modifier = pageModifier,
                 )
-                NavigationBar {
-                    MainSection.entries.forEach { section ->
-                        NavigationBarItem(
-                            selected = uiState.section == section,
-                            onClick = { viewModel.selectSection(section) },
-                            icon = {
-                                Icon(
-                                    when (section) {
-                                        MainSection.RECOMMEND -> Icons.Rounded.Album
-                                        MainSection.SEARCH -> Icons.Rounded.Search
-                                        MainSection.ACCOUNT -> Icons.Rounded.AccountCircle
-                                    },
-                                    contentDescription = null,
-                                )
+                MainSection.SEARCH -> SearchScreen(
+                    videos = uiState.searchResults,
+                    submittedKeyword = uiState.submittedKeyword,
+                    loading = uiState.isSearchLoading,
+                    resolvingBvid = uiState.resolvingBvid,
+                    onSearch = viewModel::search,
+                    onPlay = viewModel::play,
+                    modifier = pageModifier,
+                )
+                MainSection.ACCOUNT -> AccountScreen(
+                    state = uiState,
+                    onLogin = { showLogin = true },
+                    onRefresh = viewModel::refreshAccount,
+                    onLogout = viewModel::logout,
+                    onLoadLibrary = viewModel::loadLibrary,
+                    onOpenFavoriteFolder = viewModel::openFavoriteFolder,
+                    onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
+                    onPlay = viewModel::play,
+                    onPlayHistory = viewModel::play,
+                    onClearLocalHistory = viewModel::clearLocalHistory,
+                    modifier = pageModifier,
+                )
+            }
+        }
+        if (isLandscape) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(contentPadding),
+            ) {
+                BiuNavigationRail(
+                    selectedSection = uiState.section,
+                    onSectionSelected = viewModel::selectSection,
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    pageContent()
+                }
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(contentPadding),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                pageContent()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BiuTopBar(
+    section: MainSection,
+    qualityPreference: AudioQualityPreference,
+    qualityMenuExpanded: Boolean,
+    onShowQualityMenu: () -> Unit,
+    onDismissQualityMenu: () -> Unit,
+    onQualitySelected: (AudioQualityPreference) -> Unit,
+    onAccount: () -> Unit,
+) {
+    TopAppBar(
+        title = {
+            Column {
+                Text("BIU", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text(section.label, style = MaterialTheme.typography.titleLarge)
+            }
+        },
+        actions = {
+            Box {
+                IconButton(onClick = onShowQualityMenu) {
+                    Icon(
+                        Icons.Rounded.HighQuality,
+                        contentDescription = "播放音质：${qualityPreference.label}",
+                    )
+                }
+                DropdownMenu(
+                    expanded = qualityMenuExpanded,
+                    onDismissRequest = onDismissQualityMenu,
+                ) {
+                    AudioQualityPreference.entries.forEach { preference ->
+                        DropdownMenuItem(
+                            text = { Text(preference.label) },
+                            leadingIcon = {
+                                if (qualityPreference == preference) {
+                                    Icon(Icons.Rounded.Check, contentDescription = "已选择")
+                                } else {
+                                    Spacer(Modifier.size(24.dp))
+                                }
                             },
-                            label = { Text(section.label) },
+                            onClick = { onQualitySelected(preference) },
                         )
                     }
                 }
             }
+            IconButton(onClick = onAccount) {
+                Icon(Icons.Rounded.AccountCircle, contentDescription = "打开账号音乐库")
+            }
         },
-    ) { contentPadding ->
-        when (uiState.section) {
-            MainSection.RECOMMEND -> RecommendationScreen(
-                videos = uiState.recommendations,
-                feed = uiState.feed,
-                loading = uiState.isFeedLoading,
-                resolvingBvid = uiState.resolvingBvid,
-                onFeedChange = viewModel::loadRecommendations,
-                onRefresh = { viewModel.loadRecommendations() },
-                onPlay = viewModel::play,
-                modifier = Modifier.padding(contentPadding),
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+    )
+}
+
+@Composable
+private fun BiuBottomBar(
+    playback: PlaybackSnapshot,
+    controllerReady: Boolean,
+    selectedSection: MainSection,
+    showNavigation: Boolean,
+    onPrevious: () -> Unit,
+    onToggle: () -> Unit,
+    onNext: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSectionSelected: (MainSection) -> Unit,
+) {
+    Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+        if (playback.mediaId.isNotBlank()) {
+            MiniPlayer(
+                snapshot = playback,
+                controllerReady = controllerReady,
+                onPrevious = onPrevious,
+                onToggle = onToggle,
+                onNext = onNext,
+                onSeek = onSeek,
             )
-            MainSection.SEARCH -> SearchScreen(
-                videos = uiState.searchResults,
-                submittedKeyword = uiState.submittedKeyword,
-                loading = uiState.isSearchLoading,
-                resolvingBvid = uiState.resolvingBvid,
-                onSearch = viewModel::search,
-                onPlay = viewModel::play,
-                modifier = Modifier.padding(contentPadding),
-            )
-            MainSection.ACCOUNT -> AccountScreen(
-                state = uiState,
-                onLogin = { showLogin = true },
-                onRefresh = viewModel::refreshAccount,
-                onLogout = viewModel::logout,
-                onLoadLibrary = viewModel::loadLibrary,
-                onOpenFavoriteFolder = viewModel::openFavoriteFolder,
-                onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
-                onPlay = viewModel::play,
-                onPlayHistory = viewModel::play,
-                onClearLocalHistory = viewModel::clearLocalHistory,
-                modifier = Modifier.padding(contentPadding),
+        }
+        if (showNavigation) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+            ) {
+                MainSection.entries.forEach { section ->
+                    val icon = section.icon()
+                    NavigationBarItem(
+                        selected = selectedSection == section,
+                        onClick = { onSectionSelected(section) },
+                        icon = { Icon(icon, contentDescription = section.label) },
+                        label = { Text(section.label) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BiuNavigationRail(
+    selectedSection: MainSection,
+    onSectionSelected: (MainSection) -> Unit,
+) {
+    NavigationRail(
+        modifier = Modifier.width(88.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Spacer(Modifier.height(8.dp))
+        MainSection.entries.forEach { section ->
+            NavigationRailItem(
+                selected = selectedSection == section,
+                onClick = { onSectionSelected(section) },
+                icon = { Icon(section.icon(), contentDescription = section.label) },
+                label = { Text(section.label) },
+                colors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                ),
             )
         }
     }
+}
+
+private fun MainSection.icon(): ImageVector = when (this) {
+    MainSection.RECOMMEND -> Icons.Rounded.Album
+    MainSection.SEARCH -> Icons.Rounded.Search
+    MainSection.ACCOUNT -> Icons.Rounded.AccountCircle
 }
 
 @Composable
@@ -395,24 +543,77 @@ private fun RecommendationScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            RecommendFeed.entries.forEach { option ->
-                FilterChip(
-                    selected = feed == option,
-                    onClick = { onFeedChange(option) },
-                    label = { Text(option.label) },
-                )
-            }
-            Spacer(Modifier.weight(1f))
+            Text("发现音乐", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
             IconButton(onClick = onRefresh, enabled = !loading) {
                 Icon(Icons.Rounded.Refresh, contentDescription = "刷新推荐")
             }
         }
+        FeedSelector(
+            selected = feed,
+            onSelected = onFeedChange,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        Spacer(Modifier.height(8.dp))
         if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        VideoList(videos, resolvingBvid, onPlay, Modifier.weight(1f))
+        if (!loading && videos.isEmpty()) {
+            BiuEmptyState(
+                icon = Icons.Rounded.LibraryMusic,
+                title = "暂时没有推荐",
+                actionLabel = "重新加载",
+                onAction = onRefresh,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            VideoList(videos, resolvingBvid, onPlay, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun FeedSelector(
+    selected: RecommendFeed,
+    onSelected: (RecommendFeed) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Row(modifier = Modifier.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            RecommendFeed.entries.forEach { option ->
+                val isSelected = selected == option
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        )
+                        .semantics {
+                            role = Role.Tab
+                            this.selected = isSelected
+                        }
+                        .clickable { onSelected(option) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        option.label,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -428,36 +629,64 @@ private fun SearchScreen(
 ) {
     var keyword by remember { mutableStateOf(submittedKeyword) }
     val focusManager = LocalFocusManager.current
+    val submitSearch = {
+        focusManager.clearFocus()
+        onSearch(keyword)
+    }
     Column(modifier = modifier.fillMaxSize()) {
-        OutlinedTextField(
-            value = keyword,
-            onValueChange = { keyword = it },
+        Text(
+            "搜索 Bilibili 音乐",
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            singleLine = true,
-            label = { Text("搜索音乐视频") },
-            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-            trailingIcon = {
-                if (keyword.isNotEmpty()) {
-                    IconButton(onClick = { keyword = "" }) {
-                        Icon(Icons.Rounded.Close, contentDescription = "清空")
-                    }
-                }
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(
-                onSearch = {
-                    focusManager.clearFocus()
-                    onSearch(keyword)
-                },
-            ),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.titleMedium,
         )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = keyword,
+                onValueChange = { keyword = it },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                placeholder = { Text("标题或 UP 主") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (keyword.isNotEmpty()) {
+                        IconButton(onClick = { keyword = "" }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "清空搜索词")
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
+            )
+            FilledIconButton(
+                onClick = submitSearch,
+                enabled = keyword.isNotBlank() && !loading,
+                modifier = Modifier.size(48.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {
+                Icon(Icons.Rounded.Search, contentDescription = "搜索")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (!loading && videos.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(if (submittedKeyword.isBlank()) "输入关键词搜索" else "没有找到结果")
-            }
+            BiuEmptyState(
+                icon = Icons.Rounded.Search,
+                title = if (submittedKeyword.isBlank()) "开始搜索" else "没有找到结果",
+                message = if (submittedKeyword.isBlank()) null else "换一个关键词再试试",
+                modifier = Modifier.weight(1f),
+            )
         } else {
             VideoList(videos, resolvingBvid, onPlay, Modifier.weight(1f))
         }
@@ -478,59 +707,26 @@ private fun AccountScreen(
     onClearLocalHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize(),
-    ) {
+    Column(modifier = modifier.fillMaxSize()) {
         if (state.isAccountLoading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        } else if (state.account.isLoggedIn) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                AsyncImage(
-                    model = state.account.faceUrl,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(RoundedCornerShape(6.dp)),
-                    contentScale = ContentScale.Crop,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(state.account.name, fontWeight = FontWeight.Bold)
-                    Text("已登录 Bilibili", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新账号音乐库") }
-                TextButton(onClick = onLogout) { Text("退出") }
-            }
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Icon(Icons.Rounded.AccountCircle, contentDescription = null, modifier = Modifier.size(52.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("未登录", fontWeight = FontWeight.Bold)
-                    Text("登录后可浏览账号收藏和历史", style = MaterialTheme.typography.bodySmall)
-                }
-                OutlinedButton(onClick = onLogin) { Text("登录") }
-                IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Refresh, contentDescription = "刷新登录状态") }
-            }
         }
-
-        HorizontalDivider()
+        AccountHeader(
+            state = state,
+            onLogin = onLogin,
+            onRefresh = onRefresh,
+            onLogout = onLogout,
+        )
+        Text(
+            "音乐库",
+            modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 4.dp),
+            style = MaterialTheme.typography.titleMedium,
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             AccountLibrarySection.entries.forEach { section ->
@@ -557,9 +753,13 @@ private fun AccountScreen(
         if (state.isLibraryLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         val onlineSection = state.librarySection != AccountLibrarySection.LOCAL_HISTORY
         if (onlineSection && !state.account.isLoggedIn) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("登录后可浏览${state.librarySection.label}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            BiuEmptyState(
+                icon = Icons.Rounded.AccountCircle,
+                title = "登录后查看${state.librarySection.label}",
+                actionLabel = "登录 Bilibili",
+                onAction = onLogin,
+                modifier = Modifier.weight(1f),
+            )
         } else {
             when (state.librarySection) {
                 AccountLibrarySection.FAVORITES -> FavoriteLibrary(
@@ -595,6 +795,77 @@ private fun AccountScreen(
 }
 
 @Composable
+private fun AccountHeader(
+    state: BiuUiState,
+    onLogin: () -> Unit,
+    onRefresh: () -> Unit,
+    onLogout: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (state.account.isLoggedIn && state.account.faceUrl.isNotBlank()) {
+                AsyncImage(
+                    model = state.account.faceUrl,
+                    contentDescription = "${state.account.name}的头像",
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.AccountCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    if (state.account.isLoggedIn) state.account.name else "未登录",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    if (state.account.isLoggedIn) "Bilibili 账号已连接" else "连接账号以同步收藏与历史",
+                    maxLines = 2,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onRefresh) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "刷新账号状态")
+            }
+            if (state.account.isLoggedIn) {
+                TextButton(onClick = onLogout) { Text("退出") }
+            } else {
+                FilledTonalButton(onClick = onLogin) { Text("登录") }
+            }
+        }
+    }
+}
+
+@Composable
 private fun FavoriteLibrary(
     folders: List<BilibiliFavoriteFolder>,
     selectedFolder: BilibiliFavoriteFolder?,
@@ -611,34 +882,93 @@ private fun FavoriteLibrary(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onCloseFolder)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = null)
-                Text(selectedFolder.title, fontWeight = FontWeight.Bold)
+                IconButton(onClick = onCloseFolder) {
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = "返回收藏夹列表")
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        selectedFolder.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        "${selectedFolder.mediaCount} 项内容",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             LibraryVideoList(videos, resolvingBvid, loading, onPlay, Modifier.weight(1f))
         }
     } else if (!loading && folders.isEmpty()) {
-        EmptyLibrary("收藏夹为空", modifier)
+        BiuEmptyState(
+            icon = Icons.Rounded.Folder,
+            title = "收藏夹为空",
+            modifier = modifier,
+        )
     } else {
-        LazyColumn(modifier.fillMaxWidth()) {
+        LazyColumn(
+            modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(vertical = 4.dp),
+        ) {
             items(folders, key = BilibiliFavoriteFolder::id) { folder ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onOpenFolder(folder) }
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text(folder.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${folder.mediaCount} 首", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null)
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (folder.coverUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = folder.coverUrl,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            folder.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "${folder.mediaCount} 项内容",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        contentDescription = "打开 ${folder.title}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                HorizontalDivider(modifier = Modifier.padding(start = 52.dp))
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 80.dp, end = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
             }
         }
     }
@@ -653,10 +983,17 @@ private fun LibraryVideoList(
     modifier: Modifier = Modifier,
 ) {
     if (!loading && videos.isEmpty()) {
-        EmptyLibrary("暂无内容", modifier)
+        BiuEmptyState(
+            icon = Icons.Rounded.LibraryMusic,
+            title = "暂无内容",
+            modifier = modifier,
+        )
         return
     }
-    LazyColumn(modifier.fillMaxWidth()) {
+    LazyColumn(
+        modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(vertical = 4.dp),
+    ) {
         items(videos, key = { item -> "${item.video.bvid}:${item.savedAtEpochSeconds ?: 0L}" }) { item ->
             VideoRow(
                 video = item.video,
@@ -667,7 +1004,7 @@ private fun LibraryVideoList(
                     ?.let { progress -> "已看 ${formatDuration(progress)}" },
                 onClick = { onPlay(item.video) },
             )
-            HorizontalDivider(modifier = Modifier.padding(start = 132.dp))
+            MediaDivider()
         }
     }
 }
@@ -703,40 +1040,60 @@ private fun LocalHistoryList(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("最近播放", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+            Text("最近播放", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
             IconButton(onClick = { showClearConfirmation = true }, enabled = history.isNotEmpty()) {
                 Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空本地历史")
             }
         }
         if (history.isEmpty()) {
-            EmptyLibrary("播放内容后会出现在这里", Modifier.weight(1f))
+            BiuEmptyState(
+                icon = Icons.Rounded.History,
+                title = "暂无本地历史",
+                message = "播放过的内容会保存在这里",
+                modifier = Modifier.weight(1f),
+            )
         } else {
-            LazyColumn(Modifier.weight(1f)) {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
                 items(history, key = PlaybackHistoryEntity::mediaId) { item ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(enabled = resolvingBvid == null) { onPlay(item) }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         AsyncImage(
                             model = item.artworkUrl,
-                            contentDescription = null,
+                            contentDescription = item.title,
                             modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(6.dp))
+                                .size(width = 112.dp, height = 72.dp)
+                                .clip(RoundedCornerShape(8.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                             contentScale = ContentScale.Crop,
                         )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
-                                listOf(item.artist, formatProgress(item.lastPositionMs, item.durationMs), "播放 ${item.playCount} 次")
+                                item.title,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                formatProgress(item.lastPositionMs, item.durationMs),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                listOf(item.artist, "播放 ${item.playCount} 次")
                                     .filter(String::isNotBlank)
                                     .joinToString(" · "),
                                 maxLines = 1,
@@ -748,10 +1105,10 @@ private fun LocalHistoryList(
                         if (resolvingBvid == item.bvid) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = "播放 ${item.title}")
+                            PlayAffordance(contentDescription = "播放 ${item.title}")
                         }
                     }
-                    HorizontalDivider(modifier = Modifier.padding(start = 84.dp))
+                    MediaDivider()
                 }
             }
         }
@@ -759,9 +1116,50 @@ private fun LocalHistoryList(
 }
 
 @Composable
-private fun EmptyLibrary(message: String, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun BiuEmptyState(
+    icon: ImageVector,
+    title: String,
+    message: String? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        message?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
+        if (actionLabel != null && onAction != null) {
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = onAction) { Text(actionLabel) }
+        }
     }
 }
 
@@ -772,7 +1170,10 @@ private fun VideoList(
     onPlay: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LazyColumn(modifier = modifier.fillMaxWidth()) {
+    LazyColumn(
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(vertical = 4.dp),
+    ) {
         items(videos, key = BilibiliVideo::bvid) { video ->
             VideoRow(
                 video = video,
@@ -780,7 +1181,7 @@ private fun VideoList(
                 enabled = resolvingBvid == null,
                 onClick = { onPlay(video) },
             )
-            HorizontalDivider(modifier = Modifier.padding(start = 132.dp))
+            MediaDivider()
         }
     }
 }
@@ -797,33 +1198,56 @@ private fun VideoRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AsyncImage(
-            model = video.coverUrl,
-            contentDescription = null,
+        Box(
             modifier = Modifier
-                .size(width = 104.dp, height = 64.dp)
-                .clip(RoundedCornerShape(6.dp))
+                .size(width = 112.dp, height = 72.dp)
+                .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentScale = ContentScale.Crop,
-        )
-        Column(modifier = Modifier.weight(1f)) {
+        ) {
+            AsyncImage(
+                model = video.coverUrl,
+                contentDescription = video.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            video.durationSeconds?.let { duration ->
+                Text(
+                    formatDuration(duration),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 video.title,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.titleMedium,
             )
-            Spacer(Modifier.height(4.dp))
+            contextLabel?.takeIf(String::isNotBlank)?.let { label ->
+                Text(
+                    label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Text(
                 buildList {
-                    contextLabel?.takeIf(String::isNotBlank)?.let(::add)
                     if (video.author.isNotBlank()) add(video.author)
-                    video.playCount?.let { add(formatCount(it)) }
-                    video.durationSeconds?.let { add(formatDuration(it)) }
+                    video.playCount?.let { add("${formatCount(it)} 播放") }
                 }.joinToString(" · "),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -834,9 +1258,34 @@ private fun VideoRow(
         if (resolving) {
             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
         } else {
-            Icon(Icons.Rounded.PlayArrow, contentDescription = "播放 ${video.title}")
+            PlayAffordance(contentDescription = "播放 ${video.title}")
         }
     }
+}
+
+@Composable
+private fun PlayAffordance(contentDescription: String) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Rounded.PlayArrow,
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+        )
+    }
+}
+
+@Composable
+private fun MediaDivider(start: androidx.compose.ui.unit.Dp = 140.dp) {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = start, end = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -849,39 +1298,48 @@ private fun MultiPageSelectionSheet(
 ) {
     ModalBottomSheet(
         onDismissRequest = { if (!loading) onDismiss() },
+        modifier = Modifier.widthIn(max = 840.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = null)
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("分 P 列表", fontWeight = FontWeight.Bold)
+                    Text("分 P 列表", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        selection.detail.title,
+                        "${selection.detail.pages.size} P · ${selection.detail.title}",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                OutlinedButton(
-                    onClick = { onPlayPage(0) },
-                    enabled = !loading && selection.detail.pages.isNotEmpty(),
-                ) {
-                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("全部播放")
+                IconButton(onClick = onDismiss, enabled = !loading) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭分 P 列表")
                 }
+            }
+            FilledTonalButton(
+                onClick = { onPlayPage(0) },
+                enabled = !loading && selection.detail.pages.isNotEmpty(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (loading) "正在建立播放队列" else "全部播放")
             }
             if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 480.dp),
+                    .heightIn(max = 520.dp),
+                contentPadding = PaddingValues(bottom = 16.dp),
             ) {
                 itemsIndexed(
                     items = selection.detail.pages,
@@ -891,28 +1349,41 @@ private fun MultiPageSelectionSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(enabled = !loading) { onPlayPage(index) }
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text("P${page.page}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        Text(
-                            page.title.ifBlank { "第 ${page.page} P" },
-                            modifier = Modifier.weight(1f),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            formatDuration(page.durationSeconds),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = "从 P${page.page} 开始播放")
+                        Surface(
+                            modifier = Modifier.size(width = 48.dp, height = 40.dp),
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("P${page.page}", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                page.title.ifBlank { "第 ${page.page} P" },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                formatDuration(page.durationSeconds),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        PlayAffordance(contentDescription = "从 P${page.page} 开始播放")
                     }
-                    HorizontalDivider(modifier = Modifier.padding(start = 68.dp))
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 76.dp, end = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
                 }
             }
-            Spacer(Modifier.height(12.dp))
         }
     }
 }
@@ -948,26 +1419,20 @@ private fun MiniPlayer(
         modifier = Modifier
             .fillMaxWidth()
             .height(110.dp)
-            .background(MaterialTheme.colorScheme.surface),
+            .background(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        HorizontalDivider()
-        LinearProgressIndicator(
-            progress = { progress.bufferedFraction },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp),
-        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(63.dp)
-                .padding(horizontal = 12.dp),
+                .height(64.dp)
+                .padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (snapshot.artworkUrl.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
-                        .size(46.dp)
+                        .size(50.dp)
+                        .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -976,10 +1441,10 @@ private fun MiniPlayer(
             } else {
                 AsyncImage(
                     model = snapshot.artworkUrl,
-                    contentDescription = null,
+                    contentDescription = snapshot.title,
                     modifier = Modifier
-                        .size(46.dp)
-                        .clip(RoundedCornerShape(4.dp)),
+                        .size(50.dp)
+                        .clip(RoundedCornerShape(8.dp)),
                     contentScale = ContentScale.Crop,
                 )
             }
@@ -989,22 +1454,32 @@ private fun MiniPlayer(
                     .padding(horizontal = 10.dp),
             ) {
                 Text(snapshot.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                Text(
-                    secondaryText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (snapshot.pageTitle == null) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                )
+                if (secondaryText.isNotBlank()) {
+                    Text(
+                        secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (snapshot.pageTitle == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                }
             }
             IconButton(onClick = onPrevious, enabled = controllerReady && snapshot.hasPrevious) {
                 Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, contentDescription = "上一首")
             }
-            IconButton(onClick = onToggle, enabled = controllerReady) {
+            FilledIconButton(
+                onClick = onToggle,
+                enabled = controllerReady,
+                modifier = Modifier.size(48.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {
                 Icon(
                     if (snapshot.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     contentDescription = if (snapshot.isPlaying) "暂停" else "播放",
@@ -1014,6 +1489,14 @@ private fun MiniPlayer(
                 Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = "下一首")
             }
         }
+        LinearProgressIndicator(
+            progress = { progress.bufferedFraction },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1040,6 +1523,11 @@ private fun MiniPlayer(
                 modifier = Modifier.weight(1f),
                 enabled = controllerReady && progress.isSeekable,
                 valueRange = 0f..1f,
+                colors = SliderDefaults.colors(
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ),
             )
             Text(
                 formatDurationMs(progress.durationMs),
