@@ -1,11 +1,9 @@
 package com.lonnnnnng.biu.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -13,51 +11,27 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val lightColors = lightColorScheme(
-    primary = Color(0xFFD93F68),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFFFD9E2),
-    onPrimaryContainer = Color(0xFF6D1530),
-    secondary = Color(0xFF51565F),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE5E6EA),
-    onSecondaryContainer = Color(0xFF20242A),
-    tertiary = Color(0xFF59618D),
-    background = Color(0xFFF7F7F4),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFECECE8),
-    surfaceContainer = Color(0xFFF0F0ED),
-    surfaceContainerLow = Color(0xFFF8F8F5),
-    surfaceContainerHigh = Color(0xFFE8E8E4),
-    onBackground = Color(0xFF1D1D1F),
-    onSurface = Color(0xFF1D1D1F),
-    onSurfaceVariant = Color(0xFF5F6064),
-    outline = Color(0xFF797A7E),
-    outlineVariant = Color(0xFFD1D1CD),
-    error = Color(0xFFBA1A1A),
-)
-
 private val darkColors = darkColorScheme(
-    primary = Color(0xFFFFB1C2),
-    onPrimary = Color(0xFF7D1736),
-    primaryContainer = Color(0xFF9B2B4B),
-    onPrimaryContainer = Color(0xFFFFD9E2),
-    secondary = Color(0xFFC7C9D1),
-    onSecondary = Color(0xFF2C3036),
-    secondaryContainer = Color(0xFF3C414A),
-    onSecondaryContainer = Color(0xFFE4E6ED),
-    tertiary = Color(0xFFC1C6FF),
-    background = Color(0xFF151517),
-    surface = Color(0xFF1C1C1F),
-    surfaceVariant = Color(0xFF45464A),
-    surfaceContainer = Color(0xFF242427),
-    surfaceContainerLow = Color(0xFF202023),
-    surfaceContainerHigh = Color(0xFF2F2F32),
-    onBackground = Color(0xFFF0F0ED),
-    onSurface = Color(0xFFF0F0ED),
-    onSurfaceVariant = Color(0xFFC7C7C3),
-    outline = Color(0xFF929398),
-    outlineVariant = Color(0xFF45464A),
+    primary = Color(0xFF3DDC84),
+    onPrimary = Color(0xFF00210F),
+    primaryContainer = Color(0xFF123D25),
+    onPrimaryContainer = Color(0xFFA2F4C3),
+    secondary = Color(0xFFB8C9BF),
+    onSecondary = Color(0xFF24342B),
+    secondaryContainer = Color(0xFF33443A),
+    onSecondaryContainer = Color(0xFFD4E8DB),
+    tertiary = Color(0xFFA7C8B2),
+    background = Color(0xFF0D0F0E),
+    surface = Color(0xFF121513),
+    surfaceVariant = Color(0xFF303532),
+    surfaceContainer = Color(0xFF181C19),
+    surfaceContainerLow = Color(0xFF141714),
+    surfaceContainerHigh = Color(0xFF202420),
+    onBackground = Color(0xFFE4EAE6),
+    onSurface = Color(0xFFE4EAE6),
+    onSurfaceVariant = Color(0xFFAEB8B1),
+    outline = Color(0xFF78827B),
+    outlineVariant = Color(0xFF303632),
     error = Color(0xFFFFB4AB),
 )
 
@@ -84,7 +58,7 @@ private val biuShapes = Shapes(
 @Composable
 fun BiuTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) darkColors else lightColors,
+        colorScheme = darkColors,
         typography = biuTypography,
         shapes = biuShapes,
         content = content,

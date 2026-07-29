@@ -27,7 +27,6 @@ import kotlinx.coroutines.launch
 
 enum class MainSection(val label: String) {
     RECOMMEND("推荐"),
-    SEARCH("搜索"),
     ACCOUNT("账号"),
 }
 
@@ -130,7 +129,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         mutableState.update {
             it.copy(
-                section = MainSection.SEARCH,
                 submittedKeyword = normalized,
                 isSearchLoading = true,
                 message = null,
@@ -146,6 +144,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(isSearchLoading = false, message = error.userMessage("搜索失败"))
                     }
                 }
+        }
+    }
+
+    fun clearSearch() {
+        mutableState.update {
+            it.copy(
+                submittedKeyword = "",
+                searchResults = emptyList(),
+                isSearchLoading = false,
+            )
         }
     }
 
@@ -313,7 +321,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                     }
-                    AccountLibrarySection.WATCH_LATER -> publishLibraryVideos(repository.watchLater())
                     AccountLibrarySection.ONLINE_HISTORY -> publishLibraryVideos(repository.onlineHistory())
                     AccountLibrarySection.LOCAL_HISTORY -> Unit
                 }
@@ -376,7 +383,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         startIndex: Int = 0,
         startPositionMs: Long = 0L,
     ): Long {
-        val activeTrack = tracks.getOrNull(startIndex) ?: error("播放起始索引越界")
+        tracks.getOrNull(startIndex) ?: error("播放起始索引越界")
         val queueId = playbackEventIds.incrementAndGet()
         playbackQueueSnapshots.replace(queueId, tracks, startIndex, startPositionMs)
         mutablePlaybackCommands.trySend(
@@ -392,7 +399,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 resolvingBvid = null,
                 pageSelection = null,
                 isPageQueueLoading = false,
-                message = activeTrack.qualityLabel?.let { quality -> "正在播放 · $quality" },
+                // long: 切歌是高频操作，成功状态由播放器本身呈现，不再用 Snackbar 遮挡当前内容。
+                message = null,
             )
         }
         return queueId

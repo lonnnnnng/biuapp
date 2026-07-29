@@ -43,7 +43,6 @@ data class BilibiliAccount(
 
 enum class AccountLibrarySection(val label: String) {
     FAVORITES("收藏夹"),
-    WATCH_LATER("稍后再看"),
     ONLINE_HISTORY("在线历史"),
     LOCAL_HISTORY("本地历史"),
 }
