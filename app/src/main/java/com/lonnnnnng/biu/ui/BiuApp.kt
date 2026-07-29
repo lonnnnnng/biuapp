@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -77,6 +78,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -113,6 +115,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -1455,6 +1458,7 @@ private fun CreatorSelectionSheet(
     onOpenAccount: () -> Unit,
     onSave: (List<BilibiliCreator>) -> Unit,
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var keyword by remember { mutableStateOf("") }
     var selectedMids by remember(creators, selectedCreators) {
         mutableStateOf(selectedCreators.map(BilibiliCreator::mid).toSet())
@@ -1467,10 +1471,16 @@ private fun CreatorSelectionSheet(
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = sheetState,
         modifier = Modifier.widthIn(max = 840.dp),
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        // long: 内容范围包含可滚动的长关注列表，弹层直接占满可用高度，并把保存动作留在滚动区之外持续可见。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(),
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1489,129 +1499,144 @@ private fun CreatorSelectionSheet(
                     Icon(Icons.Rounded.Close, contentDescription = "关闭首页内容范围设置")
                 }
             }
-            if (!accountLoggedIn) {
-                BiuEmptyState(
-                    icon = Icons.Rounded.AccountCircle,
-                    title = "需要登录 Bilibili",
-                    message = "登录后才能读取你的关注列表并选择 UP",
-                    actionLabel = "前往账号页",
-                    onAction = onOpenAccount,
-                    modifier = Modifier.height(300.dp),
-                )
-                return@Column
-            }
-            OutlinedTextField(
-                value = keyword,
-                onValueChange = { keyword = it },
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                singleLine = true,
-                placeholder = { Text("按 UP 名称搜索") },
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (keyword.isNotEmpty()) {
-                        IconButton(onClick = { keyword = "" }) {
-                            Icon(Icons.Rounded.Close, contentDescription = "清空 UP 搜索")
-                        }
-                    }
-                },
-                shape = RoundedCornerShape(8.dp),
-            )
-            if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            if (!loading && creators.isEmpty()) {
-                BiuEmptyState(
-                    icon = Icons.Rounded.AccountCircle,
-                    title = "暂时没有关注列表",
-                    message = "可以重试从 Bilibili 获取",
-                    actionLabel = "重新加载",
-                    onAction = onRetry,
-                    modifier = Modifier.height(260.dp),
-                )
-            } else if (!loading && visibleCreators.isEmpty()) {
-                BiuEmptyState(
-                    icon = Icons.Rounded.Search,
-                    title = "没有匹配的 UP",
-                    message = "换一个名称关键词再试试",
-                    modifier = Modifier.height(260.dp),
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 460.dp),
-                    contentPadding = PaddingValues(vertical = 2.dp),
-                ) {
-                    items(visibleCreators, key = BilibiliCreator::mid) { creator ->
-                        val selected = creator.mid in selectedMids
-                        Row(
+                    .weight(1f),
+            ) {
+                if (!accountLoggedIn) {
+                    BiuEmptyState(
+                        icon = Icons.Rounded.AccountCircle,
+                        title = "需要登录 Bilibili",
+                        message = "登录后才能读取你的关注列表并选择 UP",
+                        actionLabel = "前往账号页",
+                        onAction = onOpenAccount,
+                    )
+                } else {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        OutlinedTextField(
+                            value = keyword,
+                            onValueChange = { keyword = it },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    selectedMids = if (selected) {
-                                        selectedMids - creator.mid
-                                    } else {
-                                        selectedMids + creator.mid
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            singleLine = true,
+                            placeholder = { Text("按 UP 名称搜索") },
+                            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                            trailingIcon = {
+                                if (keyword.isNotEmpty()) {
+                                    IconButton(onClick = { keyword = "" }) {
+                                        Icon(Icons.Rounded.Close, contentDescription = "清空 UP 搜索")
                                     }
                                 }
-                                .padding(horizontal = 16.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            AsyncImage(
-                                model = creator.faceUrl,
-                                contentDescription = creator.name,
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .clip(RoundedCornerShape(21.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentScale = ContentScale.Crop,
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        if (!loading && creators.isEmpty()) {
+                            BiuEmptyState(
+                                icon = Icons.Rounded.AccountCircle,
+                                title = "暂时没有关注列表",
+                                message = "可以重试从 Bilibili 获取",
+                                actionLabel = "重新加载",
+                                onAction = onRetry,
+                                modifier = Modifier.weight(1f),
                             )
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                Text(
-                                    creator.name,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                Text(
-                                    "UID ${creator.mid}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Surface(
-                                modifier = Modifier.size(28.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                color = if (selected) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerHighest
-                                },
-                                contentColor = if (selected) {
-                                    MaterialTheme.colorScheme.onPrimary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
+                        } else if (!loading && visibleCreators.isEmpty()) {
+                            BiuEmptyState(
+                                icon = Icons.Rounded.Search,
+                                title = "没有匹配的 UP",
+                                message = "换一个名称关键词再试试",
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                contentPadding = PaddingValues(vertical = 2.dp),
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    if (selected) {
-                                        Icon(
-                                            Icons.Rounded.Check,
-                                            contentDescription = "已选择 ${creator.name}",
-                                            modifier = Modifier.size(18.dp),
+                                items(visibleCreators, key = BilibiliCreator::mid) { creator ->
+                                    val selected = creator.mid in selectedMids
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .semantics {
+                                                role = Role.Checkbox
+                                                this.selected = selected
+                                                stateDescription = if (selected) "已选择" else "未选择"
+                                            }
+                                            .clickable {
+                                                selectedMids = if (selected) {
+                                                    selectedMids - creator.mid
+                                                } else {
+                                                    selectedMids + creator.mid
+                                                }
+                                            }
+                                            .padding(horizontal = 16.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        AsyncImage(
+                                            model = creator.faceUrl,
+                                            contentDescription = creator.name,
+                                            modifier = Modifier
+                                                .size(42.dp)
+                                                .clip(RoundedCornerShape(21.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                                            contentScale = ContentScale.Crop,
                                         )
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(1.dp),
+                                        ) {
+                                            Text(
+                                                creator.name,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                            )
+                                            Text(
+                                                "UID ${creator.mid}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        Surface(
+                                            modifier = Modifier.size(28.dp),
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = if (selected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainerHighest
+                                            },
+                                            contentColor = if (selected) {
+                                                MaterialTheme.colorScheme.onPrimary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                if (selected) {
+                                                    Icon(
+                                                        Icons.Rounded.Check,
+                                                        contentDescription = "已选择 ${creator.name}",
+                                                        modifier = Modifier.size(18.dp),
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
+                                    MediaDivider(start = 70.dp)
                                 }
                             }
                         }
-                        MediaDivider(start = 70.dp)
                     }
                 }
             }
             Button(
                 onClick = { onSave(creators.filter { creator -> creator.mid in selectedMids }) },
-                enabled = !loading && !saving,
+                enabled = accountLoggedIn && !loading && !saving,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -1619,6 +1644,7 @@ private fun CreatorSelectionSheet(
             ) {
                 Text(
                     when {
+                        !accountLoggedIn -> "登录后保存"
                         saving -> "正在保存"
                         selectedMids.isEmpty() -> "恢复音乐区和音乐榜"
                         else -> "保存 ${selectedMids.size} 位 UP"
@@ -1637,12 +1663,19 @@ private fun MultiPageSelectionSheet(
     onDismiss: () -> Unit,
     onPlayPage: (Int) -> Unit,
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = { if (!loading) onDismiss() },
+        sheetState = sheetState,
         modifier = Modifier.widthIn(max = 840.dp),
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        // long: 分 P 可能很多，弹层打开即使用最大高度，把剩余空间全部交给列表，避免用户先拖动弹层才能浏览。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(),
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1679,7 +1712,7 @@ private fun MultiPageSelectionSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 520.dp),
+                    .weight(1f),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
                 itemsIndexed(
@@ -1709,7 +1742,7 @@ private fun MultiPageSelectionSheet(
                                 page.title.ifBlank { "第 ${page.page} P" },
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleMedium,
+                                style = MaterialTheme.typography.bodySmall,
                             )
                             Text(
                                 formatDuration(page.durationSeconds),
