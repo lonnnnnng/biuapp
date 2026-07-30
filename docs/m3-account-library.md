@@ -58,7 +58,7 @@ H5 登录页在当前 Android System WebView 中会把 CSS `100vh` 计算为 `0p
 
 ## 接口证据
 
-- 桌面版服务实现：`src/service/fav-resource.ts`、`fav-folder-created-list.ts`、`history-toview-list.ts`、`web-interface-history-search.ts`。
+- 桌面版只读参考实现：`../desktop-app/src/service/fav-resource.ts`、`fav-folder-created-list.ts`、`history-toview-list.ts`、`web-interface-history-search.ts`。
 - 2026-07-29 检索参考：<https://github.com/pskdje/bilibili-API-collect/blob/main/docs/fav/list.md>
 - 2026-07-29 检索参考：<https://github.com/pskdje/bilibili-API-collect/blob/main/docs/historytoview/toview.md>
 - 2026-07-29 检索参考：<https://github.com/pskdje/bilibili-API-collect/blob/main/docs/historytoview/history.md>
