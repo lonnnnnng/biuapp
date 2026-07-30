@@ -22,12 +22,16 @@ import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
+import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.data.update.AppVersionPolicy
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadService
 import com.lonnnnnng.biu.download.AudioDownloadStatus
+import com.lonnnnnng.biu.download.VideoDownloadRequest
+import com.lonnnnnng.biu.download.VideoDownloadService
+import com.lonnnnnng.biu.download.VideoDownloadStatus
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -93,6 +97,7 @@ data class BiuUiState(
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
     val localAudio: List<LocalAudio> = emptyList(),
     val audioDownloads: List<AudioDownloadTaskEntity> = emptyList(),
+    val videoDownloads: List<VideoDownloadTaskEntity> = emptyList(),
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
@@ -179,6 +184,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.audioDownloadRepository.tasks.collect { tasks ->
                 mutableState.update { it.copy(audioDownloads = tasks) }
+            }
+        }
+        viewModelScope.launch {
+            container.videoDownloadRepository.tasks.collect { tasks ->
+                mutableState.update { it.copy(videoDownloads = tasks) }
             }
         }
     }
@@ -648,6 +658,36 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelAudioDownload(taskId: String) {
         AudioDownloadService.cancel(getApplication<Application>().applicationContext, taskId)
+    }
+
+    fun startVideoDownload(request: VideoDownloadRequest) {
+        val existing = state.value.videoDownloads.firstOrNull { task -> task.taskId == request.taskId }
+        if (existing?.downloadStatus == VideoDownloadStatus.COMPLETED) {
+            mutableState.update { it.copy(message = "该分 P 视频已下载到 Movies/Biu") }
+            return
+        }
+        VideoDownloadService.start(getApplication<Application>().applicationContext, request)
+        mutableState.update {
+            it.copy(
+                message = if (existing?.downloadStatus == VideoDownloadStatus.PAUSED) {
+                    "正在恢复视频下载"
+                } else {
+                    "已加入视频下载"
+                },
+            )
+        }
+    }
+
+    fun resumeVideoDownload(taskId: String) {
+        VideoDownloadService.resume(getApplication<Application>().applicationContext, taskId)
+    }
+
+    fun pauseVideoDownload(taskId: String) {
+        VideoDownloadService.pause(getApplication<Application>().applicationContext, taskId)
+    }
+
+    fun cancelVideoDownload(taskId: String) {
+        VideoDownloadService.cancel(getApplication<Application>().applicationContext, taskId)
     }
 
     fun openFavoriteFolder(folder: BilibiliFavoriteFolder) {

@@ -80,7 +80,41 @@ class BilibiliModelsTest {
         assertEquals(stream.url, stream.replacementUrl("https://old.example/audio"))
     }
 
+    @Test
+    fun `视频下载优先最高画质 AVC 并在缺失时回退其他编码`() {
+        val candidates = listOf(
+            videoStream("avc-720", qualityId = 64, codecs = "avc1.64001f", bandwidth = 1_200_000),
+            videoStream("avc-1080", qualityId = 80, codecs = "avc1.640028", bandwidth = 2_400_000),
+            videoStream("hevc-4k", qualityId = 120, codecs = "hev1.1.6.L153.B0", bandwidth = 8_000_000),
+        )
+
+        assertEquals("avc-1080", DashVideoSelector.select(candidates)?.url)
+        assertEquals(
+            "hevc-4k",
+            DashVideoSelector.select(candidates.filterNot { it.codecs.startsWith("avc1") })?.url,
+        )
+    }
+
     private fun stream(url: String, bandwidth: Long): DashAudioStream {
         return DashAudioStream(url, bandwidth, "mp4a.40.2", "test", null)
+    }
+
+    private fun videoStream(
+        url: String,
+        qualityId: Int,
+        codecs: String,
+        bandwidth: Long,
+    ): DashVideoStream {
+        return DashVideoStream(
+            url = url,
+            qualityId = qualityId,
+            bandwidth = bandwidth,
+            codecs = codecs,
+            width = 1920,
+            height = 1080,
+            frameRate = 30.0,
+            qualityLabel = "test",
+            expiresAtEpochSeconds = null,
+        )
     }
 }

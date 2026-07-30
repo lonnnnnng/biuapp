@@ -17,10 +17,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.media3.common.util.UnstableApi
 import com.lonnnnnng.biu.MainActivity
 import com.lonnnnnng.biu.appContainer
-import com.lonnnnnng.biu.data.bilibili.DashAudioStream
-import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
+import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -38,19 +38,20 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-class AudioDownloadService : Service() {
+class VideoDownloadService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val commandMutex = Mutex()
-    private val repository by lazy { appContainer.audioDownloadRepository }
+    private val repository by lazy { appContainer.videoDownloadRepository }
     private val bilibiliRepository by lazy { appContainer.bilibiliRepository }
     private val downloader by lazy { ResumableFileDownloader(appContainer.bilibiliHttpClient) }
-    private val publisher by lazy { AudioDownloadPublisher(this) }
+    private val muxer by lazy(::VideoTrackMuxer)
+    private val publisher by lazy { VideoDownloadPublisher(this) }
 
     @Volatile
     private var activeTaskId: String? = null
 
     @Volatile
-    private var requestedStop: StopReason? = null
+    private var requestedStop: VideoStopReason? = null
 
     private var activeJob: Job? = null
 
@@ -66,33 +67,32 @@ class AudioDownloadService : Service() {
         val taskId = intent.getStringExtra(EXTRA_TASK_ID).orEmpty()
         val request = if (action == ACTION_START) requestFromIntent(intent) else null
         if (activeTaskId == null) {
-            val bootstrapTitle = request?.title ?: "音频下载"
+            val bootstrapTitle = request?.title ?: "视频下载"
             startAsForeground(
                 notificationId(taskId.ifBlank { bootstrapTitle }),
                 buildNotification(
                     taskId = taskId,
                     title = bootstrapTitle,
-                    text = "正在准备下载",
-                    status = AudioDownloadStatus.RESOLVING,
+                    text = "正在准备视频下载",
+                    status = VideoDownloadStatus.RESOLVING,
                     downloadedBytes = 0L,
                     totalBytes = 0L,
                 ),
             )
         }
         serviceScope.launch {
-            // long: 冷启动先完成上次进程遗留任务的降级，再处理用户的新命令，避免恢复写入覆盖刚开始的下载状态。
-            appContainer.audioDownloadRecovery.await()
+            // long: 先完成进程遗留任务的暂停恢复，再接受新命令，避免冷启动恢复写入覆盖用户刚触发的状态。
+            appContainer.videoDownloadRecovery.await()
             commandMutex.withLock {
                 runCatching {
                     when (action) {
                         ACTION_START -> request?.let { enqueue(it) }
                         ACTION_RESUME -> resume(taskId)
                         ACTION_PAUSE -> pause(taskId)
-                        // long: launch 代码块自带 CoroutineScope.cancel 扩展；使用独立业务名称，确保取消的是下载任务而不是命令协程。
                         ACTION_CANCEL -> cancelTask(taskId)
                     }
                 }.onFailure { error ->
-                    Log.w(LOG_TAG, "Download command failed: ${error.javaClass.simpleName}")
+                    Log.w(LOG_TAG, "Video download command failed: ${error.javaClass.simpleName}")
                     stopForegroundAndSelfIfIdle()
                 }
             }
@@ -108,14 +108,14 @@ class AudioDownloadService : Service() {
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         val taskId = activeTaskId
-        requestedStop = StopReason.PAUSE
+        requestedStop = VideoStopReason.PAUSE
         downloader.cancelActiveCall()
         activeJob?.cancel()
         if (!taskId.isNullOrBlank()) {
-            // long: Android 15+ dataSync 配额到期后必须在系统截止时间内停止服务；先同步落盘暂停态，避免进程被杀后任务仍显示运行中。
+            // long: Android 15+ dataSync 配额结束后同步保存暂停态，让已下载的两条轨能从断点继续而不是永久显示运行中。
             runCatching {
                 runBlocking(Dispatchers.IO) {
-                    transitionIfAllowed(taskId, AudioDownloadStatus.PAUSED)
+                    transitionIfAllowed(taskId, VideoDownloadStatus.PAUSED)
                 }
             }
         }
@@ -123,17 +123,22 @@ class AudioDownloadService : Service() {
         stopSelf(startId)
     }
 
-    private suspend fun enqueue(request: AudioDownloadRequest) {
-        val tempFile = tempFile(request.taskId)
-        val task = repository.enqueue(request, tempFile.absolutePath)
+    private suspend fun enqueue(request: VideoDownloadRequest) {
+        val paths = tempFiles(request.taskId)
+        val task = repository.enqueue(
+            request = request,
+            videoTempFilePath = paths.video.absolutePath,
+            audioTempFilePath = paths.audio.absolutePath,
+            outputTempFilePath = paths.output.absolutePath,
+        )
         when (task.downloadStatus) {
-            AudioDownloadStatus.COMPLETED -> {
-                postTaskNotification(task, "已保存到 Music/Biu", active = false)
+            VideoDownloadStatus.COMPLETED -> {
+                postTaskNotification(task, "已保存到 Movies/Biu", active = false)
                 stopForegroundAndSelfIfIdle()
             }
-            AudioDownloadStatus.QUEUED -> {
+            VideoDownloadStatus.QUEUED -> {
                 if (activeJob?.isActive == true) {
-                    postTaskNotification(task, "已加入下载队列", active = false)
+                    postTaskNotification(task, "已加入视频下载队列", active = false)
                 } else {
                     launchNextQueued()
                 }
@@ -144,13 +149,18 @@ class AudioDownloadService : Service() {
 
     private suspend fun resume(taskId: String) {
         val existing = repository.find(taskId) ?: return stopForegroundAndSelfIfIdle()
-        val task = repository.enqueue(existing.toRequest(), existing.tempFilePath)
-        if (task.downloadStatus == AudioDownloadStatus.COMPLETED) {
-            postTaskNotification(task, "已保存到 Music/Biu", active = false)
+        val task = repository.enqueue(
+            request = existing.toRequest(),
+            videoTempFilePath = existing.videoTempFilePath,
+            audioTempFilePath = existing.audioTempFilePath,
+            outputTempFilePath = existing.outputTempFilePath,
+        )
+        if (task.downloadStatus == VideoDownloadStatus.COMPLETED) {
+            postTaskNotification(task, "已保存到 Movies/Biu", active = false)
             return stopForegroundAndSelfIfIdle()
         }
         if (activeJob?.isActive == true) {
-            postTaskNotification(task, "已加入下载队列", active = false)
+            postTaskNotification(task, "已加入视频下载队列", active = false)
         } else {
             launchNextQueued()
         }
@@ -158,27 +168,27 @@ class AudioDownloadService : Service() {
 
     private suspend fun pause(taskId: String) {
         if (taskId == activeTaskId) {
-            requestedStop = StopReason.PAUSE
+            requestedStop = VideoStopReason.PAUSE
             downloader.cancelActiveCall()
             activeJob?.cancel()
             return
         }
         val task = repository.find(taskId) ?: return stopForegroundAndSelfIfIdle()
-        val paused = transitionIfAllowed(task.taskId, AudioDownloadStatus.PAUSED)
+        val paused = transitionIfAllowed(task.taskId, VideoDownloadStatus.PAUSED)
             ?: return stopForegroundAndSelfIfIdle()
-        postTaskNotification(paused, "下载已暂停", active = false)
+        postTaskNotification(paused, "视频下载已暂停", active = false)
         stopForegroundAndSelfIfIdle()
     }
 
     private suspend fun cancelTask(taskId: String) {
         if (taskId == activeTaskId) {
-            requestedStop = StopReason.CANCEL
+            requestedStop = VideoStopReason.CANCEL
             downloader.cancelActiveCall()
             activeJob?.cancel()
             return
         }
         val task = repository.find(taskId) ?: return stopForegroundAndSelfIfIdle()
-        val cancelled = transitionIfAllowed(task.taskId, AudioDownloadStatus.CANCELLED)
+        val cancelled = transitionIfAllowed(task.taskId, VideoDownloadStatus.CANCELLED)
             ?: return stopForegroundAndSelfIfIdle()
         clearCancelledTask(cancelled)
         stopForegroundAndSelfIfIdle()
@@ -192,37 +202,57 @@ class AudioDownloadService : Service() {
         activeJob = serviceScope.launch { runTask(next.taskId) }
     }
 
+    @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
     private suspend fun runTask(taskId: String) {
         var completed = false
         try {
-            var task = repository.transition(taskId, AudioDownloadStatus.RESOLVING) ?: return
-            postTaskNotification(task, "正在解析标准 AAC 音频", active = true)
-            val stream = bilibiliRepository.resolveStandardAudioStream(task.bvid, task.cid)
-            if (!stream.codecs.contains("mp4a", ignoreCase = true)) {
+            var task = repository.transition(taskId, VideoDownloadStatus.RESOLVING) ?: return
+            postTaskNotification(task, "正在解析 DASH 音视频轨", active = true)
+            val streams = bilibiliRepository.resolveVideoDownloadStreams(task.bvid, task.cid)
+            if (!streams.audio.codecs.contains("mp4a", ignoreCase = true)) {
                 throw IOException("暂不支持该音频编码")
             }
             task = repository.transition(
                 taskId = taskId,
-                target = AudioDownloadStatus.DOWNLOADING,
-                qualityLabel = stream.qualityLabel,
+                target = VideoDownloadStatus.DOWNLOADING_VIDEO,
+                videoQualityLabel = streams.video.qualityLabel,
+                audioQualityLabel = streams.audio.qualityLabel,
             ) ?: return
-            postTaskNotification(task, "正在下载 · ${stream.qualityLabel}", active = true)
-            val file = File(task.tempFilePath)
-            val downloadedBytes = if (
-                task.totalBytes > 0L && file.isFile && file.length() == task.totalBytes
-            ) {
-                task.totalBytes
-            } else {
-                download(task, stream, file)
-            }
-            repository.updateProgress(taskId, downloadedBytes, downloadedBytes)
-            task = repository.transition(taskId, AudioDownloadStatus.PUBLISHING) ?: return
-            postTaskNotification(task, "正在保存到 Music/Biu", active = true)
-            val publishedUri = publisher.publish(task.toRequest(), file)
-            repository.markCompleted(taskId, publishedUri.toString(), downloadedBytes)
-            file.delete()
+            postTaskNotification(task, "正在下载视频轨 · ${streams.video.qualityLabel}", active = true)
+            val videoFile = File(task.videoTempFilePath)
+            val videoBytes = downloadTrack(
+                task = task,
+                stage = VideoDownloadStatus.DOWNLOADING_VIDEO,
+                urls = listOf(streams.video.url) + streams.video.backupUrls,
+                targetFile = videoFile,
+            )
+            repository.updateVideoProgress(taskId, videoBytes, videoBytes)
+
+            task = repository.transition(taskId, VideoDownloadStatus.DOWNLOADING_AUDIO) ?: return
+            postTaskNotification(task, "正在下载音频轨 · ${streams.audio.qualityLabel}", active = true)
+            val audioFile = File(task.audioTempFilePath)
+            val audioBytes = downloadTrack(
+                task = task,
+                stage = VideoDownloadStatus.DOWNLOADING_AUDIO,
+                urls = listOf(streams.audio.url) + streams.audio.backupUrls,
+                targetFile = audioFile,
+            )
+            repository.updateAudioProgress(taskId, audioBytes, audioBytes)
+
+            task = repository.transition(taskId, VideoDownloadStatus.MUXING) ?: return
+            postTaskNotification(task, "正在无损合并音视频轨", active = true)
+            val outputFile = File(task.outputTempFilePath)
+            val outputBytes = muxer.mux(videoFile, audioFile, outputFile)
+
+            task = repository.transition(taskId, VideoDownloadStatus.PUBLISHING) ?: return
+            postTaskNotification(task, "正在保存到 Movies/Biu", active = true)
+            val publishedUri = publisher.publish(task.toRequest(), outputFile)
+            repository.markCompleted(taskId, publishedUri.toString(), outputBytes)
+            videoFile.delete()
+            audioFile.delete()
+            outputFile.delete()
             val finished = repository.find(taskId) ?: return
-            postTaskNotification(finished, "下载完成 · ${finished.qualityLabel}", active = false)
+            postTaskNotification(finished, "视频下载完成 · ${finished.videoQualityLabel}", active = false)
             completed = true
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) { applyRequestedStop(taskId) }
@@ -231,13 +261,13 @@ class AudioDownloadService : Service() {
                 if (requestedStop != null) {
                     applyRequestedStop(taskId)
                 } else {
-                    Log.w(LOG_TAG, "Download task failed: ${error.javaClass.simpleName}")
+                    Log.w(LOG_TAG, "Video download task failed: ${error.javaClass.simpleName}")
                     val failed = transitionIfAllowed(
                         taskId = taskId,
-                        target = AudioDownloadStatus.FAILED,
+                        target = VideoDownloadStatus.FAILED,
                         errorMessage = safeErrorMessage(error),
                     )
-                    failed?.let { postTaskNotification(it, it.errorMessage ?: "下载失败，请重试", active = false) }
+                    failed?.let { postTaskNotification(it, it.errorMessage ?: "视频下载失败，请重试", active = false) }
                 }
             }
         } finally {
@@ -251,50 +281,51 @@ class AudioDownloadService : Service() {
         }
     }
 
-    private suspend fun download(
-        task: AudioDownloadTaskEntity,
-        stream: DashAudioStream,
+    private suspend fun downloadTrack(
+        task: VideoDownloadTaskEntity,
+        stage: VideoDownloadStatus,
+        urls: List<String>,
         targetFile: File,
     ): Long {
-        val existingBytes = targetFile.takeIf(File::isFile)?.length() ?: 0L
-        if (existingBytes > 0L && task.totalBytes > 0L && existingBytes == task.totalBytes) {
-            return existingBytes
+        val knownTotalBytes = when (stage) {
+            VideoDownloadStatus.DOWNLOADING_VIDEO -> task.videoTotalBytes
+            VideoDownloadStatus.DOWNLOADING_AUDIO -> task.audioTotalBytes
+            else -> 0L
         }
-        var lastPersistedBytes = existingBytes
+        if (knownTotalBytes > 0L && targetFile.isFile && targetFile.length() == knownTotalBytes) {
+            return knownTotalBytes
+        }
+        var lastPersistedBytes = targetFile.takeIf(File::isFile)?.length() ?: 0L
         var lastPersistedAtNanos = System.nanoTime()
-        var resolvedTotalBytes = task.totalBytes
-        val downloadedBytes = downloader.download(
-            urls = listOf(stream.url) + stream.backupUrls,
-            targetFile = targetFile,
-        ) { bytes, totalBytes ->
-            resolvedTotalBytes = totalBytes
+        val downloadedBytes = downloader.download(urls, targetFile) { bytes, total ->
             val nowNanos = System.nanoTime()
             if (
-                bytes == totalBytes ||
+                bytes == total ||
                 bytes < lastPersistedBytes ||
                 bytes - lastPersistedBytes >= PROGRESS_PERSIST_BYTES ||
                 nowNanos - lastPersistedAtNanos >= PROGRESS_PERSIST_NANOS
             ) {
-                repository.updateProgress(task.taskId, bytes, totalBytes)
-                postProgressNotification(task, bytes, totalBytes)
+                when (stage) {
+                    VideoDownloadStatus.DOWNLOADING_VIDEO -> repository.updateVideoProgress(task.taskId, bytes, total)
+                    VideoDownloadStatus.DOWNLOADING_AUDIO -> repository.updateAudioProgress(task.taskId, bytes, total)
+                    else -> Unit
+                }
+                postProgressNotification(task, stage, bytes, total)
                 lastPersistedBytes = bytes
                 lastPersistedAtNanos = nowNanos
             }
         }
-        val totalBytes = resolvedTotalBytes.takeIf { it > 0L } ?: downloadedBytes
-        repository.updateProgress(task.taskId, downloadedBytes, totalBytes)
-        postProgressNotification(task, downloadedBytes, totalBytes)
         return downloadedBytes
     }
 
     private suspend fun applyRequestedStop(taskId: String) {
         when (requestedStop) {
-            StopReason.PAUSE -> {
-                val paused = transitionIfAllowed(taskId, AudioDownloadStatus.PAUSED)
-                paused?.let { postTaskNotification(it, "下载已暂停", active = false) }
+            VideoStopReason.PAUSE -> {
+                val paused = transitionIfAllowed(taskId, VideoDownloadStatus.PAUSED)
+                paused?.let { postTaskNotification(it, "视频下载已暂停", active = false) }
             }
-            StopReason.CANCEL -> {
-                val cancelled = transitionIfAllowed(taskId, AudioDownloadStatus.CANCELLED)
+            VideoStopReason.CANCEL -> {
+                val cancelled = transitionIfAllowed(taskId, VideoDownloadStatus.CANCELLED)
                 cancelled?.let { task -> clearCancelledTask(task) }
             }
             null -> Unit
@@ -302,53 +333,62 @@ class AudioDownloadService : Service() {
         stopForeground(STOP_FOREGROUND_DETACH)
     }
 
-    private suspend fun clearCancelledTask(task: AudioDownloadTaskEntity) {
-        File(task.tempFilePath).delete()
-        // long: 取消会删除断点文件，Room 同步归零进度，避免任务面板继续显示一段实际上已经不存在的已下载数据。
-        repository.updateProgress(task.taskId, downloadedBytes = 0L, totalBytes = 0L)
-        val cleared = repository.find(task.taskId) ?: task.copy(downloadedBytes = 0L, totalBytes = 0L)
-        postTaskNotification(cleared, "下载已取消", active = false)
+    private suspend fun clearCancelledTask(task: VideoDownloadTaskEntity) {
+        File(task.videoTempFilePath).delete()
+        File(task.audioTempFilePath).delete()
+        File(task.outputTempFilePath).delete()
+        // long: 取消会清除两条轨和合并文件，Room 进度同步归零，任务面板不能继续展示已经不存在的断点。
+        repository.updateVideoProgress(task.taskId, 0L, 0L)
+        repository.updateAudioProgress(task.taskId, 0L, 0L)
+        val cleared = repository.find(task.taskId) ?: task.copy(
+            videoDownloadedBytes = 0L,
+            videoTotalBytes = 0L,
+            audioDownloadedBytes = 0L,
+            audioTotalBytes = 0L,
+        )
+        postTaskNotification(cleared, "视频下载已取消", active = false)
     }
 
     private suspend fun transitionIfAllowed(
         taskId: String,
-        target: AudioDownloadStatus,
+        target: VideoDownloadStatus,
         errorMessage: String? = null,
-    ): AudioDownloadTaskEntity? {
+    ): VideoDownloadTaskEntity? {
         val current = repository.find(taskId) ?: return null
         if (current.downloadStatus == target) return current
-        if (!AudioDownloadStatePolicy.canTransition(current.downloadStatus, target)) {
-            // long: 已完成任务可能收到旧通知按钮触发的迟到命令；拒绝转换时不能继续执行清文件、清进度或发送错误状态通知。
+        if (!VideoDownloadStatePolicy.canTransition(current.downloadStatus, target)) {
+            // long: 合并发布完成与用户点击控制按钮可能同时发生；拒绝迟到命令可防止已发布视频被错误标记或清空轨道进度。
             return null
         }
         return repository.transition(taskId, target, errorMessage = errorMessage)
     }
 
-    private fun postProgressNotification(task: AudioDownloadTaskEntity, downloadedBytes: Long, totalBytes: Long) {
+    private fun postProgressNotification(
+        task: VideoDownloadTaskEntity,
+        stage: VideoDownloadStatus,
+        downloadedBytes: Long,
+        totalBytes: Long,
+    ) {
+        val stageLabel = if (stage == VideoDownloadStatus.DOWNLOADING_VIDEO) "视频轨" else "音频轨"
         val text = if (totalBytes > 0L) {
-            "正在下载 · ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}"
+            "$stageLabel · ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}"
         } else {
-            "正在下载 · ${formatBytes(downloadedBytes)}"
+            "$stageLabel · ${formatBytes(downloadedBytes)}"
         }
-        val notification = buildNotification(
-            taskId = task.taskId,
-            title = task.title,
-            text = text,
-            status = AudioDownloadStatus.DOWNLOADING,
-            downloadedBytes = downloadedBytes,
-            totalBytes = totalBytes,
+        startAsForeground(
+            notificationId(task.taskId),
+            buildNotification(task.taskId, task.title, text, stage, downloadedBytes, totalBytes),
         )
-        startAsForeground(notificationId(task.taskId), notification)
     }
 
-    private fun postTaskNotification(task: AudioDownloadTaskEntity, text: String, active: Boolean) {
+    private fun postTaskNotification(task: VideoDownloadTaskEntity, text: String, active: Boolean) {
         val notification = buildNotification(
             taskId = task.taskId,
             title = task.title,
             text = text,
             status = task.downloadStatus,
-            downloadedBytes = task.downloadedBytes,
-            totalBytes = task.totalBytes,
+            downloadedBytes = task.videoDownloadedBytes + task.audioDownloadedBytes,
+            totalBytes = task.videoTotalBytes + task.audioTotalBytes,
         )
         if (active) {
             startAsForeground(notificationId(task.taskId), notification)
@@ -361,7 +401,7 @@ class AudioDownloadService : Service() {
         taskId: String,
         title: String,
         text: String,
-        status: AudioDownloadStatus,
+        status: VideoDownloadStatus,
         downloadedBytes: Long,
         totalBytes: Long,
     ): Notification {
@@ -375,7 +415,7 @@ class AudioDownloadService : Service() {
             .setOngoing(status in ACTIVE_STATUSES)
             .setAutoCancel(status !in ACTIVE_STATUSES)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-        if (status == AudioDownloadStatus.DOWNLOADING) {
+        if (status in DOWNLOAD_STATUSES) {
             if (totalBytes > 0L) {
                 val progress = ((downloadedBytes.toDouble() / totalBytes.toDouble()) * PROGRESS_MAX)
                     .toInt()
@@ -386,9 +426,12 @@ class AudioDownloadService : Service() {
             }
         }
         when (status) {
-            AudioDownloadStatus.QUEUED,
-            AudioDownloadStatus.RESOLVING,
-            AudioDownloadStatus.DOWNLOADING,
+            VideoDownloadStatus.QUEUED,
+            VideoDownloadStatus.RESOLVING,
+            VideoDownloadStatus.DOWNLOADING_VIDEO,
+            VideoDownloadStatus.DOWNLOADING_AUDIO,
+            VideoDownloadStatus.MUXING,
+            VideoDownloadStatus.PUBLISHING,
             -> {
                 builder.addAction(
                     android.R.drawable.ic_media_pause,
@@ -401,12 +444,12 @@ class AudioDownloadService : Service() {
                     actionPendingIntent(ACTION_CANCEL, taskId),
                 )
             }
-            AudioDownloadStatus.PAUSED,
-            AudioDownloadStatus.FAILED,
+            VideoDownloadStatus.PAUSED,
+            VideoDownloadStatus.FAILED,
             -> {
                 builder.addAction(
                     android.R.drawable.ic_media_play,
-                    if (status == AudioDownloadStatus.PAUSED) "继续" else "重试",
+                    if (status == VideoDownloadStatus.PAUSED) "继续" else "重试",
                     actionPendingIntent(ACTION_RESUME, taskId),
                 )
                 builder.addAction(
@@ -415,20 +458,18 @@ class AudioDownloadService : Service() {
                     actionPendingIntent(ACTION_CANCEL, taskId),
                 )
             }
-            AudioDownloadStatus.CANCELLED -> builder.addAction(
+            VideoDownloadStatus.CANCELLED -> builder.addAction(
                 android.R.drawable.ic_media_play,
                 "重试",
                 actionPendingIntent(ACTION_RESUME, taskId),
             )
-            AudioDownloadStatus.PUBLISHING,
-            AudioDownloadStatus.COMPLETED,
-            -> Unit
+            VideoDownloadStatus.COMPLETED -> Unit
         }
         return builder.build()
     }
 
     private fun actionPendingIntent(action: String, taskId: String): PendingIntent {
-        val intent = Intent(this, AudioDownloadService::class.java)
+        val intent = Intent(this, VideoDownloadService::class.java)
             .setAction(action)
             .putExtra(EXTRA_TASK_ID, taskId)
         return PendingIntent.getForegroundService(
@@ -471,21 +512,25 @@ class AudioDownloadService : Service() {
     }
 
     private fun ensureNotificationChannel() {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "音频下载",
+                "视频下载",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "显示 Biu 音频下载进度和控制按钮"
+                description = "显示 Biu 视频双轨下载、合并进度和控制按钮"
             },
         )
     }
 
-    private fun tempFile(taskId: String): File {
+    private fun tempFiles(taskId: String): VideoTempFiles {
         val safeId = taskId.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        return File(File(filesDir, "audio-downloads"), "$safeId.part")
+        val directory = File(filesDir, "video-downloads")
+        return VideoTempFiles(
+            video = File(directory, "$safeId.video.m4s"),
+            audio = File(directory, "$safeId.audio.m4s"),
+            output = File(directory, "$safeId.output.mp4"),
+        )
     }
 
     private fun stopForegroundAndSelfIfIdle() {
@@ -494,16 +539,16 @@ class AudioDownloadService : Service() {
         stopSelf()
     }
 
-    private fun requestFromIntent(intent: Intent): AudioDownloadRequest? {
+    private fun requestFromIntent(intent: Intent): VideoDownloadRequest? {
         val taskId = intent.getStringExtra(EXTRA_TASK_ID)?.takeIf(String::isNotBlank) ?: return null
         val bvid = intent.getStringExtra(EXTRA_BVID)?.takeIf(String::isNotBlank) ?: return null
         val cid = intent.getLongExtra(EXTRA_CID, 0L).takeIf { it > 0L } ?: return null
-        return AudioDownloadRequest(
+        return VideoDownloadRequest(
             taskId = taskId,
             bvid = bvid,
             cid = cid,
             title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { bvid },
-            artist = intent.getStringExtra(EXTRA_ARTIST).orEmpty().ifBlank { "未知艺术家" },
+            artist = intent.getStringExtra(EXTRA_ARTIST).orEmpty().ifBlank { "未知作者" },
             artworkUrl = intent.getStringExtra(EXTRA_ARTWORK_URL),
             qualityPreference = runCatching {
                 com.lonnnnnng.biu.core.model.AudioQualityPreference.valueOf(
@@ -516,14 +561,16 @@ class AudioDownloadService : Service() {
     private fun safeErrorMessage(error: Throwable): String {
         return when {
             error.message == "暂不支持该音频编码" -> error.message.orEmpty()
-            error.message?.contains("空间", ignoreCase = true) == true -> "存储空间不足，无法完成下载"
-            else -> "下载失败，请检查网络后重试"
+            error.message?.contains("轨") == true || error.message?.contains("合并") == true ->
+                "视频轨格式不兼容，暂时无法合并"
+            error.message?.contains("空间", ignoreCase = true) == true -> "存储空间不足，无法完成视频下载"
+            else -> "视频下载失败，请检查网络后重试"
         }
     }
 
     companion object {
-        fun start(context: Context, request: AudioDownloadRequest) {
-            val intent = Intent(context, AudioDownloadService::class.java)
+        fun start(context: Context, request: VideoDownloadRequest) {
+            val intent = Intent(context, VideoDownloadService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_TASK_ID, request.taskId)
                 .putExtra(EXTRA_BVID, request.bvid)
@@ -542,16 +589,16 @@ class AudioDownloadService : Service() {
         fun cancel(context: Context, taskId: String) = sendAction(context, ACTION_CANCEL, taskId)
 
         private fun sendAction(context: Context, action: String, taskId: String) {
-            val intent = Intent(context, AudioDownloadService::class.java)
+            val intent = Intent(context, VideoDownloadService::class.java)
                 .setAction(action)
                 .putExtra(EXTRA_TASK_ID, taskId)
             ContextCompat.startForegroundService(context, intent)
         }
 
-        private const val ACTION_START = "com.lonnnnnng.biu.download.START"
-        private const val ACTION_RESUME = "com.lonnnnnng.biu.download.RESUME"
-        private const val ACTION_PAUSE = "com.lonnnnnng.biu.download.PAUSE"
-        private const val ACTION_CANCEL = "com.lonnnnnng.biu.download.CANCEL"
+        private const val ACTION_START = "com.lonnnnnng.biu.download.VIDEO_START"
+        private const val ACTION_RESUME = "com.lonnnnnng.biu.download.VIDEO_RESUME"
+        private const val ACTION_PAUSE = "com.lonnnnnng.biu.download.VIDEO_PAUSE"
+        private const val ACTION_CANCEL = "com.lonnnnnng.biu.download.VIDEO_CANCEL"
         private const val EXTRA_TASK_ID = "task_id"
         private const val EXTRA_BVID = "bvid"
         private const val EXTRA_CID = "cid"
@@ -562,7 +609,13 @@ class AudioDownloadService : Service() {
     }
 }
 
-private enum class StopReason {
+private data class VideoTempFiles(
+    val video: File,
+    val audio: File,
+    val output: File,
+)
+
+private enum class VideoStopReason {
     PAUSE,
     CANCEL,
 }
@@ -583,16 +636,22 @@ private fun actionRequestCode(action: String, taskId: String): Int {
 }
 
 private val ACTIVE_STATUSES = setOf(
-    AudioDownloadStatus.QUEUED,
-    AudioDownloadStatus.RESOLVING,
-    AudioDownloadStatus.DOWNLOADING,
-    AudioDownloadStatus.PUBLISHING,
+    VideoDownloadStatus.QUEUED,
+    VideoDownloadStatus.RESOLVING,
+    VideoDownloadStatus.DOWNLOADING_VIDEO,
+    VideoDownloadStatus.DOWNLOADING_AUDIO,
+    VideoDownloadStatus.MUXING,
+    VideoDownloadStatus.PUBLISHING,
 )
-private const val LOG_TAG = "BiuDownload"
-private const val NOTIFICATION_CHANNEL_ID = "audio_downloads"
-private const val NOTIFICATION_ID_BASE = 20_000
+private val DOWNLOAD_STATUSES = setOf(
+    VideoDownloadStatus.DOWNLOADING_VIDEO,
+    VideoDownloadStatus.DOWNLOADING_AUDIO,
+)
+private const val LOG_TAG = "BiuVideoDownload"
+private const val NOTIFICATION_CHANNEL_ID = "video_downloads"
+private const val NOTIFICATION_ID_BASE = 40_000
 private const val NOTIFICATION_ID_RANGE = 10_000
-private const val OPEN_APP_REQUEST_CODE = 31_001
+private const val OPEN_APP_REQUEST_CODE = 51_001
 private const val PROGRESS_MAX = 1_000
 private const val PROGRESS_PERSIST_BYTES = 512 * 1024L
 private val PROGRESS_PERSIST_NANOS = TimeUnit.SECONDS.toNanos(1)

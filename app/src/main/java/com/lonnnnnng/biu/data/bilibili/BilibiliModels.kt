@@ -86,6 +86,50 @@ data class DashAudioStream(
     }
 }
 
+data class DashVideoStream(
+    val url: String,
+    val qualityId: Int,
+    val bandwidth: Long,
+    val codecs: String,
+    val width: Int,
+    val height: Int,
+    val frameRate: Double,
+    val qualityLabel: String,
+    val expiresAtEpochSeconds: Long?,
+    val backupUrls: List<String> = emptyList(),
+)
+
+data class DashDownloadStreams(
+    val video: DashVideoStream,
+    val audio: DashAudioStream,
+)
+
+object DashVideoSelector {
+    fun select(streams: List<DashVideoStream>): DashVideoStream? {
+        if (streams.isEmpty()) return null
+        // long: 视频下载产物要能在尽可能多的 Android 设备直接播放；同编码族内取最高画质，但 AVC 的兼容性优先于更高画质的 HEVC/AV1。
+        val preferredCodecPriority = streams.minOf(::codecPriority)
+        return streams
+            .asSequence()
+            .filter { stream -> codecPriority(stream) == preferredCodecPriority }
+            .maxWithOrNull(
+                compareBy<DashVideoStream>(DashVideoStream::qualityId)
+                    .thenBy { stream -> stream.width.toLong() * stream.height.toLong() }
+                    .thenBy(DashVideoStream::bandwidth),
+            )
+    }
+
+    private fun codecPriority(stream: DashVideoStream): Int {
+        val codecs = stream.codecs.lowercase()
+        return when {
+            codecs.startsWith("avc1") || codecs.startsWith("avc3") -> 0
+            codecs.startsWith("hev1") || codecs.startsWith("hvc1") -> 1
+            codecs.startsWith("av01") -> 2
+            else -> 3
+        }
+    }
+}
+
 object BilibiliText {
     private val htmlTag = Regex("<[^>]+>")
     private val entities = mapOf(

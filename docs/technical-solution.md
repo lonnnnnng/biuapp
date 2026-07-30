@@ -79,7 +79,11 @@ Cookie 只提供给 Bilibili 专用 OkHttpClient。禁止复制桌面版“拦�
 
 M4 首版音频下载只选择 Bilibili 标准 AAC 轨中的最高码率，不直接保存 FLAC 或杜比轨，避免把需要容器转换的流仅改名为 `.m4a`。任务通过独立 `dataSync` 前台服务串行执行，Room 保存 `QUEUED / RESOLVING / DOWNLOADING / PAUSED / PUBLISHING / COMPLETED / FAILED / CANCELLED` 状态、断点字节、音质和最终 URI。
 
-临时文件保存在应用私有目录。继续下载时发送 `Range`：`206` 追加，服务端返回 `200` 时覆盖旧文件，`416` 时只允许清空断点一次；取消任务会删除临时文件并把 Room 进度归零。下载完成后通过 MediaStore 的 `IS_PENDING` 和 `RELATIVE_PATH=Music/Biu/` 发布，再删除私有临时文件。
+M5 当前 P 视频下载沿用桌面版的 `fnval=4048` 且不额外传 `qn`，在同一次 DASH 响应中选择最高可用 AVC 视频轨；没有 AVC 时依次回退 HEVC、AV1，音频仍选择最高码率标准 AAC。Room v4 使用独立 `video_download_tasks` 保存视频轨、音频轨和合并文件的进度，避免视频状态改动影响已经稳定的音频任务。
+
+音频与视频共用应用级 Range 传输器。临时文件保存在应用私有目录；继续下载时发送 `Range`：`206` 追加，服务端返回 `200` 时覆盖旧文件，`416` 时只允许清空断点一次。视频服务串行下载两条轨，再由 `MediaExtractor` 读取实际音视频轨，使用 `Media3 Mp4Muxer` 按样本时间戳交错写入 MP4，不做解码和转码。当前分 P 的 Media3 标题用于任务名和最终文件名，发布目录为 `Movies/Biu/`。
+
+进程死亡后，解析、双轨下载、合并和发布中的视频任务统一降级为 `PAUSED`，已完成的轨文件保留以便恢复；取消任务会删除视频轨、音频轨和合并临时文件并把 Room 进度归零。音频完成后通过 MediaStore 的 `IS_PENDING` 和 `RELATIVE_PATH=Music/Biu/` 发布，视频完成后使用 `RELATIVE_PATH=Movies/Biu/` 发布，再删除私有临时文件。
 
 MediaProvider 可能在扫描无内嵌标签的 DASH 容器后覆盖 `TITLE/ARTIST`。本地音乐扫描因此以已完成任务的 `publishedUri` 提取 MediaStore ID，用 Room 中的在线标题、作者和封面覆盖系统回退值；播放仍使用 MediaStore `content://` URI。
 

@@ -58,14 +58,20 @@ interface PlaybackHistoryDao {
 }
 
 @Database(
-    entities = [PlaybackHistoryEntity::class, CreatorSelectionEntity::class, AudioDownloadTaskEntity::class],
-    version = 3,
+    entities = [
+        PlaybackHistoryEntity::class,
+        CreatorSelectionEntity::class,
+        AudioDownloadTaskEntity::class,
+        VideoDownloadTaskEntity::class,
+    ],
+    version = 4,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
     abstract fun playbackHistoryDao(): PlaybackHistoryDao
     abstract fun creatorSelectionDao(): CreatorSelectionDao
     abstract fun audioDownloadTaskDao(): AudioDownloadTaskDao
+    abstract fun videoDownloadTaskDao(): VideoDownloadTaskDao
 }
 
 object BiuDatabaseMigrations {
@@ -105,6 +111,42 @@ object BiuDatabaseMigrations {
                     `totalBytes` INTEGER NOT NULL,
                     `tempFilePath` TEXT NOT NULL,
                     `qualityLabel` TEXT NOT NULL,
+                    `publishedUri` TEXT,
+                    `errorMessage` TEXT,
+                    `createdAtEpochMs` INTEGER NOT NULL,
+                    `updatedAtEpochMs` INTEGER NOT NULL,
+                    PRIMARY KEY(`taskId`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: M5 新增视频双轨任务表，不改写现有音频任务；升级后用户已完成的音频下载和历史进度必须原样保留。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `video_download_tasks` (
+                    `taskId` TEXT NOT NULL,
+                    `bvid` TEXT NOT NULL,
+                    `cid` INTEGER NOT NULL,
+                    `title` TEXT NOT NULL,
+                    `artist` TEXT NOT NULL,
+                    `artworkUrl` TEXT,
+                    `qualityPreference` TEXT NOT NULL,
+                    `displayName` TEXT NOT NULL,
+                    `status` TEXT NOT NULL,
+                    `videoDownloadedBytes` INTEGER NOT NULL,
+                    `videoTotalBytes` INTEGER NOT NULL,
+                    `audioDownloadedBytes` INTEGER NOT NULL,
+                    `audioTotalBytes` INTEGER NOT NULL,
+                    `videoTempFilePath` TEXT NOT NULL,
+                    `audioTempFilePath` TEXT NOT NULL,
+                    `outputTempFilePath` TEXT NOT NULL,
+                    `videoQualityLabel` TEXT NOT NULL,
+                    `audioQualityLabel` TEXT NOT NULL,
+                    `outputBytes` INTEGER NOT NULL,
                     `publishedUri` TEXT,
                     `errorMessage` TEXT,
                     `createdAtEpochMs` INTEGER NOT NULL,

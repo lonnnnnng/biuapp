@@ -13,6 +13,7 @@ import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
 import com.lonnnnnng.biu.data.local.LocalAudioDirectoryRepository
 import com.lonnnnnng.biu.data.local.LocalAudioRepository
 import com.lonnnnnng.biu.data.local.PlaybackHistoryRepository
+import com.lonnnnnng.biu.data.local.VideoDownloadRepository
 import com.lonnnnnng.biu.data.update.AppUpdateRepository
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -54,14 +55,19 @@ class AppContainer(context: Context) {
     ).addMigrations(
         BiuDatabaseMigrations.MIGRATION_1_2,
         BiuDatabaseMigrations.MIGRATION_2_3,
+        BiuDatabaseMigrations.MIGRATION_3_4,
     ).build()
     val playbackHistoryRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
     val creatorSelectionRepository = CreatorSelectionRepository(database.creatorSelectionDao())
     val audioDownloadRepository = AudioDownloadRepository(database.audioDownloadTaskDao())
+    val videoDownloadRepository = VideoDownloadRepository(database.videoDownloadTaskDao())
     val localAudioDirectoryRepository = LocalAudioDirectoryRepository(context)
     val localAudioRepository = LocalAudioRepository(context)
     val audioDownloadRecovery: Deferred<Unit> = applicationScope.async {
         audioDownloadRepository.pauseInterruptedTasks()
+    }
+    val videoDownloadRecovery: Deferred<Unit> = applicationScope.async {
+        videoDownloadRepository.pauseInterruptedTasks()
     }
 }
 

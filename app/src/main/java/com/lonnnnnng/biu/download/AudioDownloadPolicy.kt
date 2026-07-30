@@ -95,7 +95,13 @@ data class AudioDownloadRequest(
     val qualityPreference: AudioQualityPreference,
 ) {
     val displayName: String
-        get() = AudioDownloadFilePolicy.displayName(title, artist)
+        get() = DownloadFileNamePolicy.displayName(
+            title = title,
+            artist = artist,
+            titleFallback = "未知曲目",
+            artistFallback = "未知艺术家",
+            extension = "m4a",
+        )
 
     companion object {
         fun create(
@@ -134,28 +140,6 @@ data class AudioDownloadRequest(
     }
 }
 
-internal object AudioDownloadFilePolicy {
-    private val invalidFileNameCharacters = Regex("""[\\/:*?\"<>|\u0000-\u001F]""")
-    private val repeatedWhitespace = Regex("\\s+")
-
-    fun displayName(title: String, artist: String): String {
-        val safeTitle = safePart(title, "未知曲目")
-        val safeArtist = safePart(artist, "未知艺术家")
-        return "$safeTitle - $safeArtist.m4a"
-    }
-
-    private fun safePart(value: String, fallback: String): String {
-        return value
-            .replace(invalidFileNameCharacters, "_")
-            .replace(repeatedWhitespace, " ")
-            .trim(' ', '.')
-            .take(MAX_FILE_NAME_PART_LENGTH)
-            .trimEnd(' ', '.')
-            .ifBlank { fallback }
-    }
-}
-
-private const val MAX_FILE_NAME_PART_LENGTH = 96
 private const val ANDROID_10_API_LEVEL = 29
 private const val AUDIO_MP4_MIME_TYPE = "audio/mp4"
 private const val BIU_MUSIC_RELATIVE_PATH = "Music/Biu/"

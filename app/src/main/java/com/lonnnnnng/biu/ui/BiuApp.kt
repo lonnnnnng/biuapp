@@ -59,6 +59,7 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -158,9 +159,12 @@ import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.LocalMediaPermissionPolicy
+import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadStatus
+import com.lonnnnnng.biu.download.VideoDownloadRequest
+import com.lonnnnnng.biu.download.VideoDownloadStatus
 import com.lonnnnnng.biu.playback.PlaybackService
 import com.lonnnnnng.biu.update.AppUpdateInstaller
 import java.time.Instant
@@ -195,7 +199,18 @@ private data class PlaybackSnapshot(
     val currentIndex: Int = 0,
     val queueItems: List<PlaybackQueueItem> = emptyList(),
     val downloadRequest: AudioDownloadRequest? = null,
+    val videoDownloadRequest: VideoDownloadRequest? = null,
 )
+
+private enum class DownloadTaskKind(val label: String) {
+    AUDIO("音频"),
+    VIDEO("视频"),
+}
+
+private sealed interface PendingDownload {
+    data class Audio(val request: AudioDownloadRequest) : PendingDownload
+    data class Video(val request: VideoDownloadRequest) : PendingDownload
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -218,8 +233,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showQualityMenu by remember { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
     var showNowPlaying by remember { mutableStateOf(false) }
-    var showAudioDownloads by remember { mutableStateOf(false) }
-    var pendingAudioDownloadRequest by remember { mutableStateOf<AudioDownloadRequest?>(null) }
+    var showDownloads by remember { mutableStateOf(false) }
+    var downloadTaskKind by remember { mutableStateOf(DownloadTaskKind.AUDIO) }
+    var pendingDownload by remember { mutableStateOf<PendingDownload?>(null) }
     var playbackErrorEventId by remember { mutableLongStateOf(0L) }
     var activeUpdateDownloadId by rememberSaveable {
         mutableLongStateOf(updateInstaller.pendingDownloadId())
@@ -256,19 +272,22 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     ) { treeUri ->
         treeUri?.let(viewModel::selectLocalAudioDirectory)
     }
-    val audioDownloadPermissionLauncher = rememberLauncherForActivityResult(
+    val downloadPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
-        val request = pendingAudioDownloadRequest
-        pendingAudioDownloadRequest = null
+        val request = pendingDownload
+        pendingDownload = null
         if (request == null) return@rememberLauncherForActivityResult
         val legacyStorageGranted = Build.VERSION.SDK_INT > Build.VERSION_CODES.P ||
             grants[Manifest.permission.WRITE_EXTERNAL_STORAGE] == true
         if (!legacyStorageGranted) {
-            coroutineScope.launch { snackbarHostState.showSnackbar("需要存储权限才能保存下载音频") }
+            coroutineScope.launch { snackbarHostState.showSnackbar("需要存储权限才能保存下载内容") }
             return@rememberLauncherForActivityResult
         }
-        viewModel.startAudioDownload(request)
+        when (request) {
+            is PendingDownload.Audio -> viewModel.startAudioDownload(request.request)
+            is PendingDownload.Video -> viewModel.startVideoDownload(request.request)
+        }
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             grants[Manifest.permission.POST_NOTIFICATIONS] == false
@@ -278,33 +297,47 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             }
         }
     }
+    val startOrRequestDownload: (PendingDownload) -> Unit = { request ->
+        val missingPermissions = buildList {
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (
+                Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+        if (missingPermissions.isEmpty()) {
+            when (request) {
+                is PendingDownload.Audio -> viewModel.startAudioDownload(request.request)
+                is PendingDownload.Video -> viewModel.startVideoDownload(request.request)
+            }
+        } else {
+            pendingDownload = request
+            downloadPermissionLauncher.launch(missingPermissions.toTypedArray())
+        }
+    }
     val requestAudioDownload: () -> Unit = {
         val request = controller?.currentMediaItem?.let(AudioDownloadRequest::fromMediaItem)
         if (request == null) {
             coroutineScope.launch { snackbarHostState.showSnackbar("当前内容不是可下载的 Bilibili 在线音频") }
         } else {
-            val missingPermissions = buildList {
-                if (
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    add(Manifest.permission.POST_NOTIFICATIONS)
-                }
-                if (
-                    Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
-                    ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                }
-            }
-            if (missingPermissions.isEmpty()) {
-                viewModel.startAudioDownload(request)
-            } else {
-                pendingAudioDownloadRequest = request
-                audioDownloadPermissionLauncher.launch(missingPermissions.toTypedArray())
-            }
+            startOrRequestDownload(PendingDownload.Audio(request))
+        }
+    }
+    val requestVideoDownload: () -> Unit = {
+        val request = controller?.currentMediaItem?.let(VideoDownloadRequest::fromMediaItem)
+        if (request == null) {
+            coroutineScope.launch { snackbarHostState.showSnackbar("当前内容不是可下载的 Bilibili 在线视频") }
+        } else {
+            startOrRequestDownload(PendingDownload.Video(request))
         }
     }
     LifecycleResumeEffect(localAudioPermission) {
@@ -404,6 +437,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         )
                     },
                     downloadRequest = activeController.currentMediaItem?.let(AudioDownloadRequest::fromMediaItem),
+                    videoDownloadRequest = activeController.currentMediaItem?.let(VideoDownloadRequest::fromMediaItem),
                 )
             } ?: PlaybackSnapshot()
         }
@@ -568,19 +602,25 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
-    if (showAudioDownloads) {
+    if (showDownloads) {
         ModalBottomSheet(
-            onDismissRequest = { showAudioDownloads = false },
+            onDismissRequest = { showDownloads = false },
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
-            AudioDownloadTaskList(
-                tasks = uiState.audioDownloads,
-                onResume = viewModel::resumeAudioDownload,
-                onPause = viewModel::pauseAudioDownload,
-                onCancel = viewModel::cancelAudioDownload,
+            DownloadTaskPanel(
+                selectedKind = downloadTaskKind,
+                onSelectedKindChange = { downloadTaskKind = it },
+                audioTasks = uiState.audioDownloads,
+                videoTasks = uiState.videoDownloads,
+                onResumeAudio = viewModel::resumeAudioDownload,
+                onPauseAudio = viewModel::pauseAudioDownload,
+                onCancelAudio = viewModel::cancelAudioDownload,
+                onResumeVideo = viewModel::resumeVideoDownload,
+                onPauseVideo = viewModel::pauseVideoDownload,
+                onCancelVideo = viewModel::cancelVideoDownload,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 640.dp),
+                    .heightIn(min = 280.dp, max = 640.dp),
             )
         }
     }
@@ -600,7 +640,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onNext = { controller?.seekToNextMediaItem() },
             onSeek = { positionMs -> controller?.seekTo(positionMs) },
             onDownload = requestAudioDownload,
-            onShowDownloads = { showAudioDownloads = true },
+            onVideoDownload = requestVideoDownload,
+            onShowDownloads = { showDownloads = true },
             onSelectQueueItem = { index ->
                 controller?.seekToDefaultPosition(index)
                 controller?.play()
@@ -674,7 +715,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onLogin = { showLogin = true },
                     onRefresh = viewModel::refreshAccount,
                     onCheckUpdate = viewModel::checkForUpdate,
-                    onShowDownloads = { showAudioDownloads = true },
+                    onShowDownloads = { showDownloads = true },
                     onLogout = viewModel::logout,
                     onLoadLibrary = { section ->
                         if (section == AccountLibrarySection.LOCAL_MUSIC && !localAudioPermissionGranted) {
@@ -2406,6 +2447,7 @@ private fun NowPlayingScreen(
     onNext: () -> Unit,
     onSeek: (Long) -> Unit,
     onDownload: () -> Unit,
+    onVideoDownload: () -> Unit,
     onShowDownloads: () -> Unit,
     onSelectQueueItem: (Int) -> Unit,
 ) {
@@ -2446,6 +2488,7 @@ private fun NowPlayingScreen(
             onNext = onNext,
             onSeek = onSeek,
             onDownload = onDownload,
+            onVideoDownload = onVideoDownload,
             onShowDownloads = onShowDownloads,
             onShowQueue = { showQueue = true },
             isLandscape = isLandscape,
@@ -2465,6 +2508,7 @@ private fun NowPlayingDetails(
     onNext: () -> Unit,
     onSeek: (Long) -> Unit,
     onDownload: () -> Unit,
+    onVideoDownload: () -> Unit,
     onShowDownloads: () -> Unit,
     onShowQueue: () -> Unit,
     isLandscape: Boolean,
@@ -2495,7 +2539,9 @@ private fun NowPlayingDetails(
             onToggle = onToggle,
             onNext = onNext,
             downloadEnabled = snapshot.downloadRequest != null,
+            videoDownloadEnabled = snapshot.videoDownloadRequest != null,
             onDownload = onDownload,
+            onVideoDownload = onVideoDownload,
             onShowDownloads = onShowDownloads,
             onShowQueue = onShowQueue,
             onValueChange = { value ->
@@ -2569,7 +2615,9 @@ private fun NowPlayingControls(
     onToggle: () -> Unit,
     onNext: () -> Unit,
     downloadEnabled: Boolean,
+    videoDownloadEnabled: Boolean,
     onDownload: () -> Unit,
+    onVideoDownload: () -> Unit,
     onShowDownloads: () -> Unit,
     onShowQueue: () -> Unit,
     onValueChange: (Float) -> Unit,
@@ -2605,6 +2653,17 @@ private fun NowPlayingControls(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
             )
+            IconButton(onClick = onVideoDownload, enabled = videoDownloadEnabled) {
+                Icon(
+                    Icons.Rounded.Movie,
+                    contentDescription = "下载当前视频",
+                    tint = if (videoDownloadEnabled) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
             IconButton(onClick = onDownload, enabled = downloadEnabled) {
                 Icon(
                     Icons.Rounded.Download,
@@ -2762,6 +2821,65 @@ private fun PlaybackQueue(
 }
 
 @Composable
+private fun DownloadTaskPanel(
+    selectedKind: DownloadTaskKind,
+    onSelectedKindChange: (DownloadTaskKind) -> Unit,
+    audioTasks: List<AudioDownloadTaskEntity>,
+    videoTasks: List<VideoDownloadTaskEntity>,
+    onResumeAudio: (String) -> Unit,
+    onPauseAudio: (String) -> Unit,
+    onCancelAudio: (String) -> Unit,
+    onResumeVideo: (String) -> Unit,
+    onPauseVideo: (String) -> Unit,
+    onCancelVideo: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Rounded.Downloading, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Text("下载任务", style = MaterialTheme.typography.titleMedium)
+        }
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DownloadTaskKind.entries.forEach { kind ->
+                val count = if (kind == DownloadTaskKind.AUDIO) audioTasks.size else videoTasks.size
+                FilterChip(
+                    selected = kind == selectedKind,
+                    onClick = { onSelectedKindChange(kind) },
+                    label = { Text("${kind.label} · $count") },
+                )
+            }
+        }
+        when (selectedKind) {
+            DownloadTaskKind.AUDIO -> AudioDownloadTaskList(
+                tasks = audioTasks,
+                onResume = onResumeAudio,
+                onPause = onPauseAudio,
+                onCancel = onCancelAudio,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            )
+            DownloadTaskKind.VIDEO -> VideoDownloadTaskList(
+                tasks = videoTasks,
+                onResume = onResumeVideo,
+                onPause = onPauseVideo,
+                onCancel = onCancelVideo,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
 private fun AudioDownloadTaskList(
     tasks: List<AudioDownloadTaskEntity>,
     onResume: (String) -> Unit,
@@ -2775,8 +2893,7 @@ private fun AudioDownloadTaskList(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(Icons.Rounded.Downloading, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text("下载任务 · ${tasks.size}", style = MaterialTheme.typography.titleMedium)
+            Text("音频任务 · ${tasks.size}", style = MaterialTheme.typography.bodySmall)
         }
         if (tasks.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2861,6 +2978,130 @@ private fun AudioDownloadTaskList(
                         }
                     }
                     if (task.totalBytes > 0L && task.downloadStatus != AudioDownloadStatus.COMPLETED) {
+                        LinearProgressIndicator(
+                            progress = { task.progressFraction },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.dp),
+                        )
+                    }
+                    task.errorMessage?.takeIf(String::isNotBlank)?.let { errorMessage ->
+                        Text(
+                            errorMessage,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoDownloadTaskList(
+    tasks: List<VideoDownloadTaskEntity>,
+    onResume: (String) -> Unit,
+    onPause: (String) -> Unit,
+    onCancel: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Text(
+            "视频任务 · ${tasks.size}",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (tasks.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "还没有视频下载任务",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            return@Column
+        }
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(tasks, key = VideoDownloadTaskEntity::taskId) { task ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                task.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                task.artist,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                buildString {
+                                    append(videoDownloadStatusLabel(task.downloadStatus))
+                                    if (task.videoQualityLabel.isNotBlank()) append(" · ${task.videoQualityLabel}")
+                                    val downloadedBytes = task.videoDownloadedBytes + task.audioDownloadedBytes
+                                    val totalBytes = task.videoTotalBytes + task.audioTotalBytes
+                                    if (downloadedBytes > 0L) {
+                                        append(" · ${formatDownloadBytes(downloadedBytes)}")
+                                        if (totalBytes > 0L) append(" / ${formatDownloadBytes(totalBytes)}")
+                                    }
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (task.downloadStatus == VideoDownloadStatus.FAILED) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                        when (task.downloadStatus) {
+                            VideoDownloadStatus.QUEUED,
+                            VideoDownloadStatus.RESOLVING,
+                            VideoDownloadStatus.DOWNLOADING_VIDEO,
+                            VideoDownloadStatus.DOWNLOADING_AUDIO,
+                            VideoDownloadStatus.MUXING,
+                            VideoDownloadStatus.PUBLISHING,
+                            -> {
+                                IconButton(onClick = { onPause(task.taskId) }) {
+                                    Icon(Icons.Rounded.Pause, contentDescription = "暂停视频下载")
+                                }
+                                IconButton(onClick = { onCancel(task.taskId) }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "取消视频下载")
+                                }
+                            }
+                            VideoDownloadStatus.PAUSED,
+                            VideoDownloadStatus.FAILED,
+                            -> {
+                                IconButton(onClick = { onResume(task.taskId) }) {
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = "继续视频下载")
+                                }
+                                IconButton(onClick = { onCancel(task.taskId) }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "取消视频下载")
+                                }
+                            }
+                            VideoDownloadStatus.CANCELLED -> IconButton(onClick = { onResume(task.taskId) }) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "重新下载视频")
+                            }
+                            VideoDownloadStatus.COMPLETED -> Unit
+                        }
+                    }
+                    val totalBytes = task.videoTotalBytes + task.audioTotalBytes
+                    if (totalBytes > 0L && task.downloadStatus != VideoDownloadStatus.COMPLETED) {
                         LinearProgressIndicator(
                             progress = { task.progressFraction },
                             modifier = Modifier
@@ -2991,6 +3232,21 @@ private fun downloadStatusLabel(status: AudioDownloadStatus): String {
         AudioDownloadStatus.COMPLETED -> "已保存到 Music/Biu"
         AudioDownloadStatus.FAILED -> "下载失败"
         AudioDownloadStatus.CANCELLED -> "已取消"
+    }
+}
+
+private fun videoDownloadStatusLabel(status: VideoDownloadStatus): String {
+    return when (status) {
+        VideoDownloadStatus.QUEUED -> "等待下载"
+        VideoDownloadStatus.RESOLVING -> "正在解析"
+        VideoDownloadStatus.DOWNLOADING_VIDEO -> "正在下载视频轨"
+        VideoDownloadStatus.DOWNLOADING_AUDIO -> "正在下载音频轨"
+        VideoDownloadStatus.MUXING -> "正在合并"
+        VideoDownloadStatus.PUBLISHING -> "正在保存"
+        VideoDownloadStatus.PAUSED -> "已暂停"
+        VideoDownloadStatus.COMPLETED -> "已保存到 Movies/Biu"
+        VideoDownloadStatus.FAILED -> "视频下载失败"
+        VideoDownloadStatus.CANCELLED -> "已取消"
     }
 }
 

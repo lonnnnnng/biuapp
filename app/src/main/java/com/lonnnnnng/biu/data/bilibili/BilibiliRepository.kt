@@ -5,6 +5,7 @@ import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.Track
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -289,19 +290,28 @@ class BilibiliRepository(
         cid: Long,
         qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     ): DashAudioStream {
-        val streams = resolveAudioStreams(bvid, cid)
+        val streams = resolveDashStreams(bvid, cid)
         return DashAudioSelector.select(qualityPreference, streams.flac, streams.dolby, streams.standard)
             ?: throw BilibiliApiException(-404, "没有可用音频流")
     }
 
     suspend fun resolveStandardAudioStream(bvid: String, cid: Long): DashAudioStream {
-        val streams = resolveAudioStreams(bvid, cid)
+        val streams = resolveDashStreams(bvid, cid)
         // long: 首版离线音频直接发布为 m4a，必须选 B 站标准 AAC 轨；FLAC/杜比仍需容器转换，不能仅改扩展名后交给 MediaStore。
         return streams.standard.maxByOrNull(DashAudioStream::bandwidth)
             ?: throw BilibiliApiException(-404, "没有可下载的标准 AAC 音频")
     }
 
-    private suspend fun resolveAudioStreams(bvid: String, cid: Long): ParsedDashAudioStreams {
+    suspend fun resolveVideoDownloadStreams(bvid: String, cid: Long): DashDownloadStreams {
+        val streams = resolveDashStreams(bvid, cid)
+        val video = DashVideoSelector.select(streams.video)
+            ?: throw BilibiliApiException(-404, "没有可下载的视频轨")
+        val audio = streams.standard.maxByOrNull(DashAudioStream::bandwidth)
+            ?: throw BilibiliApiException(-404, "没有可下载的标准 AAC 音频")
+        return DashDownloadStreams(video = video, audio = audio)
+    }
+
+    private suspend fun resolveDashStreams(bvid: String, cid: Long): ParsedDashStreams {
         val root = request(
             path = "/x/player/wbi/playurl",
             parameters = mapOf(
@@ -325,7 +335,10 @@ class BilibiliRepository(
         val standard = dash.optJSONArray("audio")
             .toObjects()
             .mapNotNull { parseAudio(it, "${it.optInt("bandwidth") / 1000} kbps") }
-        return ParsedDashAudioStreams(flac = flac, dolby = dolby, standard = standard)
+        val video = dash.optJSONArray("video")
+            .toObjects()
+            .mapNotNull(::parseVideo)
+        return ParsedDashStreams(video = video, flac = flac, dolby = dolby, standard = standard)
     }
 
     private suspend fun regionRecommendations(page: Int): List<BilibiliVideo> {
@@ -583,6 +596,44 @@ class BilibiliRepository(
         )
     }
 
+    private fun parseVideo(item: JSONObject): DashVideoStream? {
+        val backupUrls = (item.optJSONArray("backupUrl").toStrings() + item.optJSONArray("backup_url").toStrings())
+            .map(BilibiliText::httpsUrl)
+            .filter(String::isNotBlank)
+            .distinct()
+        val url = BilibiliText.firstHttpsUrl(
+            item.optString("baseUrl"),
+            item.optString("base_url"),
+            backupUrls.firstOrNull(),
+        )
+        if (url.isBlank()) return null
+        val codecs = item.optString("codecs")
+        val width = item.optInt("width", 0)
+        val height = item.optInt("height", 0)
+        val frameRate = parseFrameRate(item.optString("frameRate").ifBlank { item.optString("frame_rate") })
+        val codecLabel = when {
+            codecs.startsWith("avc", ignoreCase = true) -> "AVC"
+            codecs.startsWith("hev", ignoreCase = true) || codecs.startsWith("hvc", ignoreCase = true) -> "HEVC"
+            codecs.startsWith("av01", ignoreCase = true) -> "AV1"
+            else -> codecs.substringBefore('.').uppercase().ifBlank { "视频" }
+        }
+        val resolutionLabel = height.takeIf { it > 0 }?.let { "${it}p" }
+            ?: "清晰度 ${item.optInt("id", 0)}"
+        val frameRateLabel = frameRate.takeIf { it >= 50.0 }?.roundToInt()?.let { " · ${it}fps" }.orEmpty()
+        return DashVideoStream(
+            url = url,
+            qualityId = item.optInt("id", 0),
+            bandwidth = item.optLong("bandwidth", 0L),
+            codecs = codecs,
+            width = width,
+            height = height,
+            frameRate = frameRate,
+            qualityLabel = "$resolutionLabel$frameRateLabel · $codecLabel",
+            expiresAtEpochSeconds = StreamUrlExpiry.epochSeconds(url),
+            backupUrls = backupUrls.filterNot { backupUrl -> backupUrl == url },
+        )
+    }
+
     private fun JSONObject.requireSuccess(): JSONObject {
         val code = optInt("code", Int.MIN_VALUE)
         if (code != 0) throw BilibiliApiException(code, optString("message", "请求失败"))
@@ -602,11 +653,18 @@ class BilibiliRepository(
     }
 }
 
-private data class ParsedDashAudioStreams(
+private data class ParsedDashStreams(
+    val video: List<DashVideoStream>,
     val flac: DashAudioStream?,
     val dolby: List<DashAudioStream>,
     val standard: List<DashAudioStream>,
 )
+
+private fun parseFrameRate(value: String): Double {
+    val numerator = value.substringBefore('/').toDoubleOrNull() ?: return 0.0
+    val denominator = value.substringAfter('/', missingDelimiterValue = "1").toDoubleOrNull() ?: return 0.0
+    return if (denominator > 0.0) numerator / denominator else 0.0
+}
 
 private fun JSONArray?.toObjects(): List<JSONObject> {
     if (this == null) return emptyList()
