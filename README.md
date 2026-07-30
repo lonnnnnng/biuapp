@@ -26,7 +26,7 @@ Biu Android 是桌面版 Biu 的原生 Android 重写项目。目标不是把 El
 - [x] Room 音频/视频下载任务持久化
 - [x] 前台下载服务、MediaStore 保存和音视频合并
 - [x] 收藏夹批量下载、失败任务批量重试和网络约束
-- [ ] Room 播放队列持久化
+- [x] Room 播放队列持久化与进程重启恢复
 
 ## 本地构建
 
@@ -50,7 +50,7 @@ bash ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDe
 - 已在 Pixel_9 模拟器验证：Android 音频权限、本地 MediaStore 列表、`content://` 播放、后台媒体通知和本地队列切歌。
 - 已在 Pixel_9 模拟器验证：SAF 目录选择、所选目录及子目录过滤、DataStore 持久恢复、筛选队列播放和清除筛选。
 - 已在 Pixel_9 模拟器验证：收藏夹全量加载、单 P 批量音频任务创建、Room 断点、仅非计费网络等待、解除约束自动恢复和冷启动暂停恢复。
-- 待后续实现：进程重启后的完整播放队列恢复。
+- 已在 Pixel_9 模拟器验证：本地 8 项队列和在线 Bilibili 队列在强制停止后恢复当前曲目、索引与进度，冷启动保持暂停且可继续切歌。
 
 ## 文档
 

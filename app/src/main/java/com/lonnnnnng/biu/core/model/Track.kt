@@ -40,7 +40,7 @@ fun Track.toMediaItem(): MediaItem {
                 .setArtist(artist)
                 .setArtworkUri(artworkUrl?.toUri())
                 .setDescription(qualityLabel)
-                .setExtras(source?.toExtras())
+                .setExtras(toExtras())
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
                 .build(),
         )
@@ -87,15 +87,45 @@ fun MediaItem.bilibiliSource(): BilibiliTrackSource? {
     return BilibiliTrackSource(bvid, cid, qualityPreference)
 }
 
-private fun BilibiliTrackSource.toExtras(): Bundle {
+fun MediaItem.toTrackOrNull(): Track? {
+    val normalizedMediaId = mediaId.takeIf(String::isNotBlank) ?: return null
+    val normalizedStreamUrl = localConfiguration?.uri?.toString()?.takeIf(String::isNotBlank) ?: return null
+    val pageTitle = mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank)
+    val albumTitle = mediaMetadata.albumTitle?.toString()?.takeIf(String::isNotBlank)
+    val fallbackTitle = mediaMetadata.title?.toString().orEmpty().ifBlank { normalizedMediaId }
+    val resourceTitle = mediaMetadata.extras?.getString(EXTRA_RESOURCE_TITLE)
+        ?.takeIf(String::isNotBlank)
+        ?: if (albumTitle != null && pageTitle != null) {
+            "$albumTitle$PAGE_TITLE_SEPARATOR${pageTitle.substringAfter(PAGE_TITLE_SEPARATOR, pageTitle)}"
+        } else {
+            albumTitle ?: fallbackTitle
+        }
+    return Track(
+        id = normalizedMediaId,
+        title = resourceTitle,
+        artist = mediaMetadata.artist?.toString().orEmpty(),
+        streamUrl = normalizedStreamUrl,
+        artworkUrl = mediaMetadata.artworkUri?.toString(),
+        qualityLabel = mediaMetadata.description?.toString()?.takeIf(String::isNotBlank),
+        pageTitle = pageTitle,
+        source = bilibiliSource(),
+    )
+}
+
+private fun Track.toExtras(): Bundle {
     return Bundle().apply {
-        putString(EXTRA_BVID, bvid)
-        putLong(EXTRA_CID, cid)
-        putString(EXTRA_QUALITY_PREFERENCE, qualityPreference.name)
+        // long: MediaSession 只保留展示标题会丢失多 P 的完整资源名，额外字段用于 Room 队列恢复后重建同一 Track。
+        putString(EXTRA_RESOURCE_TITLE, title)
+        source?.let { bilibiliSource ->
+            putString(EXTRA_BVID, bilibiliSource.bvid)
+            putLong(EXTRA_CID, bilibiliSource.cid)
+            putString(EXTRA_QUALITY_PREFERENCE, bilibiliSource.qualityPreference.name)
+        }
     }
 }
 
 private const val EXTRA_BVID = "biu.bilibili.bvid"
 private const val EXTRA_CID = "biu.bilibili.cid"
 private const val EXTRA_QUALITY_PREFERENCE = "biu.bilibili.quality_preference"
+private const val EXTRA_RESOURCE_TITLE = "biu.playback.resource_title"
 private const val PAGE_TITLE_SEPARATOR = " · "

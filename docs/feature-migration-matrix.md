@@ -8,7 +8,7 @@
 | 收藏夹、稍后再看、历史 | 账号 API + Room 本地历史 | M3 | 首屏只读浏览与本地续播完成，分页/删除待开发 |
 | 关注、动态、用户空间 | 独立 feature 页面 | M4 | 待开发 |
 | DASH 音频播放 | Media3 + 最高音质/省流量选择 + URL 刷新 + 备用 CDN | M2 | 已完成 |
-| 播放队列 | Media3 playlist + Room 镜像 | M1/M3 | 本地播放历史完成，持久队列待开发 |
+| 播放队列 | Media3 playlist + Room 镜像 | M1/M3 | 完整队列、当前索引与进度持久化及进程重启恢复已完成 |
 | 后台播放 | MediaSessionService | M1 | 已完成 |
 | 快捷键、任务栏 | 通知栏、锁屏、耳机、蓝牙 MediaSession | M1 | 已完成 |
 | 全屏播放器 | Compose Now Playing 页面 | M3 | 已完成 |

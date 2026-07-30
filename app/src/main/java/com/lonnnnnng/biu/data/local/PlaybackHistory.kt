@@ -63,8 +63,10 @@ interface PlaybackHistoryDao {
         CreatorSelectionEntity::class,
         AudioDownloadTaskEntity::class,
         VideoDownloadTaskEntity::class,
+        PlaybackQueueStateEntity::class,
+        PlaybackQueueItemEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
@@ -72,6 +74,7 @@ abstract class BiuDatabase : RoomDatabase() {
     abstract fun creatorSelectionDao(): CreatorSelectionDao
     abstract fun audioDownloadTaskDao(): AudioDownloadTaskDao
     abstract fun videoDownloadTaskDao(): VideoDownloadTaskDao
+    abstract fun playbackQueueDao(): PlaybackQueueDao
 }
 
 object BiuDatabaseMigrations {
@@ -152,6 +155,41 @@ object BiuDatabaseMigrations {
                     `createdAtEpochMs` INTEGER NOT NULL,
                     `updatedAtEpochMs` INTEGER NOT NULL,
                     PRIMARY KEY(`taskId`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 队列恢复只新增两张单例快照表，升级时不得改写已有历史、账号选择和音视频下载断点。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `playback_queue_state` (
+                    `singletonId` INTEGER NOT NULL,
+                    `currentIndex` INTEGER NOT NULL,
+                    `currentPositionMs` INTEGER NOT NULL,
+                    `updatedAtEpochMs` INTEGER NOT NULL,
+                    PRIMARY KEY(`singletonId`)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `playback_queue_items` (
+                    `position` INTEGER NOT NULL,
+                    `mediaId` TEXT NOT NULL,
+                    `title` TEXT NOT NULL,
+                    `artist` TEXT NOT NULL,
+                    `streamUrl` TEXT NOT NULL,
+                    `artworkUrl` TEXT,
+                    `qualityLabel` TEXT,
+                    `pageTitle` TEXT,
+                    `bvid` TEXT,
+                    `cid` INTEGER,
+                    `qualityPreference` TEXT,
+                    PRIMARY KEY(`position`)
                 )
                 """.trimIndent(),
             )
