@@ -217,7 +217,6 @@ class AudioDownloadService : Service() {
     }
 
     private suspend fun runTask(taskId: String) {
-        var completed = false
         try {
             var task = repository.transition(taskId, AudioDownloadStatus.RESOLVING) ?: return
             postTaskNotification(task, "正在解析标准 AAC 音频", active = true)
@@ -245,9 +244,19 @@ class AudioDownloadService : Service() {
             val publishedUri = publisher.publish(task.toRequest(), file)
             repository.markCompleted(taskId, publishedUri.toString(), downloadedBytes)
             file.delete()
-            val finished = repository.find(taskId) ?: return
-            postTaskNotification(finished, "下载完成 · ${finished.qualityLabel}", active = false)
-            completed = true
+            val finished = repository.find(taskId)
+            DownloadCompletionNotificationCoordinator(
+                postCompletedNotification = finished?.let { completedTask ->
+                    {
+                        postTaskNotification(
+                            completedTask,
+                            "下载完成 · ${completedTask.qualityLabel}",
+                            active = false,
+                        )
+                    }
+                },
+                removeForegroundNotification = { stopForeground(STOP_FOREGROUND_REMOVE) },
+            ).complete()
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) { applyRequestedStop(taskId) }
         } catch (error: Throwable) {
@@ -269,7 +278,6 @@ class AudioDownloadService : Service() {
                 activeTaskId = null
                 requestedStop = null
                 activeJob = null
-                if (completed) stopForeground(STOP_FOREGROUND_DETACH)
                 commandMutex.withLock { launchNextQueued() }
             }
         }
