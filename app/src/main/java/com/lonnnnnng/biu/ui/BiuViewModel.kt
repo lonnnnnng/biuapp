@@ -97,7 +97,8 @@ data class BiuUiState(
     val submittedKeyword: String = "",
     val account: BilibiliAccount = BilibiliAccount(false, "", ""),
     val librarySection: AccountLibrarySection = AccountLibrarySection.FAVORITES,
-    val favoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
+    val createdFavoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
+    val collectedFavoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
     val selectedFavoriteFolder: BilibiliFavoriteFolder? = null,
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
     val favoriteBatchFolder: BilibiliFavoriteFolder? = null,
@@ -511,10 +512,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             runCatching<Unit> {
                 when (section) {
                     AccountLibrarySection.FAVORITES -> {
-                        val folders = repository.favoriteFolders(account.mid)
+                        // long: 两个收藏分组来自独立接口，并行加载可避免“我收藏的”拖慢整个账号页首屏。
+                        val (createdFolders, collectedFolders) = coroutineScope {
+                            val created = async { repository.createdFavoriteFolders(account.mid) }
+                            val collected = async { repository.collectedFavoriteFolders(account.mid) }
+                            created.await() to collected.await()
+                        }
                         mutableState.update {
                             it.copy(
-                                favoriteFolders = folders,
+                                createdFavoriteFolders = createdFolders,
+                                collectedFavoriteFolders = collectedFolders,
                                 selectedFavoriteFolder = null,
                                 libraryVideos = emptyList(),
                                 isLibraryLoading = false,
@@ -733,7 +740,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         favoriteBatchLoadJob = viewModelScope.launch {
             try {
-                val videos = repository.favoriteVideosAll(folder.id)
+                val videos = repository.favoriteVideosAll(folder)
                 mutableState.update { current ->
                     if (current.favoriteBatchFolder?.id != folder.id) {
                         current
@@ -878,7 +885,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     fun openFavoriteFolder(folder: BilibiliFavoriteFolder) {
         mutableState.update { it.copy(selectedFavoriteFolder = folder, isLibraryLoading = true, libraryVideos = emptyList()) }
         viewModelScope.launch {
-            runCatching { repository.favoriteVideos(folder.id) }
+            runCatching { repository.favoriteVideos(folder) }
                 .onSuccess { videos ->
                     mutableState.update { it.copy(libraryVideos = videos, isLibraryLoading = false) }
                 }
@@ -1051,7 +1058,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         favoriteBatchLoadJob = null
         mutableState.update {
             it.copy(
-                favoriteFolders = emptyList(),
+                createdFavoriteFolders = emptyList(),
+                collectedFavoriteFolders = emptyList(),
                 selectedFavoriteFolder = null,
                 libraryVideos = emptyList(),
                 favoriteBatchFolder = null,

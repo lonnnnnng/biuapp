@@ -55,11 +55,35 @@ enum class AccountLibrarySection(val label: String) {
     LOCAL_MUSIC("本地音乐"),
 }
 
+/** long: 收藏入口来源直接对应账号页中的两个在线分组，避免 UI 再根据列表位置猜测数据归属。 */
+enum class BilibiliFavoriteFolderGroup(val label: String) {
+    CREATED("我创建的"),
+    COLLECTED("我收藏的"),
+}
+
+/** long: B 站收藏资源类型决定详情接口；11 走收藏夹资源接口，21 走视频合集接口。 */
+enum class BilibiliFavoriteFolderType(val apiValue: Int, val label: String) {
+    VIDEO_FOLDER(11, "收藏夹"),
+    VIDEO_COLLECTION(21, "视频合集"),
+    UNKNOWN(-1, "未知内容"),
+    ;
+
+    companion object {
+        fun fromApiValue(value: Int): BilibiliFavoriteFolderType {
+            return entries.firstOrNull { type -> type.apiValue == value } ?: UNKNOWN
+        }
+    }
+}
+
 data class BilibiliFavoriteFolder(
     val id: Long,
     val title: String,
     val coverUrl: String,
     val mediaCount: Int,
+    val type: BilibiliFavoriteFolderType = BilibiliFavoriteFolderType.VIDEO_FOLDER,
+    val group: BilibiliFavoriteFolderGroup = BilibiliFavoriteFolderGroup.CREATED,
+    val ownerMid: Long = 0L,
+    val ownerName: String = "",
 )
 
 data class BilibiliLibraryVideo(

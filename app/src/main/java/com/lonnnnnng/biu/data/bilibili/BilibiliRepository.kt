@@ -114,20 +114,72 @@ class BilibiliRepository(
             .mapNotNull { item -> parseCreatorVideo(item, creator) }
     }
 
-    suspend fun favoriteFolders(mid: Long, page: Int = 1): List<BilibiliFavoriteFolder> {
-        require(mid > 0L) { "登录账号缺少 mid" }
-        val root = request(
+    suspend fun createdFavoriteFolders(mid: Long): List<BilibiliFavoriteFolder> {
+        return favoriteFolders(
+            mid = mid,
             path = "/x/v3/fav/folder/created/list",
-            parameters = mapOf("up_mid" to mid, "pn" to page, "ps" to 20),
-        ).requireSuccess()
-        return root.optJSONObject("data")
-            ?.optJSONArray("list")
-            .toObjects()
-            .mapNotNull(::parseFavoriteFolder)
+            group = BilibiliFavoriteFolderGroup.CREATED,
+            includeVideoCollections = false,
+        )
+    }
+
+    suspend fun collectedFavoriteFolders(mid: Long): List<BilibiliFavoriteFolder> {
+        return favoriteFolders(
+            mid = mid,
+            path = "/x/v3/fav/folder/collected/list",
+            group = BilibiliFavoriteFolderGroup.COLLECTED,
+            includeVideoCollections = true,
+        )
+    }
+
+    private suspend fun favoriteFolders(
+        mid: Long,
+        path: String,
+        group: BilibiliFavoriteFolderGroup,
+        includeVideoCollections: Boolean,
+    ): List<BilibiliFavoriteFolder> {
+        require(mid > 0L) { "登录账号缺少 mid" }
+        val folders = mutableListOf<BilibiliFavoriteFolder>()
+        var page = 1
+        while (page <= MAX_FAVORITE_FOLDER_PAGES) {
+            val parameters = buildMap<String, Any?> {
+                put("up_mid", mid)
+                put("pn", page)
+                put("ps", FAVORITE_FOLDER_PAGE_SIZE)
+                // long: 只有 Web 平台响应会把用户收藏的视频合集并入“我收藏的”，缺少该参数会造成账号页数据不完整。
+                if (includeVideoCollections) put("platform", "web")
+            }
+            val data = request(path = path, parameters = parameters)
+                .requireSuccess()
+                .optJSONObject("data") ?: break
+            val rawItems = data.optJSONArray("list").toObjects()
+            folders += rawItems.mapNotNull { item -> parseFavoriteFolder(item, group) }
+            val total = data.optInt("count", 0).coerceAtLeast(0)
+            val hasMore = when {
+                data.has("has_more") -> data.optBoolean("has_more", false)
+                total > 0 -> folders.size < total
+                else -> rawItems.size >= FAVORITE_FOLDER_PAGE_SIZE
+            }
+            if (!hasMore || rawItems.isEmpty()) break
+            page += 1
+        }
+        return folders.distinctBy { folder -> folder.group to folder.id }
+    }
+
+    suspend fun favoriteVideos(folder: BilibiliFavoriteFolder, page: Int = 1): List<BilibiliLibraryVideo> {
+        return favoriteVideoPage(folder, page).videos
     }
 
     suspend fun favoriteVideos(folderId: Long, page: Int = 1): List<BilibiliLibraryVideo> {
         return favoriteVideoPage(folderId, page).videos
+    }
+
+    suspend fun favoriteVideoPage(folder: BilibiliFavoriteFolder, page: Int = 1): BilibiliFavoriteVideoPage {
+        return when (folder.type) {
+            BilibiliFavoriteFolderType.VIDEO_FOLDER -> favoriteVideoPage(folder.id, page)
+            BilibiliFavoriteFolderType.VIDEO_COLLECTION -> favoriteCollectionVideoPage(folder.id, page)
+            BilibiliFavoriteFolderType.UNKNOWN -> throw BilibiliApiException(-400, "无法识别收藏内容类型")
+        }
     }
 
     suspend fun favoriteVideoPage(folderId: Long, page: Int = 1): BilibiliFavoriteVideoPage {
@@ -155,16 +207,55 @@ class BilibiliRepository(
         )
     }
 
-    suspend fun favoriteVideosAll(folderId: Long): List<BilibiliLibraryVideo> {
+    private suspend fun favoriteCollectionVideoPage(collectionId: Long, page: Int): BilibiliFavoriteVideoPage {
+        // long: 视频合集 id 不是普通收藏夹 media_id，必须走合集归档接口才能拿到每个可播放视频的 bvid。
+        val root = request(
+            path = "/x/space/fav/season/list",
+            parameters = mapOf(
+                "season_id" to collectionId,
+                "pn" to page,
+                "ps" to FAVORITE_PAGE_SIZE,
+            ),
+            useWbi = true,
+        ).requireSuccess()
+        val data = root.optJSONObject("data") ?: JSONObject()
+        val rawMedias = data.optJSONArray("medias")
+        val videos = rawMedias.toObjects().mapNotNull(::parseFavoriteCollectionVideo)
+        val total = data.optJSONObject("info")?.optInt("media_count", 0)?.coerceAtLeast(0) ?: 0
+        val rawCount = rawMedias?.length() ?: 0
+        return BilibiliFavoriteVideoPage(
+            videos = videos,
+            hasMore = when {
+                data.has("has_more") -> data.optBoolean("has_more", false)
+                // long: 合集接口可能忽略分页并一次返回全部媒体；已覆盖总数时立即结束，避免批量下载重复入队。
+                total > 0 && rawCount >= total -> false
+                total > 0 -> rawCount == FAVORITE_PAGE_SIZE && page * FAVORITE_PAGE_SIZE < total
+                else -> rawCount >= FAVORITE_PAGE_SIZE
+            },
+        )
+    }
+
+    suspend fun favoriteVideosAll(folder: BilibiliFavoriteFolder): List<BilibiliLibraryVideo> {
         val videos = mutableListOf<BilibiliLibraryVideo>()
         var page = 1
         while (page <= MAX_FAVORITE_PAGES) {
-            val result = favoriteVideoPage(folderId, page)
+            val result = favoriteVideoPage(folder, page)
             videos += result.videos
             if (!result.hasMore) return videos
             page += 1
         }
-        throw BilibiliApiException(-429, "收藏夹分页过多，请缩小下载范围")
+        throw BilibiliApiException(-429, "收藏内容分页过多，请缩小下载范围")
+    }
+
+    suspend fun favoriteVideosAll(folderId: Long): List<BilibiliLibraryVideo> {
+        return favoriteVideosAll(
+            BilibiliFavoriteFolder(
+                id = folderId,
+                title = "",
+                coverUrl = "",
+                mediaCount = 0,
+            ),
+        )
     }
 
     suspend fun watchLater(page: Int = 1): List<BilibiliLibraryVideo> {
@@ -535,13 +626,27 @@ class BilibiliRepository(
         )
     }
 
-    internal fun parseFavoriteFolder(item: JSONObject): BilibiliFavoriteFolder? {
+    internal fun parseFavoriteFolder(
+        item: JSONObject,
+        group: BilibiliFavoriteFolderGroup = BilibiliFavoriteFolderGroup.CREATED,
+    ): BilibiliFavoriteFolder? {
+        if (item.optInt("state", 0) != 0) return null
         val id = item.optLong("id", 0L).takeIf { it > 0L } ?: return null
+        val upper = item.optJSONObject("upper")
         return BilibiliFavoriteFolder(
             id = id,
             title = BilibiliText.plainTitle(item.optString("title")).ifBlank { "未命名收藏夹" },
             coverUrl = BilibiliText.httpsUrl(item.optString("cover")),
             mediaCount = item.optInt("media_count", 0),
+            // long: created/list 的 type 表示内容属性而非收藏菜单类型，创建者自己的列表统一按普通收藏夹处理。
+            type = if (group == BilibiliFavoriteFolderGroup.CREATED) {
+                BilibiliFavoriteFolderType.VIDEO_FOLDER
+            } else {
+                BilibiliFavoriteFolderType.fromApiValue(item.optInt("type", 11))
+            },
+            group = group,
+            ownerMid = upper?.optLong("mid", 0L)?.takeIf { it > 0L } ?: item.optLong("mid", 0L),
+            ownerName = upper?.optString("name").orEmpty(),
         )
     }
 
@@ -560,6 +665,23 @@ class BilibiliRepository(
             playCount = item.optJSONObject("cnt_info")?.optLongOrNull("play"),
         )
         return BilibiliLibraryVideo(video, savedAtEpochSeconds = item.optLongOrNull("fav_time"))
+    }
+
+    internal fun parseFavoriteCollectionVideo(item: JSONObject): BilibiliLibraryVideo? {
+        val bvid = item.optString("bvid")
+            .ifBlank { item.optString("bv_id") }
+            .takeIf(String::isNotBlank) ?: return null
+        val video = BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("id"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optJSONObject("upper")?.optString("name").orEmpty(),
+            coverUrl = BilibiliText.httpsUrl(item.optString("cover")),
+            durationSeconds = item.optIntOrNull("duration"),
+            playCount = item.optJSONObject("cnt_info")?.optLongOrNull("play"),
+            publishedAtEpochSeconds = item.optLongOrNull("pubtime"),
+        )
+        return BilibiliLibraryVideo(video)
     }
 
     internal fun parseWatchLaterVideo(item: JSONObject): BilibiliLibraryVideo? {
@@ -673,7 +795,9 @@ class BilibiliRepository(
         const val API_BASE = "https://api.bilibili.com/"
         const val FOLLOWING_PAGE_SIZE = 50
         const val CREATOR_VIDEO_PAGE_SIZE = 30
+        const val FAVORITE_FOLDER_PAGE_SIZE = 50
         const val FAVORITE_PAGE_SIZE = 20
+        const val MAX_FAVORITE_FOLDER_PAGES = 100
         const val MAX_FAVORITE_PAGES = 100
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
     }

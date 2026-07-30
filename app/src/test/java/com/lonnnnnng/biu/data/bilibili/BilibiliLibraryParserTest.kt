@@ -44,6 +44,30 @@ class BilibiliLibraryParserTest {
     }
 
     @Test
+    fun `收藏夹条目保留来源类型和创建者`() {
+        val item = JSONObject(
+            """
+            {
+              "id": 300,
+              "type": 21,
+              "mid": 42,
+              "title": "视频合集",
+              "cover": "//i0.hdslb.com/folder.jpg",
+              "media_count": 8,
+              "upper": {"name": "合集作者"}
+            }
+            """.trimIndent(),
+        )
+
+        val result = repository.parseFavoriteFolder(item, BilibiliFavoriteFolderGroup.COLLECTED)!!
+
+        assertEquals(BilibiliFavoriteFolderType.VIDEO_COLLECTION, result.type)
+        assertEquals(BilibiliFavoriteFolderGroup.COLLECTED, result.group)
+        assertEquals(42L, result.ownerMid)
+        assertEquals("合集作者", result.ownerName)
+    }
+
+    @Test
     fun `online history ignores records without bvid`() {
         val item = JSONObject("{\"title\":\"直播记录\",\"history\":{\"business\":\"live\"}}")
 

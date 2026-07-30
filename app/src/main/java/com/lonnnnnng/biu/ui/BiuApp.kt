@@ -53,6 +53,8 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Downloading
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
@@ -150,6 +152,7 @@ import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.core.model.toMediaItem
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
+import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolderType
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
@@ -1205,33 +1208,10 @@ private fun AccountScreen(
             onShowDownloads = onShowDownloads,
             onLogout = onLogout,
         )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            AccountLibrarySection.entries.forEach { section ->
-                FilterChip(
-                    selected = state.librarySection == section,
-                    onClick = { onLoadLibrary(section) },
-                    label = { Text(section.label) },
-                    leadingIcon = {
-                        Icon(
-                            when (section) {
-                                AccountLibrarySection.FAVORITES -> Icons.Rounded.Favorite
-                                AccountLibrarySection.ONLINE_HISTORY -> Icons.Rounded.History
-                                AccountLibrarySection.LOCAL_HISTORY -> Icons.Rounded.Album
-                                AccountLibrarySection.LOCAL_MUSIC -> Icons.Rounded.MusicNote
-                            },
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                )
-            }
-        }
+        AccountLibraryNavigation(
+            selectedSection = state.librarySection,
+            onSelect = onLoadLibrary,
+        )
 
         if (state.isLibraryLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         val onlineSection = state.librarySection in setOf(
@@ -1249,7 +1229,8 @@ private fun AccountScreen(
         } else {
             when (state.librarySection) {
                 AccountLibrarySection.FAVORITES -> FavoriteLibrary(
-                    folders = state.favoriteFolders,
+                    createdFolders = state.createdFavoriteFolders,
+                    collectedFolders = state.collectedFavoriteFolders,
                     selectedFolder = state.selectedFavoriteFolder,
                     videos = state.libraryVideos,
                     resolvingBvid = state.resolvingBvid,
@@ -1285,6 +1266,113 @@ private fun AccountScreen(
                     onRefresh = { onLoadLibrary(AccountLibrarySection.LOCAL_MUSIC) },
                     onPlay = onPlayLocalAudio,
                     modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountLibraryNavigation(
+    selectedSection: AccountLibrarySection,
+    onSelect: (AccountLibrarySection) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        AccountLibraryGroupTitle("在线音乐库")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AccountLibraryDestination(
+                section = AccountLibrarySection.FAVORITES,
+                subtitle = "收藏夹与合集",
+                icon = Icons.Rounded.Favorite,
+                selected = selectedSection == AccountLibrarySection.FAVORITES,
+                onClick = onSelect,
+                modifier = Modifier.weight(1f),
+            )
+            AccountLibraryDestination(
+                section = AccountLibrarySection.ONLINE_HISTORY,
+                subtitle = "B站播放记录",
+                icon = Icons.Rounded.History,
+                selected = selectedSection == AccountLibrarySection.ONLINE_HISTORY,
+                onClick = onSelect,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        AccountLibraryGroupTitle("本地内容")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AccountLibraryDestination(
+                section = AccountLibrarySection.LOCAL_HISTORY,
+                subtitle = "本机播放记录",
+                icon = Icons.Rounded.Album,
+                selected = selectedSection == AccountLibrarySection.LOCAL_HISTORY,
+                onClick = onSelect,
+                modifier = Modifier.weight(1f),
+            )
+            AccountLibraryDestination(
+                section = AccountLibrarySection.LOCAL_MUSIC,
+                subtitle = "设备音频文件",
+                icon = Icons.Rounded.MusicNote,
+                selected = selectedSection == AccountLibrarySection.LOCAL_MUSIC,
+                onClick = onSelect,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccountLibraryGroupTitle(title: String) {
+    Text(
+        title,
+        modifier = Modifier.padding(horizontal = 4.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun AccountLibraryDestination(
+    section: AccountLibrarySection,
+    subtitle: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: (AccountLibrarySection) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.clickable { onClick(section) },
+        shape = RoundedCornerShape(8.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(section.label, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    subtitle,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f)
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }
@@ -1466,77 +1554,123 @@ private fun AccountHeader(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         shape = RoundedCornerShape(8.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Row(
-            modifier = Modifier.padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (state.account.isLoggedIn && state.account.faceUrl.isNotBlank()) {
-                AsyncImage(
-                    model = state.account.faceUrl,
-                    contentDescription = "${state.account.name}的头像",
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Rounded.AccountCircle,
-                        contentDescription = null,
-                        modifier = Modifier.size(26.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    if (state.account.isLoggedIn) state.account.name else "未登录",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新账号状态")
-            }
-            IconButton(onClick = onCheckUpdate, enabled = !state.isUpdateChecking) {
-                if (state.isUpdateChecking) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (state.account.isLoggedIn && state.account.faceUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = state.account.faceUrl,
+                        contentDescription = "${state.account.name}的头像",
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentScale = ContentScale.Crop,
                     )
                 } else {
-                    Icon(Icons.Rounded.SystemUpdate, contentDescription = "检查更新")
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Rounded.AccountCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(30.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        if (state.account.isLoggedIn) state.account.name else "未登录",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        if (state.account.isLoggedIn) "Bilibili 账号已连接" else "登录后同步在线音乐库",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (state.account.isLoggedIn) {
+                    TextButton(onClick = onLogout) { Text("退出") }
+                } else {
+                    FilledTonalButton(onClick = onLogin) { Text("登录") }
                 }
             }
-            IconButton(onClick = onShowDownloads) {
-                Icon(Icons.Rounded.Downloading, contentDescription = "打开下载任务")
-            }
-            if (state.account.isLoggedIn) {
-                TextButton(onClick = onLogout) { Text("退出") }
-            } else {
-                FilledTonalButton(onClick = onLogin) { Text("登录") }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AccountQuickAction(
+                    label = "刷新",
+                    icon = Icons.Rounded.Refresh,
+                    onClick = onRefresh,
+                    modifier = Modifier.weight(1f),
+                )
+                AccountQuickAction(
+                    label = "下载",
+                    icon = Icons.Rounded.Downloading,
+                    onClick = onShowDownloads,
+                    modifier = Modifier.weight(1f),
+                )
+                AccountQuickAction(
+                    label = if (state.isUpdateChecking) "检查中" else "更新",
+                    icon = Icons.Rounded.SystemUpdate,
+                    onClick = onCheckUpdate,
+                    enabled = !state.isUpdateChecking,
+                    loading = state.isUpdateChecking,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
 }
 
 @Composable
+private fun AccountQuickAction(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.heightIn(min = 40.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        if (loading) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        } else {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+        }
+        Spacer(Modifier.width(5.dp))
+        Text(label, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
 private fun FavoriteLibrary(
-    folders: List<BilibiliFavoriteFolder>,
+    createdFolders: List<BilibiliFavoriteFolder>,
+    collectedFolders: List<BilibiliFavoriteFolder>,
     selectedFolder: BilibiliFavoriteFolder?,
     videos: List<BilibiliLibraryVideo>,
     resolvingBvid: String?,
@@ -1547,6 +1681,8 @@ private fun FavoriteLibrary(
     onPlay: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var createdExpanded by rememberSaveable { mutableStateOf(true) }
+    var collectedExpanded by rememberSaveable { mutableStateOf(true) }
     if (selectedFolder != null) {
         Column(modifier) {
             Row(
@@ -1566,7 +1702,7 @@ private fun FavoriteLibrary(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        "${selectedFolder.mediaCount} 项内容",
+                        "${selectedFolder.type.label} · ${selectedFolder.mediaCount} 项内容",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1577,10 +1713,10 @@ private fun FavoriteLibrary(
             }
             LibraryVideoList(videos, resolvingBvid, loading, onPlay, Modifier.weight(1f))
         }
-    } else if (!loading && folders.isEmpty()) {
+    } else if (!loading && createdFolders.isEmpty() && collectedFolders.isEmpty()) {
         BiuEmptyState(
             icon = Icons.Rounded.Folder,
-            title = "收藏夹为空",
+            title = "还没有收藏内容",
             modifier = modifier,
         )
     } else {
@@ -1588,63 +1724,127 @@ private fun FavoriteLibrary(
             modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
-            items(folders, key = BilibiliFavoriteFolder::id) { folder ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenFolder(folder) }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (folder.coverUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = folder.coverUrl,
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                            )
-                        } else {
-                            Icon(
-                                Icons.Rounded.Folder,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            folder.title,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Text(
-                            "${folder.mediaCount} 项内容",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Icon(
-                        Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                        contentDescription = "打开 ${folder.title}",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = 80.dp, end = 16.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant,
+            item(key = "created-header") {
+                FavoriteFolderGroupHeader(
+                    title = "我创建的",
+                    count = createdFolders.size,
+                    expanded = createdExpanded,
+                    onToggle = { createdExpanded = !createdExpanded },
                 )
+            }
+            if (createdExpanded) {
+                items(createdFolders, key = { folder -> "created:${folder.id}" }) { folder ->
+                    FavoriteFolderRow(folder = folder, onClick = { onOpenFolder(folder) })
+                }
+            }
+            item(key = "collected-header") {
+                FavoriteFolderGroupHeader(
+                    title = "我收藏的",
+                    count = collectedFolders.size,
+                    expanded = collectedExpanded,
+                    onToggle = { collectedExpanded = !collectedExpanded },
+                )
+            }
+            if (collectedExpanded) {
+                items(collectedFolders, key = { folder -> "collected:${folder.type.apiValue}:${folder.id}" }) { folder ->
+                    FavoriteFolderRow(folder = folder, onClick = { onOpenFolder(folder) })
+                }
             }
         }
     }
+}
+
+@Composable
+private fun FavoriteFolderGroupHeader(
+    title: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Icon(
+            if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            contentDescription = if (expanded) "收起$title" else "展开$title",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun FavoriteFolderRow(
+    folder: BilibiliFavoriteFolder,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (folder.coverUrl.isNotBlank()) {
+                AsyncImage(
+                    model = folder.coverUrl,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Icon(
+                    if (folder.type == BilibiliFavoriteFolderType.VIDEO_COLLECTION) {
+                        Icons.Rounded.Movie
+                    } else {
+                        Icons.Rounded.Folder
+                    },
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                folder.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            val ownerLabel = folder.ownerName.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+            Text(
+                "${folder.type.label} · ${folder.mediaCount} 项$ownerLabel",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = "打开 ${folder.title}",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    MediaDivider(start = 76.dp)
 }
 
 @Composable
