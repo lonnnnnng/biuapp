@@ -964,6 +964,21 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         playbackQueueSnapshots.updateResumePosition(mediaId, positionMs)
     }
 
+    internal fun removePlaybackQueueItem(mediaId: String) {
+        stopProgressiveQueueForUserEdit()
+        playbackQueueSnapshots.remove(mediaId)
+    }
+
+    internal fun movePlaybackQueueItemNext(mediaId: String, currentMediaId: String) {
+        stopProgressiveQueueForUserEdit()
+        playbackQueueSnapshots.moveNext(mediaId, currentMediaId)
+    }
+
+    internal fun clearPlaybackQueue() {
+        stopProgressiveQueueForUserEdit()
+        playbackQueueSnapshots.clear()
+    }
+
     private fun publishPlaybackRequest(
         tracks: List<Track>,
         startIndex: Int = 0,
@@ -995,6 +1010,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private fun cancelPageQueueExpansion() {
         pageQueueJob?.cancel()
         pageQueueJob = null
+    }
+
+    private fun stopProgressiveQueueForUserEdit() {
+        // long: 用户开始编辑队列后立即失效当前渐进补齐代数，避免后台解析完成的旧分 P 把刚删除或移动的条目重新插回。
+        cancelPageQueueExpansion()
+        playbackEventIds.incrementAndGet()
     }
 
     private fun publishLibraryVideos(videos: List<BilibiliLibraryVideo>) {

@@ -65,6 +65,48 @@ internal class PlaybackQueueSnapshotStore<T>(
     }
 
     @Synchronized
+    fun remove(mediaId: String): PlaybackQueueSnapshot<T>? {
+        val current = snapshot ?: return null
+        val removeIndex = current.items.indexOfFirst { itemId(it) == mediaId }
+        if (removeIndex < 0) return current
+        if (current.items.size == 1) {
+            snapshot = null
+            return null
+        }
+
+        val activeId = itemId(current.items[current.startIndex])
+        val updatedItems = current.items.toMutableList().apply { removeAt(removeIndex) }
+        val retainedActiveIndex = updatedItems.indexOfFirst { itemId(it) == activeId }
+        val nextStartIndex = retainedActiveIndex.takeIf { it >= 0 }
+            ?: removeIndex.coerceAtMost(updatedItems.lastIndex)
+        return current.copy(
+            items = updatedItems,
+            startIndex = nextStartIndex,
+            startPositionMs = if (retainedActiveIndex >= 0) current.startPositionMs else 0L,
+        ).also { snapshot = it }
+    }
+
+    @Synchronized
+    fun moveNext(mediaId: String, currentMediaId: String): PlaybackQueueSnapshot<T>? {
+        val current = snapshot ?: return null
+        val targetIndex = current.items.indexOfFirst { itemId(it) == mediaId }
+        val activeIndex = current.items.indexOfFirst { itemId(it) == currentMediaId }
+        if (targetIndex < 0 || activeIndex < 0 || targetIndex == activeIndex) return current
+
+        val updatedItems = current.items.toMutableList()
+        val target = updatedItems.removeAt(targetIndex)
+        val updatedActiveIndex = updatedItems.indexOfFirst { itemId(it) == currentMediaId }
+        val insertIndex = (updatedActiveIndex + 1).coerceAtMost(updatedItems.size)
+        updatedItems.add(insertIndex, target)
+        return current.copy(items = updatedItems, startIndex = updatedActiveIndex).also { snapshot = it }
+    }
+
+    @Synchronized
+    fun clear() {
+        snapshot = null
+    }
+
+    @Synchronized
     fun current(queueId: Long? = null): PlaybackQueueSnapshot<T>? {
         return snapshot?.takeIf { queueId == null || it.queueId == queueId }
     }

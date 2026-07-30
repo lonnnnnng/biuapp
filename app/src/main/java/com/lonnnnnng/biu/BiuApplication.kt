@@ -17,6 +17,7 @@ import com.lonnnnnng.biu.data.local.PlaybackQueueRepository
 import com.lonnnnnng.biu.data.local.VideoDownloadRepository
 import com.lonnnnnng.biu.data.update.AppUpdateRepository
 import com.lonnnnnng.biu.download.DownloadNetworkPreferenceRepository
+import com.lonnnnnng.biu.playback.PlaybackPreferenceRepository
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -66,6 +67,7 @@ class AppContainer(context: Context) {
     val audioDownloadRepository = AudioDownloadRepository(database.audioDownloadTaskDao())
     val videoDownloadRepository = VideoDownloadRepository(database.videoDownloadTaskDao())
     val downloadNetworkPreferenceRepository = DownloadNetworkPreferenceRepository(context)
+    val playbackPreferenceRepository = PlaybackPreferenceRepository(context)
     val localAudioDirectoryRepository = LocalAudioDirectoryRepository(context)
     val localAudioRepository = LocalAudioRepository(context)
     val audioDownloadRecovery: Deferred<Unit> = applicationScope.async {

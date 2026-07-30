@@ -5,6 +5,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
@@ -42,6 +43,7 @@ class PlaybackService : MediaSessionService() {
     private var recordedMediaId: String? = null
     private var progressPersistenceJob: Job? = null
     private var queuePersistenceJob: Job? = null
+    private var playbackPreferencesPersistenceJob: Job? = null
     private val queuePersistenceGeneration = AtomicLong(0L)
     private val queuePersistenceMutex = Mutex()
     private var restoringPlaybackQueue = false
@@ -94,6 +96,18 @@ class PlaybackService : MediaSessionService() {
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
             schedulePlaybackQueuePersistence()
+        }
+
+        override fun onRepeatModeChanged(repeatMode: Int) {
+            schedulePlaybackPreferencesPersistence()
+        }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            schedulePlaybackPreferencesPersistence()
+        }
+
+        override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+            schedulePlaybackPreferencesPersistence()
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -163,6 +177,7 @@ class PlaybackService : MediaSessionService() {
         mediaSession = MediaSession.Builder(this, exoPlayer)
             .setCallback(sessionCallback)
             .build()
+        restorePlaybackPreferences()
         restorePlaybackQueue()
     }
 
@@ -172,6 +187,8 @@ class PlaybackService : MediaSessionService() {
         stopProgressPersistence()
         queuePersistenceJob?.cancel()
         queuePersistenceJob = null
+        playbackPreferencesPersistenceJob?.cancel()
+        playbackPreferencesPersistenceJob = null
         serviceScope.cancel()
         player?.removeListener(playerListener)
         mediaSession?.release()
@@ -283,6 +300,29 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    private fun restorePlaybackPreferences() {
+        serviceScope.launch {
+            val preferences = runCatching { appContainer.playbackPreferenceRepository.current() }.getOrNull()
+                ?: PlaybackPreferences()
+            val activePlayer = player ?: return@launch
+            activePlayer.applyPlaybackMode(preferences.mode)
+            activePlayer.setPlaybackSpeed(preferences.speed)
+        }
+    }
+
+    private fun schedulePlaybackPreferencesPersistence() {
+        playbackPreferencesPersistenceJob?.cancel()
+        playbackPreferencesPersistenceJob = serviceScope.launch {
+            // long: 一次模式切换会连续修改 repeat 与 shuffle，短暂合并后只写一次 DataStore，避免保存中间组合态。
+            delay(PLAYBACK_PREFERENCES_PERSIST_DEBOUNCE_MS)
+            val activePlayer = player ?: return@launch
+            appContainer.playbackPreferenceRepository.save(
+                mode = PlaybackMode.fromPlayer(activePlayer.repeatMode, activePlayer.shuffleModeEnabled),
+                speed = activePlayer.playbackParameters.speed,
+            )
+        }
+    }
+
     private fun schedulePlaybackQueuePersistence() {
         if (restoringPlaybackQueue) return
         queuePersistenceJob?.cancel()
@@ -370,3 +410,4 @@ private data class DashHttpFailure(val host: String, val code: Int)
 private const val LOG_TAG = "BiuPlayback"
 private const val PROGRESS_PERSIST_INTERVAL_MS = 5_000L
 private const val QUEUE_PERSIST_DEBOUNCE_MS = 1_000L
+private const val PLAYBACK_PREFERENCES_PERSIST_DEBOUNCE_MS = 200L

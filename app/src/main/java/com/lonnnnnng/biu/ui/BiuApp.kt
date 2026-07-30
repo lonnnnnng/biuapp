@@ -67,7 +67,10 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SystemUpdate
@@ -174,6 +177,9 @@ import com.lonnnnnng.biu.download.FavoriteBatchDownloadKind
 import com.lonnnnnng.biu.download.VideoDownloadRequest
 import com.lonnnnnng.biu.download.VideoDownloadStatus
 import com.lonnnnnng.biu.playback.PlaybackService
+import com.lonnnnnng.biu.playback.PlaybackMode
+import com.lonnnnnng.biu.playback.PlaybackSpeedPolicy
+import com.lonnnnnng.biu.playback.applyPlaybackMode
 import com.lonnnnnng.biu.update.AppUpdateInstaller
 import java.time.Instant
 import java.time.ZoneId
@@ -198,6 +204,8 @@ private data class PlaybackSnapshot(
     val pageTitle: String? = null,
     val artworkUrl: String? = null,
     val isPlaying: Boolean = false,
+    val playbackMode: PlaybackMode = PlaybackMode.SEQUENTIAL,
+    val playbackSpeed: Float = PlaybackSpeedPolicy.DEFAULT,
     val hasPrevious: Boolean = false,
     val hasNext: Boolean = false,
     val positionMs: Long = 0L,
@@ -431,6 +439,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     pageTitle = activeController.mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank),
                     artworkUrl = activeController.mediaMetadata.artworkUri?.toString(),
                     isPlaying = activeController.isPlaying,
+                    playbackMode = PlaybackMode.fromPlayer(
+                        activeController.repeatMode,
+                        activeController.shuffleModeEnabled,
+                    ),
+                    playbackSpeed = PlaybackSpeedPolicy.normalize(activeController.playbackParameters.speed),
                     hasPrevious = activeController.hasPreviousMediaItem(),
                     hasNext = activeController.hasNextMediaItem(),
                     positionMs = progress.positionMs,
@@ -671,12 +684,36 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             },
             onNext = { controller?.seekToNextMediaItem() },
             onSeek = { positionMs -> controller?.seekTo(positionMs) },
+            onPlaybackModeChange = { mode -> controller?.applyPlaybackMode(mode) },
+            onPlaybackSpeedChange = { speed -> controller?.setPlaybackSpeed(PlaybackSpeedPolicy.normalize(speed)) },
             onDownload = requestAudioDownload,
             onVideoDownload = requestVideoDownload,
             onShowDownloads = { showDownloads = true },
             onSelectQueueItem = { index ->
                 controller?.seekToDefaultPosition(index)
                 controller?.play()
+            },
+            onMoveQueueItemNext = { item ->
+                controller?.let { activeController ->
+                    val currentMediaId = activeController.currentMediaItem?.mediaId.orEmpty()
+                    if (activeController.moveQueueItemNext(item.mediaId)) {
+                        viewModel.movePlaybackQueueItemNext(item.mediaId, currentMediaId)
+                    }
+                }
+            },
+            onRemoveQueueItem = { item ->
+                controller?.let { activeController ->
+                    if (activeController.removeQueueItem(item.mediaId)) {
+                        viewModel.removePlaybackQueueItem(item.mediaId)
+                    }
+                }
+            },
+            onClearQueue = {
+                controller?.let { activeController ->
+                    viewModel.clearPlaybackQueue()
+                    activeController.stop()
+                    activeController.clearMediaItems()
+                }
             },
         )
         return
@@ -2939,13 +2976,38 @@ private fun NowPlayingScreen(
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onSeek: (Long) -> Unit,
+    onPlaybackModeChange: (PlaybackMode) -> Unit,
+    onPlaybackSpeedChange: (Float) -> Unit,
     onDownload: () -> Unit,
     onVideoDownload: () -> Unit,
     onShowDownloads: () -> Unit,
     onSelectQueueItem: (Int) -> Unit,
+    onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
+    onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
+    onClearQueue: () -> Unit,
 ) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showQueue by remember { mutableStateOf(false) }
+    var confirmClearQueue by remember { mutableStateOf(false) }
+    if (confirmClearQueue) {
+        AlertDialog(
+            onDismissRequest = { confirmClearQueue = false },
+            title = { Text("清空播放列表？") },
+            text = { Text("当前播放会停止，列表中的所有内容都会移除。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClearQueue = false
+                        showQueue = false
+                        onClearQueue()
+                    },
+                ) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearQueue = false }) { Text("取消") }
+            },
+        )
+    }
     if (showQueue) {
         ModalBottomSheet(
             onDismissRequest = { showQueue = false },
@@ -2954,6 +3016,9 @@ private fun NowPlayingScreen(
             PlaybackQueue(
                 snapshot = snapshot,
                 onSelectQueueItem = onSelectQueueItem,
+                onMoveQueueItemNext = onMoveQueueItemNext,
+                onRemoveQueueItem = onRemoveQueueItem,
+                onClearQueue = { confirmClearQueue = true },
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 640.dp),
@@ -2980,6 +3045,8 @@ private fun NowPlayingScreen(
             onToggle = onToggle,
             onNext = onNext,
             onSeek = onSeek,
+            onPlaybackModeChange = onPlaybackModeChange,
+            onPlaybackSpeedChange = onPlaybackSpeedChange,
             onDownload = onDownload,
             onVideoDownload = onVideoDownload,
             onShowDownloads = onShowDownloads,
@@ -3000,6 +3067,8 @@ private fun NowPlayingDetails(
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onSeek: (Long) -> Unit,
+    onPlaybackModeChange: (PlaybackMode) -> Unit,
+    onPlaybackSpeedChange: (Float) -> Unit,
     onDownload: () -> Unit,
     onVideoDownload: () -> Unit,
     onShowDownloads: () -> Unit,
@@ -3031,6 +3100,8 @@ private fun NowPlayingDetails(
             onPrevious = onPrevious,
             onToggle = onToggle,
             onNext = onNext,
+            onPlaybackModeChange = onPlaybackModeChange,
+            onPlaybackSpeedChange = onPlaybackSpeedChange,
             downloadEnabled = snapshot.downloadRequest != null,
             videoDownloadEnabled = snapshot.videoDownloadRequest != null,
             onDownload = onDownload,
@@ -3107,6 +3178,8 @@ private fun NowPlayingControls(
     onPrevious: () -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
+    onPlaybackModeChange: (PlaybackMode) -> Unit,
+    onPlaybackSpeedChange: (Float) -> Unit,
     downloadEnabled: Boolean,
     videoDownloadEnabled: Boolean,
     onDownload: () -> Unit,
@@ -3117,6 +3190,7 @@ private fun NowPlayingControls(
     onValueChangeFinished: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showSpeedMenu by remember { mutableStateOf(false) }
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             displayResourceTitle(snapshot.title, snapshot.pageTitle),
@@ -3209,6 +3283,16 @@ private fun NowPlayingControls(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            IconButton(
+                onClick = { onPlaybackModeChange(snapshot.playbackMode.next()) },
+                enabled = controllerReady,
+            ) {
+                Icon(
+                    playbackModeIcon(snapshot.playbackMode),
+                    contentDescription = "播放模式：${snapshot.playbackMode.label}",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
             IconButton(onClick = onPrevious, enabled = controllerReady && snapshot.hasPrevious) {
                 Icon(Icons.Rounded.SkipPrevious, contentDescription = "上一首", modifier = Modifier.size(34.dp))
             }
@@ -3230,6 +3314,33 @@ private fun NowPlayingControls(
             IconButton(onClick = onNext, enabled = controllerReady && snapshot.hasNext) {
                 Icon(Icons.Rounded.SkipNext, contentDescription = "下一首", modifier = Modifier.size(34.dp))
             }
+            Box {
+                TextButton(
+                    onClick = { showSpeedMenu = true },
+                    enabled = controllerReady,
+                ) {
+                    Text(formatPlaybackSpeed(snapshot.playbackSpeed))
+                }
+                DropdownMenu(
+                    expanded = showSpeedMenu,
+                    onDismissRequest = { showSpeedMenu = false },
+                ) {
+                    PlaybackSpeedPolicy.options.forEach { speed ->
+                        DropdownMenuItem(
+                            text = { Text(formatPlaybackSpeed(speed)) },
+                            onClick = {
+                                showSpeedMenu = false
+                                onPlaybackSpeedChange(speed)
+                            },
+                            leadingIcon = if (speed == snapshot.playbackSpeed) {
+                                { Icon(Icons.Rounded.Check, contentDescription = null) }
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -3238,6 +3349,9 @@ private fun NowPlayingControls(
 private fun PlaybackQueue(
     snapshot: PlaybackSnapshot,
     onSelectQueueItem: (Int) -> Unit,
+    onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
+    onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
+    onClearQueue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
@@ -3248,6 +3362,10 @@ private fun PlaybackQueue(
         ) {
             Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Text("播放列表 · ${snapshot.queueItems.size}", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onClearQueue, enabled = snapshot.queueItems.isNotEmpty()) {
+                Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空播放列表")
+            }
         }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(snapshot.queueItems, key = { item -> "${item.index}:${item.mediaId}" }) { item ->
@@ -3305,6 +3423,13 @@ private fun PlaybackQueue(
                     }
                     if (isCurrent) {
                         Icon(Icons.Rounded.PlayArrow, contentDescription = "当前播放", tint = MaterialTheme.colorScheme.primary)
+                    } else {
+                        IconButton(onClick = { onMoveQueueItemNext(item) }) {
+                            Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = "设为下一首")
+                        }
+                    }
+                    IconButton(onClick = { onRemoveQueueItem(item) }) {
+                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "从播放列表移除")
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -3836,6 +3961,34 @@ private fun MediaController.containsMediaId(mediaId: String): Boolean {
     if (mediaId.isBlank()) return false
     return (0 until mediaItemCount).any { getMediaItemAt(it).mediaId == mediaId }
 }
+
+private fun MediaController.removeQueueItem(mediaId: String): Boolean {
+    val index = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == mediaId } ?: return false
+    removeMediaItem(index)
+    return true
+}
+
+private fun MediaController.moveQueueItemNext(mediaId: String): Boolean {
+    val activeMediaId = currentMediaItem?.mediaId.orEmpty()
+    if (mediaId.isBlank() || mediaId == activeMediaId) return false
+    val targetIndex = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == mediaId } ?: return false
+    val activeIndex = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == activeMediaId } ?: return false
+    val target = getMediaItemAt(targetIndex)
+    // long: 移除前同时锁定当前项和目标项位置，既能修正目标位于当前项之前时的索引偏移，也避免移除后读取瞬时空索引造成半完成队列。
+    val insertionIndex = if (targetIndex < activeIndex) activeIndex else activeIndex + 1
+    removeMediaItem(targetIndex)
+    addMediaItem(insertionIndex.coerceAtMost(mediaItemCount), target)
+    return true
+}
+
+private fun playbackModeIcon(mode: PlaybackMode): ImageVector = when (mode) {
+    PlaybackMode.SEQUENTIAL -> Icons.AutoMirrored.Rounded.PlaylistPlay
+    PlaybackMode.REPEAT_ALL -> Icons.Rounded.Repeat
+    PlaybackMode.SHUFFLE -> Icons.Rounded.Shuffle
+    PlaybackMode.REPEAT_ONE -> Icons.Rounded.RepeatOne
+}
+
+private fun formatPlaybackSpeed(speed: Float): String = "${PlaybackSpeedPolicy.normalize(speed).toString().removeSuffix(".0")}x"
 
 private fun MediaController.matchesPlaybackQueue(snapshot: PlaybackQueueSnapshot<Track>): Boolean {
     if (mediaItemCount != snapshot.items.size) return false

@@ -63,4 +63,50 @@ class ProgressivePageQueueLoaderTest {
 
         assertEquals(listOf(2, 3), store.current()?.items)
     }
+
+    @Test
+    fun `删除当前项后选择后继并从零开始`() {
+        val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
+        store.replace(queueId = 9L, items = listOf(0, 1, 2), startIndex = 1, startPositionMs = 12_345L)
+
+        val updated = store.remove(mediaId = "1")
+
+        assertEquals(listOf(0, 2), updated?.items)
+        assertEquals(1, updated?.startIndex)
+        assertEquals(0L, updated?.startPositionMs)
+    }
+
+    @Test
+    fun `删除当前项之前的内容会保留当前媒体和进度`() {
+        val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
+        store.replace(queueId = 10L, items = listOf(0, 1, 2), startIndex = 2, startPositionMs = 8_000L)
+
+        val updated = store.remove(mediaId = "0")
+
+        assertEquals(listOf(1, 2), updated?.items)
+        assertEquals(1, updated?.startIndex)
+        assertEquals(8_000L, updated?.startPositionMs)
+    }
+
+    @Test
+    fun `指定条目移动到当前项之后`() {
+        val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
+        store.replace(queueId = 11L, items = listOf(0, 1, 2, 3), startIndex = 2, startPositionMs = 3_000L)
+
+        val updated = store.moveNext(mediaId = "0", currentMediaId = "2")
+
+        assertEquals(listOf(1, 2, 0, 3), updated?.items)
+        assertEquals(1, updated?.startIndex)
+        assertEquals(3_000L, updated?.startPositionMs)
+    }
+
+    @Test
+    fun `清空队列后不再返回旧快照`() {
+        val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
+        store.replace(queueId = 12L, items = listOf(0, 1), startIndex = 0, startPositionMs = 0L)
+
+        store.clear()
+
+        assertEquals(null, store.current())
+    }
 }

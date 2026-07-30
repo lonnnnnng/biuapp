@@ -10,8 +10,8 @@
 | 稍后再看 | 保留 API，不提供 Android 页面入口 | - | 产品决策为不迁移入口 |
 | 关注、动态、用户空间 | 独立 feature 页面 | M11/M12 | 首页 UP 范围选择已完成；独立页面与互动待开发 |
 | DASH 音频播放 | Media3 + 最高音质/省流量选择 + URL 刷新 + 备用 CDN | M2 | 已完成 |
-| 播放队列 | Media3 playlist + Room 镜像 | M1/M3 | 完整队列、当前索引与进度持久化及进程重启恢复已完成 |
-| 播放模式与倍速 | Media3 repeat/shuffle/playback parameters + DataStore | M7 | 待开发 |
+| 播放队列 | Media3 playlist + Room 镜像 | M1/M3/M7 | 完整队列、当前索引与进度持久化、进程重启恢复、设为下一首、移除和清空已完成；任意拖动排序待评估 |
+| 播放模式与倍速 | Media3 repeat/shuffle/playback parameters + DataStore | M7 | 顺序、列表循环、随机、单曲循环及七档倍速已完成并持久化 |
 | 后台播放 | MediaSessionService | M1 | 已完成 |
 | 快捷键、任务栏 | 通知栏、锁屏、耳机、蓝牙 MediaSession | M1 | 已完成 |
 | 全屏播放器 | Compose Now Playing 页面 | M3 | 已完成 |
