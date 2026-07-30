@@ -1,6 +1,7 @@
 package com.lonnnnnng.biu.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lonnnnnng.biu.appContainer
@@ -18,6 +19,7 @@ import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
+import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.data.update.AppVersionPolicy
@@ -85,6 +87,7 @@ data class BiuUiState(
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
     val localAudio: List<LocalAudio> = emptyList(),
+    val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     val isFeedLoading: Boolean = true,
@@ -110,12 +113,39 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val mutablePlaybackCommands = Channel<PlaybackCommand>(Channel.UNLIMITED)
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
+    private var localAudioJob: Job? = null
+    private var localAudioDirectoryInitializationJob: Job? = null
+    private var localAudioDirectoryInitialized = false
     private var creatorSelectionInitialized = false
 
     val state: StateFlow<BiuUiState> = mutableState.asStateFlow()
     internal val playbackCommands = mutablePlaybackCommands.receiveAsFlow()
 
     init {
+        localAudioDirectoryInitializationJob = viewModelScope.launch {
+            runCatching { container.localAudioDirectoryRepository.currentDirectory() }
+                .onSuccess { directory ->
+                    localAudioDirectoryInitialized = true
+                    mutableState.update { it.copy(localAudioDirectory = directory) }
+                    if (state.value.librarySection == AccountLibrarySection.LOCAL_MUSIC) {
+                        loadLocalAudio()
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    localAudioDirectoryInitialized = true
+                    mutableState.update {
+                        it.copy(
+                            isLocalAudioLoading = false,
+                            message = if (it.librarySection == AccountLibrarySection.LOCAL_MUSIC) {
+                                error.userMessage("读取本地音乐目录失败")
+                            } else {
+                                it.message
+                            },
+                        )
+                    }
+                }
+        }
         checkForUpdate(manual = false)
         refreshAccount()
         viewModelScope.launch {
@@ -475,6 +505,44 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadLocalAudio() {
+        localAudioJob?.cancel()
+        if (!localAudioDirectoryInitialized) {
+            mutableState.update {
+                it.copy(
+                    librarySection = AccountLibrarySection.LOCAL_MUSIC,
+                    isLocalAudioLoading = true,
+                    message = null,
+                )
+            }
+            return
+        }
+        val selectedDirectory = state.value.localAudioDirectory
+        mutableState.update {
+            it.copy(
+                librarySection = AccountLibrarySection.LOCAL_MUSIC,
+                isLocalAudioLoading = true,
+                message = null,
+            )
+        }
+        localAudioJob = viewModelScope.launch {
+            runCatching { container.localAudioRepository.audioTracks(selectedDirectory) }
+                .onSuccess { audio ->
+                    mutableState.update { it.copy(localAudio = audio, isLocalAudioLoading = false) }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    mutableState.update {
+                        it.copy(
+                            isLocalAudioLoading = false,
+                            message = error.userMessage("本地音乐扫描失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun selectLocalAudioDirectory(treeUri: Uri) {
+        localAudioJob?.cancel()
         mutableState.update {
             it.copy(
                 librarySection = AccountLibrarySection.LOCAL_MUSIC,
@@ -483,15 +551,40 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
-            runCatching { container.localAudioRepository.audioTracks() }
-                .onSuccess { audio ->
-                    mutableState.update { it.copy(localAudio = audio, isLocalAudioLoading = false) }
+            localAudioDirectoryInitializationJob?.join()
+            runCatching { container.localAudioDirectoryRepository.selectDirectory(treeUri) }
+                .onSuccess { directory ->
+                    mutableState.update { it.copy(localAudioDirectory = directory) }
+                    loadLocalAudio()
                 }
                 .onFailure { error ->
+                    if (error is CancellationException) throw error
                     mutableState.update {
                         it.copy(
                             isLocalAudioLoading = false,
-                            message = error.userMessage("本地音乐扫描失败"),
+                            message = error.userMessage("目录筛选失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun clearLocalAudioDirectory() {
+        localAudioJob?.cancel()
+        mutableState.update { it.copy(isLocalAudioLoading = true, message = null) }
+        viewModelScope.launch {
+            localAudioDirectoryInitializationJob?.join()
+            runCatching { container.localAudioDirectoryRepository.clearDirectory() }
+                .onSuccess {
+                    mutableState.update { it.copy(localAudioDirectory = null) }
+                    loadLocalAudio()
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    mutableState.update {
+                        it.copy(
+                            isLocalAudioLoading = false,
+                            message = error.userMessage("清除目录筛选失败"),
                         )
                     }
                 }

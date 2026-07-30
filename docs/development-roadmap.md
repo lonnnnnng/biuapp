@@ -69,11 +69,11 @@
 
 ## M4：本地与下载
 
-状态：第一条纵向切片完成（2026-07-30）。
+状态：第二条纵向切片完成（2026-07-30）。
 
 - [x] MediaStore 本地音乐扫描、运行时音频权限和紧凑列表。
 - [x] `content://` 本地音频接入 Media3 队列、后台播放、通知栏和系统媒体切歌。
-- SAF 目录授权与本地音乐筛选。
+- [x] SAF 目录授权与本地音乐筛选（Android 10 及以上）。
 - 音频下载、暂停恢复、通知进度。
 - 下载文件通过 MediaStore 发布到用户可见目录。
 
@@ -82,6 +82,13 @@
 - `Pixel_9`（`emulator-5554`）在 Android 16 权限页显示“music and audio”授权请求。
 - MediaStore 扫描到两条测试音频，列表正确显示标题、作者、专辑和时长。
 - 点击本地音频后 MediaSession 进入 `PLAYING`，媒体通知显示本地标题；后台通过系统媒体命令成功切换到队列下一首。
+
+第二阶段模拟器证据：
+
+- `Pixel_9` 全库准备 5 条 MediaStore 音频；选择 `Music/BiuFilter` 后只显示 2 条，其中一条位于 `BiuFilter/Child`，`Music/Outside` 对照音频未进入结果。
+- 系统 SAF 确认对话授予目录读权限，Preferences DataStore 保存 `external_primary` 与 `Music/BiuFilter/`；强制停止并冷启动后仍恢复目录名称和 2 条筛选结果。
+- 点击筛选结果后 MediaSession 进入 `PLAYING`，队列 `size=2`，证明播放队列使用当前筛选结果而不是完整 5 条音乐库。
+- 点击“显示全部”后列表恢复 5 条，目录配置清空；最终验收版本重新选择目录并在暂停状态结束，`logcat -b crash` 中没有 Biu 崩溃。
 
 ## M5：视频与批量任务
 

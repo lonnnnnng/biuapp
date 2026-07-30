@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -151,6 +152,7 @@ import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
+import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.LocalMediaPermissionPolicy
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.playback.PlaybackService
@@ -239,6 +241,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         } else {
             viewModel.localAudioPermissionDenied()
         }
+    }
+    val localAudioDirectoryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        treeUri?.let(viewModel::selectLocalAudioDirectory)
     }
     LifecycleResumeEffect(localAudioPermission) {
         val granted = ContextCompat.checkSelfPermission(
@@ -600,6 +607,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         viewModel.showLocalAudioPermission()
                         localAudioPermissionLauncher.launch(localAudioPermission)
                     },
+                    onSelectLocalAudioDirectory = {
+                        val initialUri = uiState.localAudioDirectory?.treeUri?.let(Uri::parse)
+                        localAudioDirectoryLauncher.launch(initialUri)
+                    },
+                    onClearLocalAudioDirectory = viewModel::clearLocalAudioDirectory,
                     onOpenFavoriteFolder = viewModel::openFavoriteFolder,
                     onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
                     onPlay = viewModel::play,
@@ -1020,6 +1032,8 @@ private fun AccountScreen(
     onLogout: () -> Unit,
     onLoadLibrary: (AccountLibrarySection) -> Unit,
     onRequestLocalAudioPermission: () -> Unit,
+    onSelectLocalAudioDirectory: () -> Unit,
+    onClearLocalAudioDirectory: () -> Unit,
     onOpenFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
     onCloseFavoriteFolder: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
@@ -1109,9 +1123,12 @@ private fun AccountScreen(
                 )
                 AccountLibrarySection.LOCAL_MUSIC -> LocalAudioList(
                     audio = state.localAudio,
+                    directory = state.localAudioDirectory,
                     permissionGranted = localAudioPermissionGranted,
                     loading = state.isLocalAudioLoading,
                     onRequestPermission = onRequestLocalAudioPermission,
+                    onSelectDirectory = onSelectLocalAudioDirectory,
+                    onClearDirectory = onClearLocalAudioDirectory,
                     onRefresh = { onLoadLibrary(AccountLibrarySection.LOCAL_MUSIC) },
                     onPlay = onPlayLocalAudio,
                     modifier = Modifier.weight(1f),
@@ -1124,13 +1141,17 @@ private fun AccountScreen(
 @Composable
 private fun LocalAudioList(
     audio: List<LocalAudio>,
+    directory: LocalAudioDirectory?,
     permissionGranted: Boolean,
     loading: Boolean,
     onRequestPermission: () -> Unit,
+    onSelectDirectory: () -> Unit,
+    onClearDirectory: () -> Unit,
     onRefresh: () -> Unit,
     onPlay: (LocalAudio) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val directoryFilteringSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     Column(modifier) {
         Row(
             modifier = Modifier
@@ -1147,6 +1168,53 @@ private fun LocalAudioList(
                 Icon(Icons.Rounded.Refresh, contentDescription = "重新扫描本地音乐")
             }
         }
+        if (permissionGranted) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                FilterChip(
+                    selected = directory != null,
+                    onClick = onSelectDirectory,
+                    enabled = !loading && directoryFilteringSupported,
+                    label = {
+                        Text(
+                            when {
+                                directory != null -> "目录：${directory.displayName}"
+                                directoryFilteringSupported -> "筛选音乐目录"
+                                else -> "目录筛选需 Android 10+"
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Rounded.Folder,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                if (directory != null) {
+                    TextButton(onClick = onClearDirectory, enabled = !loading) {
+                        Text("显示全部")
+                    }
+                }
+            }
+            if (directory != null) {
+                Text(
+                    "仅显示该目录及其子目录",
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         when {
             !permissionGranted -> BiuEmptyState(
@@ -1160,7 +1228,8 @@ private fun LocalAudioList(
             !loading && audio.isEmpty() -> BiuEmptyState(
                 icon = Icons.Rounded.MusicNote,
                 title = "没有发现本地音乐",
-                message = "把音频保存到系统 Music 目录后点击右上角重新扫描。",
+                message = directory?.let { "“${it.displayName}”及其子目录中没有可播放的音乐。" }
+                    ?: "把音频保存到系统 Music 目录后点击右上角重新扫描。",
                 modifier = Modifier.weight(1f),
             )
             else -> LazyColumn(

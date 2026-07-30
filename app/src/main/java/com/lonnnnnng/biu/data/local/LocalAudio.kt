@@ -33,8 +33,11 @@ internal fun LocalAudio.toTrack(): Track {
 class LocalAudioRepository(context: Context) {
     private val contentResolver = context.applicationContext.contentResolver
 
-    suspend fun audioTracks(): List<LocalAudio> = withContext(Dispatchers.IO) {
-        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+    suspend fun audioTracks(directory: LocalAudioDirectory? = null): List<LocalAudio> = withContext(Dispatchers.IO) {
+        val directoryFilter = directory?.let { LocalAudioMediaStorePolicy.filterFor(it) }
+        val collection = directoryFilter?.let { filter ->
+            MediaStore.Audio.Media.getContentUri(filter.volumeName)
+        } ?: MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
             MediaStore.Audio.Media.TITLE,
@@ -51,12 +54,13 @@ class LocalAudioRepository(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             selectionParts += "${MediaStore.Audio.Media.IS_PENDING} = 0"
         }
+        directoryFilter?.selection?.let(selectionParts::add)
         val result = mutableListOf<LocalAudio>()
         contentResolver.query(
             collection,
             projection,
             selectionParts.joinToString(" AND "),
-            null,
+            directoryFilter?.selectionArgs?.toTypedArray()?.takeIf { it.isNotEmpty() },
             "${MediaStore.Audio.Media.DATE_ADDED} DESC, ${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC",
         )?.use { cursor ->
             val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)

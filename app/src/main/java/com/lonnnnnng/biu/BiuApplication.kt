@@ -9,6 +9,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliRequestHeadersInterceptor
 import com.lonnnnnng.biu.data.local.BiuDatabase
 import com.lonnnnnng.biu.data.local.BiuDatabaseMigrations
 import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
+import com.lonnnnnng.biu.data.local.LocalAudioDirectoryRepository
 import com.lonnnnnng.biu.data.local.LocalAudioRepository
 import com.lonnnnnng.biu.data.local.PlaybackHistoryRepository
 import com.lonnnnnng.biu.data.update.AppUpdateRepository
@@ -46,6 +47,7 @@ class AppContainer(context: Context) {
     ).addMigrations(BiuDatabaseMigrations.MIGRATION_1_2).build()
     val playbackHistoryRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
     val creatorSelectionRepository = CreatorSelectionRepository(database.creatorSelectionDao())
+    val localAudioDirectoryRepository = LocalAudioDirectoryRepository(context)
     val localAudioRepository = LocalAudioRepository(context)
 }
 

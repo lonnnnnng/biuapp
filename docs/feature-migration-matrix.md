@@ -14,7 +14,7 @@
 | 全屏播放器 | Compose Now Playing 页面 | M3 | 已完成 |
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |
 | 歌词 | LRCLIB/网易搜索 + 本地缓存 | M3 | 待开发 |
-| 本地音乐 | MediaStore 查询 + SAF 目录授权 | M4 | MediaStore 扫描、权限和播放完成；SAF 待开发 |
+| 本地音乐 | MediaStore 查询 + SAF 目录授权（Android 10+） | M4 | 扫描、播放、目录筛选与重启恢复已完成 |
 | 音频下载 | 前台下载服务 + MediaStore.Audio | M4 | 待开发 |
 | 视频下载 | 分轨下载 + Media3 Muxer/Transformer | M5 | 待开发 |
 | 批量下载 | Room 队列 + 并发限制 + 网络约束 | M5 | 待开发 |
