@@ -58,13 +58,14 @@ interface PlaybackHistoryDao {
 }
 
 @Database(
-    entities = [PlaybackHistoryEntity::class, CreatorSelectionEntity::class],
-    version = 2,
+    entities = [PlaybackHistoryEntity::class, CreatorSelectionEntity::class, AudioDownloadTaskEntity::class],
+    version = 3,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
     abstract fun playbackHistoryDao(): PlaybackHistoryDao
     abstract fun creatorSelectionDao(): CreatorSelectionDao
+    abstract fun audioDownloadTaskDao(): AudioDownloadTaskDao
 }
 
 object BiuDatabaseMigrations {
@@ -79,6 +80,36 @@ object BiuDatabaseMigrations {
                     `faceUrl` TEXT NOT NULL,
                     `position` INTEGER NOT NULL,
                     PRIMARY KEY(`mid`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 下载任务必须与播放历史共存；升级仅新增任务表，保留用户已有的账号配置、历史进度和播放次数。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `audio_download_tasks` (
+                    `taskId` TEXT NOT NULL,
+                    `bvid` TEXT NOT NULL,
+                    `cid` INTEGER NOT NULL,
+                    `title` TEXT NOT NULL,
+                    `artist` TEXT NOT NULL,
+                    `artworkUrl` TEXT,
+                    `qualityPreference` TEXT NOT NULL,
+                    `displayName` TEXT NOT NULL,
+                    `status` TEXT NOT NULL,
+                    `downloadedBytes` INTEGER NOT NULL,
+                    `totalBytes` INTEGER NOT NULL,
+                    `tempFilePath` TEXT NOT NULL,
+                    `qualityLabel` TEXT NOT NULL,
+                    `publishedUri` TEXT,
+                    `errorMessage` TEXT,
+                    `createdAtEpochMs` INTEGER NOT NULL,
+                    `updatedAtEpochMs` INTEGER NOT NULL,
+                    PRIMARY KEY(`taskId`)
                 )
                 """.trimIndent(),
             )

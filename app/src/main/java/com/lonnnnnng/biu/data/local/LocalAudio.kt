@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
 import com.lonnnnnng.biu.core.model.Track
+import com.lonnnnnng.biu.download.AudioDownloadStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -28,6 +29,32 @@ internal fun LocalAudio.toTrack(): Track {
         artworkUrl = artworkUri,
         qualityLabel = "本地音频",
     )
+}
+
+internal object LocalAudioDownloadMetadataPolicy {
+    fun apply(
+        audio: List<LocalAudio>,
+        downloads: List<AudioDownloadTaskEntity>,
+    ): List<LocalAudio> {
+        val metadataByMediaStoreId = downloads.mapNotNull { task ->
+            if (task.downloadStatus != AudioDownloadStatus.COMPLETED) return@mapNotNull null
+            val mediaStoreId = task.publishedUri
+                ?.substringAfterLast('/', missingDelimiterValue = "")
+                ?.toLongOrNull()
+                ?: return@mapNotNull null
+            mediaStoreId to task
+        }.toMap()
+        if (metadataByMediaStoreId.isEmpty()) return audio
+        return audio.map { item ->
+            val task = metadataByMediaStoreId[item.mediaStoreId] ?: return@map item
+            // long: MediaProvider 会重新扫描无标签的 DASH 音频并覆盖 TITLE/ARTIST；已完成任务以发布后的 MediaStore ID 回填在线元数据。
+            item.copy(
+                title = task.title,
+                artist = task.artist,
+                artworkUri = item.artworkUri ?: task.artworkUrl,
+            )
+        }
+    }
 }
 
 class LocalAudioRepository(context: Context) {

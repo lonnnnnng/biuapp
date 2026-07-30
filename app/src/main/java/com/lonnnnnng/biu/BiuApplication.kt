@@ -8,12 +8,18 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliRepository
 import com.lonnnnnng.biu.data.bilibili.BilibiliRequestHeadersInterceptor
 import com.lonnnnnng.biu.data.local.BiuDatabase
 import com.lonnnnnng.biu.data.local.BiuDatabaseMigrations
+import com.lonnnnnng.biu.data.local.AudioDownloadRepository
 import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
 import com.lonnnnnng.biu.data.local.LocalAudioDirectoryRepository
 import com.lonnnnnng.biu.data.local.LocalAudioRepository
 import com.lonnnnnng.biu.data.local.PlaybackHistoryRepository
 import com.lonnnnnng.biu.data.update.AppUpdateRepository
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import okhttp3.OkHttpClient
 
 class BiuApplication : Application() {
@@ -27,6 +33,7 @@ class BiuApplication : Application() {
 }
 
 class AppContainer(context: Context) {
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val cookieStore = BilibiliCookieStore()
     val bilibiliHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -44,11 +51,18 @@ class AppContainer(context: Context) {
         context.applicationContext,
         BiuDatabase::class.java,
         "biu.db",
-    ).addMigrations(BiuDatabaseMigrations.MIGRATION_1_2).build()
+    ).addMigrations(
+        BiuDatabaseMigrations.MIGRATION_1_2,
+        BiuDatabaseMigrations.MIGRATION_2_3,
+    ).build()
     val playbackHistoryRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
     val creatorSelectionRepository = CreatorSelectionRepository(database.creatorSelectionDao())
+    val audioDownloadRepository = AudioDownloadRepository(database.audioDownloadTaskDao())
     val localAudioDirectoryRepository = LocalAudioDirectoryRepository(context)
     val localAudioRepository = LocalAudioRepository(context)
+    val audioDownloadRecovery: Deferred<Unit> = applicationScope.async {
+        audioDownloadRepository.pauseInterruptedTasks()
+    }
 }
 
 val Context.appContainer: AppContainer

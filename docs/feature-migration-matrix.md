@@ -15,7 +15,7 @@
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |
 | 歌词 | LRCLIB/网易搜索 + 本地缓存 | M3 | 待开发 |
 | 本地音乐 | MediaStore 查询 + SAF 目录授权（Android 10+） | M4 | 扫描、播放、目录筛选与重启恢复已完成 |
-| 音频下载 | 前台下载服务 + MediaStore.Audio | M4 | 待开发 |
+| 音频下载 | Room 任务 + 前台下载服务 + Range 续传 + MediaStore.Audio | M4 | 标准 AAC 下载、暂停/继续/取消、通知进度与发布已完成 |
 | 视频下载 | 分轨下载 + Media3 Muxer/Transformer | M5 | 待开发 |
 | 批量下载 | Room 队列 + 并发限制 + 网络约束 | M5 | 待开发 |
 | 系统托盘 | Android 无对应能力 | - | 不迁移 |

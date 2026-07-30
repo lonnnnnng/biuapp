@@ -18,11 +18,16 @@ import com.lonnnnnng.biu.data.bilibili.CreatorFeedPolicy
 import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
+import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
+import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.data.update.AppVersionPolicy
+import com.lonnnnnng.biu.download.AudioDownloadRequest
+import com.lonnnnnng.biu.download.AudioDownloadService
+import com.lonnnnnng.biu.download.AudioDownloadStatus
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -87,6 +92,7 @@ data class BiuUiState(
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
     val localAudio: List<LocalAudio> = emptyList(),
+    val audioDownloads: List<AudioDownloadTaskEntity> = emptyList(),
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
@@ -168,6 +174,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.playbackHistoryRepository.recent.collect { history ->
                 mutableState.update { it.copy(localHistory = history) }
+            }
+        }
+        viewModelScope.launch {
+            container.audioDownloadRepository.tasks.collect { tasks ->
+                mutableState.update { it.copy(audioDownloads = tasks) }
             }
         }
     }
@@ -525,7 +536,13 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         localAudioJob = viewModelScope.launch {
-            runCatching { container.localAudioRepository.audioTracks(selectedDirectory) }
+            val downloads = state.value.audioDownloads
+            runCatching {
+                LocalAudioDownloadMetadataPolicy.apply(
+                    audio = container.localAudioRepository.audioTracks(selectedDirectory),
+                    downloads = downloads,
+                )
+            }
                 .onSuccess { audio ->
                     mutableState.update { it.copy(localAudio = audio, isLocalAudioLoading = false) }
                 }
@@ -601,6 +618,36 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             tracks = audioItems.map(LocalAudio::toTrack),
             startIndex = startIndex,
         )
+    }
+
+    fun startAudioDownload(request: AudioDownloadRequest) {
+        val existing = state.value.audioDownloads.firstOrNull { task -> task.taskId == request.taskId }
+        if (existing?.downloadStatus == AudioDownloadStatus.COMPLETED) {
+            mutableState.update { it.copy(message = "该曲目已下载到 Music/Biu") }
+            return
+        }
+        AudioDownloadService.start(getApplication<Application>().applicationContext, request)
+        mutableState.update {
+            it.copy(
+                message = if (existing?.downloadStatus == AudioDownloadStatus.PAUSED) {
+                    "正在恢复音频下载"
+                } else {
+                    "已加入音频下载"
+                },
+            )
+        }
+    }
+
+    fun resumeAudioDownload(taskId: String) {
+        AudioDownloadService.resume(getApplication<Application>().applicationContext, taskId)
+    }
+
+    fun pauseAudioDownload(taskId: String) {
+        AudioDownloadService.pause(getApplication<Application>().applicationContext, taskId)
+    }
+
+    fun cancelAudioDownload(taskId: String) {
+        AudioDownloadService.cancel(getApplication<Application>().applicationContext, taskId)
     }
 
     fun openFavoriteFolder(folder: BilibiliFavoriteFolder) {

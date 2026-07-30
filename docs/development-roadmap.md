@@ -69,13 +69,13 @@
 
 ## M4：本地与下载
 
-状态：第二条纵向切片完成（2026-07-30）。
+状态：第三条纵向切片完成（2026-07-30）。
 
 - [x] MediaStore 本地音乐扫描、运行时音频权限和紧凑列表。
 - [x] `content://` 本地音频接入 Media3 队列、后台播放、通知栏和系统媒体切歌。
 - [x] SAF 目录授权与本地音乐筛选（Android 10 及以上）。
-- 音频下载、暂停恢复、通知进度。
-- 下载文件通过 MediaStore 发布到用户可见目录。
+- [x] 标准 AAC 音频下载、暂停恢复、通知进度和取消清理。
+- [x] 下载文件通过 MediaStore 发布到用户可见的 `Music/Biu/`。
 
 第一阶段模拟器证据：
 
@@ -89,6 +89,18 @@
 - 系统 SAF 确认对话授予目录读权限，Preferences DataStore 保存 `external_primary` 与 `Music/BiuFilter/`；强制停止并冷启动后仍恢复目录名称和 2 条筛选结果。
 - 点击筛选结果后 MediaSession 进入 `PLAYING`，队列 `size=2`，证明播放队列使用当前筛选结果而不是完整 5 条音乐库。
 - 点击“显示全部”后列表恢复 5 条，目录配置清空；最终验收版本重新选择目录并在暂停状态结束，`logcat -b crash` 中没有 Biu 崩溃。
+
+第三阶段模拟器证据：
+
+- Room 从数据库 v2 原地迁移到 v3，新增 17 字段的 `audio_download_tasks`；已有账号配置、本地历史和播放进度保留。
+- 下载仅选择最高码率标准 AAC 并保存为 `.m4a`；真实任务完成 204 kbps / 4.6 MB、219 kbps / 76.1 MB 和 129 kbps / 40.3 MB 三组发布。
+- 最终文件均通过 MediaStore 发布到 `Music/Biu/`，`mime_type=audio/mp4`、`is_music=1`、`is_pending=0`，可从本地音乐页进入 MediaSession 播放。
+- 495.9 MB 长音频在限速下从约 4.0 MB 暂停，继续后增长到 6.5 MB；进程终止前 Room 为 `DOWNLOADING` 且保存 7,084,630 字节，冷启动后自动降级为 `PAUSED`，账号页可继续恢复。
+- Range 续传覆盖 `206` 追加、CDN 忽略 Range 返回 `200` 时覆盖重下、`416` 时单次清空断点；任务进度按 1 秒或 512 KB 节流写入 Room 和通知。
+- 前台下载服务提供暂停、继续、取消和重试；暂停态与下载态取消都进入 `CANCELLED`，`.part` 临时文件被删除且 Room 进度归零。
+- 修复取消命令与 `CoroutineScope.cancel` 同名导致命令协程被误取消的问题；编译字节码与真实按钮均确认调用下载任务取消逻辑。
+- MediaProvider 扫描无内嵌标签的 DASH 音频后会回退到文件名和未知艺术家；本地音乐页现在按 `publishedUri` 的 MediaStore ID 用 Room 元数据恢复标题、作者和封面，MediaSession 同步显示正确信息。
+- `AudioDownloadService` 为 `exported=false`，Android 15+ 实现 `dataSync` 超时降级；最终网络恢复 `full`，`logcat -b crash` 中没有 Biu 崩溃。
 
 ## M5：视频与批量任务
 

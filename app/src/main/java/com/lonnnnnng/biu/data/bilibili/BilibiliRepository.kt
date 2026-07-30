@@ -289,6 +289,19 @@ class BilibiliRepository(
         cid: Long,
         qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     ): DashAudioStream {
+        val streams = resolveAudioStreams(bvid, cid)
+        return DashAudioSelector.select(qualityPreference, streams.flac, streams.dolby, streams.standard)
+            ?: throw BilibiliApiException(-404, "没有可用音频流")
+    }
+
+    suspend fun resolveStandardAudioStream(bvid: String, cid: Long): DashAudioStream {
+        val streams = resolveAudioStreams(bvid, cid)
+        // long: 首版离线音频直接发布为 m4a，必须选 B 站标准 AAC 轨；FLAC/杜比仍需容器转换，不能仅改扩展名后交给 MediaStore。
+        return streams.standard.maxByOrNull(DashAudioStream::bandwidth)
+            ?: throw BilibiliApiException(-404, "没有可下载的标准 AAC 音频")
+    }
+
+    private suspend fun resolveAudioStreams(bvid: String, cid: Long): ParsedDashAudioStreams {
         val root = request(
             path = "/x/player/wbi/playurl",
             parameters = mapOf(
@@ -312,8 +325,7 @@ class BilibiliRepository(
         val standard = dash.optJSONArray("audio")
             .toObjects()
             .mapNotNull { parseAudio(it, "${it.optInt("bandwidth") / 1000} kbps") }
-        return DashAudioSelector.select(qualityPreference, flac, dolby, standard)
-            ?: throw BilibiliApiException(-404, "没有可用音频流")
+        return ParsedDashAudioStreams(flac = flac, dolby = dolby, standard = standard)
     }
 
     private suspend fun regionRecommendations(page: Int): List<BilibiliVideo> {
@@ -589,6 +601,12 @@ class BilibiliRepository(
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
     }
 }
+
+private data class ParsedDashAudioStreams(
+    val flac: DashAudioStream?,
+    val dolby: List<DashAudioStream>,
+    val standard: List<DashAudioStream>,
+)
 
 private fun JSONArray?.toObjects(): List<JSONObject> {
     if (this == null) return emptyList()
