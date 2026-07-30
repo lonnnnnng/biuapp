@@ -46,12 +46,20 @@ class VideoDownloadService : Service() {
     private val downloader by lazy { ResumableFileDownloader(appContainer.bilibiliHttpClient) }
     private val muxer by lazy(::VideoTrackMuxer)
     private val publisher by lazy { VideoDownloadPublisher(this) }
+    private val networkPreferenceRepository by lazy { appContainer.downloadNetworkPreferenceRepository }
+    private val networkMonitor by lazy { DownloadNetworkMonitor(this, ::onNetworkChanged) }
 
     @Volatile
     private var activeTaskId: String? = null
 
     @Volatile
     private var requestedStop: VideoStopReason? = null
+
+    @Volatile
+    private var networkState: DownloadNetworkState = DownloadNetworkState.DISCONNECTED
+
+    @Volatile
+    private var waitingForNetwork = false
 
     private var activeJob: Job? = null
 
@@ -80,6 +88,7 @@ class VideoDownloadService : Service() {
                 ),
             )
         }
+        networkState = networkMonitor.state()
         serviceScope.launch {
             // long: 先完成进程遗留任务的暂停恢复，再接受新命令，避免冷启动恢复写入覆盖用户刚触发的状态。
             appContainer.videoDownloadRecovery.await()
@@ -90,11 +99,15 @@ class VideoDownloadService : Service() {
                         ACTION_RESUME -> resume(taskId)
                         ACTION_PAUSE -> pause(taskId)
                         ACTION_CANCEL -> cancelTask(taskId)
+                        ACTION_DRAIN,
+                        ACTION_REFRESH_NETWORK,
+                        -> handleNetworkConstraintChanged()
                     }
                 }.onFailure { error ->
                     Log.w(LOG_TAG, "Video download command failed: ${error.javaClass.simpleName}")
                     stopForegroundAndSelfIfIdle()
                 }
+                if (activeJob?.isActive == true || waitingForNetwork) networkMonitor.start()
             }
         }
         return START_NOT_STICKY
@@ -102,6 +115,7 @@ class VideoDownloadService : Service() {
 
     override fun onDestroy() {
         downloader.cancelActiveCall()
+        networkMonitor.close()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -177,7 +191,7 @@ class VideoDownloadService : Service() {
         val paused = transitionIfAllowed(task.taskId, VideoDownloadStatus.PAUSED)
             ?: return stopForegroundAndSelfIfIdle()
         postTaskNotification(paused, "视频下载已暂停", active = false)
-        stopForegroundAndSelfIfIdle()
+        launchNextQueued()
     }
 
     private suspend fun cancelTask(taskId: String) {
@@ -191,12 +205,22 @@ class VideoDownloadService : Service() {
         val cancelled = transitionIfAllowed(task.taskId, VideoDownloadStatus.CANCELLED)
             ?: return stopForegroundAndSelfIfIdle()
         clearCancelledTask(cancelled)
-        stopForegroundAndSelfIfIdle()
+        launchNextQueued()
     }
 
     private suspend fun launchNextQueued() {
         if (activeJob?.isActive == true) return
-        val next = repository.nextQueued() ?: return stopForegroundAndSelfIfIdle()
+        val next = repository.nextQueued() ?: run {
+            waitingForNetwork = false
+            return stopForegroundAndSelfIfIdle()
+        }
+        val preference = networkPreferenceRepository.current()
+        if (!DownloadNetworkPolicy.isAllowed(preference, networkState)) {
+            waitingForNetwork = true
+            postTaskNotification(next, DownloadNetworkPolicy.waitingLabel(preference), active = true)
+            return
+        }
+        waitingForNetwork = false
         activeTaskId = next.taskId
         requestedStop = null
         activeJob = serviceScope.launch { runTask(next.taskId) }
@@ -328,9 +352,55 @@ class VideoDownloadService : Service() {
                 val cancelled = transitionIfAllowed(taskId, VideoDownloadStatus.CANCELLED)
                 cancelled?.let { task -> clearCancelledTask(task) }
             }
+            VideoStopReason.NETWORK -> {
+                val paused = transitionIfAllowed(taskId, VideoDownloadStatus.PAUSED)
+                paused?.let { task ->
+                    val queued = repository.enqueue(
+                        request = paused.toRequest(),
+                        videoTempFilePath = paused.videoTempFilePath,
+                        audioTempFilePath = paused.audioTempFilePath,
+                        outputTempFilePath = paused.outputTempFilePath,
+                    )
+                    postTaskNotification(
+                        queued,
+                        DownloadNetworkPolicy.waitingLabel(networkPreferenceRepository.current()),
+                        active = false,
+                    )
+                }
+            }
             null -> Unit
         }
         stopForeground(STOP_FOREGROUND_DETACH)
+    }
+
+    private fun onNetworkChanged(state: DownloadNetworkState) {
+        networkState = state
+        serviceScope.launch {
+            appContainer.videoDownloadRecovery.await()
+            commandMutex.withLock { handleNetworkConstraintChanged() }
+        }
+    }
+
+    private suspend fun handleNetworkConstraintChanged() {
+        if (!isNetworkAllowed()) {
+            val taskId = activeTaskId
+            if (!taskId.isNullOrBlank() && requestedStop == null) {
+                // long: 视频任务体积更大，默认网络不再满足约束时立即停止当前轨道，已完成轨和当前断点都继续保留。
+                requestedStop = VideoStopReason.NETWORK
+                downloader.cancelActiveCall()
+                activeJob?.cancel()
+            } else if (taskId.isNullOrBlank()) {
+                launchNextQueued()
+            }
+            return
+        }
+
+        waitingForNetwork = false
+        launchNextQueued()
+    }
+
+    private suspend fun isNetworkAllowed(): Boolean {
+        return DownloadNetworkPolicy.isAllowed(networkPreferenceRepository.current(), networkState)
     }
 
     private suspend fun clearCancelledTask(task: VideoDownloadTaskEntity) {
@@ -523,18 +593,12 @@ class VideoDownloadService : Service() {
         )
     }
 
-    private fun tempFiles(taskId: String): VideoTempFiles {
-        val safeId = taskId.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        val directory = File(filesDir, "video-downloads")
-        return VideoTempFiles(
-            video = File(directory, "$safeId.video.m4s"),
-            audio = File(directory, "$safeId.audio.m4s"),
-            output = File(directory, "$safeId.output.mp4"),
-        )
+    private fun tempFiles(taskId: String): VideoDownloadTempFiles {
+        return DownloadTempFilePolicy.video(filesDir, taskId)
     }
 
     private fun stopForegroundAndSelfIfIdle() {
-        if (activeJob?.isActive == true) return
+        if (activeJob?.isActive == true || waitingForNetwork) return
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
@@ -588,6 +652,10 @@ class VideoDownloadService : Service() {
 
         fun cancel(context: Context, taskId: String) = sendAction(context, ACTION_CANCEL, taskId)
 
+        fun drain(context: Context) = sendAction(context, ACTION_DRAIN, "")
+
+        fun refreshNetworkConstraint(context: Context) = sendAction(context, ACTION_REFRESH_NETWORK, "")
+
         private fun sendAction(context: Context, action: String, taskId: String) {
             val intent = Intent(context, VideoDownloadService::class.java)
                 .setAction(action)
@@ -599,6 +667,8 @@ class VideoDownloadService : Service() {
         private const val ACTION_RESUME = "com.lonnnnnng.biu.download.VIDEO_RESUME"
         private const val ACTION_PAUSE = "com.lonnnnnng.biu.download.VIDEO_PAUSE"
         private const val ACTION_CANCEL = "com.lonnnnnng.biu.download.VIDEO_CANCEL"
+        private const val ACTION_DRAIN = "com.lonnnnnng.biu.download.VIDEO_DRAIN"
+        private const val ACTION_REFRESH_NETWORK = "com.lonnnnnng.biu.download.VIDEO_REFRESH_NETWORK"
         private const val EXTRA_TASK_ID = "task_id"
         private const val EXTRA_BVID = "bvid"
         private const val EXTRA_CID = "cid"
@@ -609,15 +679,10 @@ class VideoDownloadService : Service() {
     }
 }
 
-private data class VideoTempFiles(
-    val video: File,
-    val audio: File,
-    val output: File,
-)
-
 private enum class VideoStopReason {
     PAUSE,
     CANCEL,
+    NETWORK,
 }
 
 private fun formatBytes(bytes: Long): String {

@@ -68,6 +68,11 @@ data class BilibiliLibraryVideo(
     val savedAtEpochSeconds: Long? = null,
 )
 
+data class BilibiliFavoriteVideoPage(
+    val videos: List<BilibiliLibraryVideo>,
+    val hasMore: Boolean,
+)
+
 data class WbiKeys(
     val imgKey: String,
     val subKey: String,

@@ -17,7 +17,7 @@
 | 本地音乐 | MediaStore 查询 + SAF 目录授权（Android 10+） | M4 | 扫描、播放、目录筛选与重启恢复已完成 |
 | 音频下载 | Room 任务 + 前台下载服务 + Range 续传 + MediaStore.Audio | M4 | 标准 AAC 下载、暂停/继续/取消、通知进度与发布已完成 |
 | 视频下载 | Room 视频任务 + 双轨 Range 下载 + Media3 Mp4Muxer + MediaStore.Video | M5 | 当前单 P/当前分 P 下载、暂停恢复、取消、合并与 `Movies/Biu/` 发布已完成 |
-| 批量下载 | Room 队列 + 并发限制 + 网络约束 | M5 | 待开发 |
+| 批量下载 | 收藏夹全量分页 + 分 P 独立任务 + Room FIFO + 网络约束 | M5 | 音频/视频批量选择、失败重试和仅非计费网络等待恢复已完成 |
 | 系统托盘 | Android 无对应能力 | - | 不迁移 |
 | 桌面窗口控制 | Android Activity/系统返回栈 | - | 平台替代 |
 | Electron 自动更新 | GitHub Release + DownloadManager + 系统安装器 | M6 | 已完成首版 |

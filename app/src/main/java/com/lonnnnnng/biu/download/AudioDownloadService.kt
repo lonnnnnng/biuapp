@@ -45,12 +45,20 @@ class AudioDownloadService : Service() {
     private val bilibiliRepository by lazy { appContainer.bilibiliRepository }
     private val downloader by lazy { ResumableFileDownloader(appContainer.bilibiliHttpClient) }
     private val publisher by lazy { AudioDownloadPublisher(this) }
+    private val networkPreferenceRepository by lazy { appContainer.downloadNetworkPreferenceRepository }
+    private val networkMonitor by lazy { DownloadNetworkMonitor(this, ::onNetworkChanged) }
 
     @Volatile
     private var activeTaskId: String? = null
 
     @Volatile
     private var requestedStop: StopReason? = null
+
+    @Volatile
+    private var networkState: DownloadNetworkState = DownloadNetworkState.DISCONNECTED
+
+    @Volatile
+    private var waitingForNetwork = false
 
     private var activeJob: Job? = null
 
@@ -79,6 +87,7 @@ class AudioDownloadService : Service() {
                 ),
             )
         }
+        networkState = networkMonitor.state()
         serviceScope.launch {
             // long: 冷启动先完成上次进程遗留任务的降级，再处理用户的新命令，避免恢复写入覆盖刚开始的下载状态。
             appContainer.audioDownloadRecovery.await()
@@ -90,11 +99,15 @@ class AudioDownloadService : Service() {
                         ACTION_PAUSE -> pause(taskId)
                         // long: launch 代码块自带 CoroutineScope.cancel 扩展；使用独立业务名称，确保取消的是下载任务而不是命令协程。
                         ACTION_CANCEL -> cancelTask(taskId)
+                        ACTION_DRAIN,
+                        ACTION_REFRESH_NETWORK,
+                        -> handleNetworkConstraintChanged()
                     }
                 }.onFailure { error ->
                     Log.w(LOG_TAG, "Download command failed: ${error.javaClass.simpleName}")
                     stopForegroundAndSelfIfIdle()
                 }
+                if (activeJob?.isActive == true || waitingForNetwork) networkMonitor.start()
             }
         }
         return START_NOT_STICKY
@@ -102,6 +115,7 @@ class AudioDownloadService : Service() {
 
     override fun onDestroy() {
         downloader.cancelActiveCall()
+        networkMonitor.close()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -167,7 +181,7 @@ class AudioDownloadService : Service() {
         val paused = transitionIfAllowed(task.taskId, AudioDownloadStatus.PAUSED)
             ?: return stopForegroundAndSelfIfIdle()
         postTaskNotification(paused, "下载已暂停", active = false)
-        stopForegroundAndSelfIfIdle()
+        launchNextQueued()
     }
 
     private suspend fun cancelTask(taskId: String) {
@@ -181,12 +195,22 @@ class AudioDownloadService : Service() {
         val cancelled = transitionIfAllowed(task.taskId, AudioDownloadStatus.CANCELLED)
             ?: return stopForegroundAndSelfIfIdle()
         clearCancelledTask(cancelled)
-        stopForegroundAndSelfIfIdle()
+        launchNextQueued()
     }
 
     private suspend fun launchNextQueued() {
         if (activeJob?.isActive == true) return
-        val next = repository.nextQueued() ?: return stopForegroundAndSelfIfIdle()
+        val next = repository.nextQueued() ?: run {
+            waitingForNetwork = false
+            return stopForegroundAndSelfIfIdle()
+        }
+        val preference = networkPreferenceRepository.current()
+        if (!DownloadNetworkPolicy.isAllowed(preference, networkState)) {
+            waitingForNetwork = true
+            postTaskNotification(next, DownloadNetworkPolicy.waitingLabel(preference), active = true)
+            return
+        }
+        waitingForNetwork = false
         activeTaskId = next.taskId
         requestedStop = null
         activeJob = serviceScope.launch { runTask(next.taskId) }
@@ -297,9 +321,50 @@ class AudioDownloadService : Service() {
                 val cancelled = transitionIfAllowed(taskId, AudioDownloadStatus.CANCELLED)
                 cancelled?.let { task -> clearCancelledTask(task) }
             }
+            StopReason.NETWORK -> {
+                val paused = transitionIfAllowed(taskId, AudioDownloadStatus.PAUSED)
+                paused?.let { task ->
+                    val queued = repository.enqueue(task.toRequest(), task.tempFilePath)
+                    postTaskNotification(
+                        queued,
+                        DownloadNetworkPolicy.waitingLabel(networkPreferenceRepository.current()),
+                        active = false,
+                    )
+                }
+            }
             null -> Unit
         }
         stopForeground(STOP_FOREGROUND_DETACH)
+    }
+
+    private fun onNetworkChanged(state: DownloadNetworkState) {
+        networkState = state
+        serviceScope.launch {
+            appContainer.audioDownloadRecovery.await()
+            commandMutex.withLock { handleNetworkConstraintChanged() }
+        }
+    }
+
+    private suspend fun handleNetworkConstraintChanged() {
+        if (!isNetworkAllowed()) {
+            val taskId = activeTaskId
+            if (!taskId.isNullOrBlank() && requestedStop == null) {
+                // long: 用户选择仅非计费网络后，Wi-Fi 切到移动数据必须立即停止网络流并保留断点，避免后台继续消耗流量。
+                requestedStop = StopReason.NETWORK
+                downloader.cancelActiveCall()
+                activeJob?.cancel()
+            } else if (taskId.isNullOrBlank()) {
+                launchNextQueued()
+            }
+            return
+        }
+
+        waitingForNetwork = false
+        launchNextQueued()
+    }
+
+    private suspend fun isNetworkAllowed(): Boolean {
+        return DownloadNetworkPolicy.isAllowed(networkPreferenceRepository.current(), networkState)
     }
 
     private suspend fun clearCancelledTask(task: AudioDownloadTaskEntity) {
@@ -484,12 +549,11 @@ class AudioDownloadService : Service() {
     }
 
     private fun tempFile(taskId: String): File {
-        val safeId = taskId.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        return File(File(filesDir, "audio-downloads"), "$safeId.part")
+        return DownloadTempFilePolicy.audio(filesDir, taskId)
     }
 
     private fun stopForegroundAndSelfIfIdle() {
-        if (activeJob?.isActive == true) return
+        if (activeJob?.isActive == true || waitingForNetwork) return
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
@@ -541,6 +605,10 @@ class AudioDownloadService : Service() {
 
         fun cancel(context: Context, taskId: String) = sendAction(context, ACTION_CANCEL, taskId)
 
+        fun drain(context: Context) = sendAction(context, ACTION_DRAIN, "")
+
+        fun refreshNetworkConstraint(context: Context) = sendAction(context, ACTION_REFRESH_NETWORK, "")
+
         private fun sendAction(context: Context, action: String, taskId: String) {
             val intent = Intent(context, AudioDownloadService::class.java)
                 .setAction(action)
@@ -552,6 +620,8 @@ class AudioDownloadService : Service() {
         private const val ACTION_RESUME = "com.lonnnnnng.biu.download.RESUME"
         private const val ACTION_PAUSE = "com.lonnnnnng.biu.download.PAUSE"
         private const val ACTION_CANCEL = "com.lonnnnnng.biu.download.CANCEL"
+        private const val ACTION_DRAIN = "com.lonnnnnng.biu.download.DRAIN"
+        private const val ACTION_REFRESH_NETWORK = "com.lonnnnnng.biu.download.REFRESH_NETWORK"
         private const val EXTRA_TASK_ID = "task_id"
         private const val EXTRA_BVID = "bvid"
         private const val EXTRA_CID = "cid"
@@ -565,6 +635,7 @@ class AudioDownloadService : Service() {
 private enum class StopReason {
     PAUSE,
     CANCEL,
+    NETWORK,
 }
 
 private fun formatBytes(bytes: Long): String {

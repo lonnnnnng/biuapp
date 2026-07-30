@@ -97,6 +97,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -163,6 +164,8 @@ import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadStatus
+import com.lonnnnnng.biu.download.DownloadNetworkPreference
+import com.lonnnnnng.biu.download.FavoriteBatchDownloadKind
 import com.lonnnnnng.biu.download.VideoDownloadRequest
 import com.lonnnnnng.biu.download.VideoDownloadStatus
 import com.lonnnnnng.biu.playback.PlaybackService
@@ -210,6 +213,10 @@ private enum class DownloadTaskKind(val label: String) {
 private sealed interface PendingDownload {
     data class Audio(val request: AudioDownloadRequest) : PendingDownload
     data class Video(val request: VideoDownloadRequest) : PendingDownload
+    data class FavoriteBatch(
+        val kind: FavoriteBatchDownloadKind,
+        val videos: List<BilibiliLibraryVideo>,
+    ) : PendingDownload
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -287,6 +294,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         when (request) {
             is PendingDownload.Audio -> viewModel.startAudioDownload(request.request)
             is PendingDownload.Video -> viewModel.startVideoDownload(request.request)
+            is PendingDownload.FavoriteBatch -> viewModel.startFavoriteBatchDownload(request.kind, request.videos)
         }
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -318,6 +326,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             when (request) {
                 is PendingDownload.Audio -> viewModel.startAudioDownload(request.request)
                 is PendingDownload.Video -> viewModel.startVideoDownload(request.request)
+                is PendingDownload.FavoriteBatch -> viewModel.startFavoriteBatchDownload(request.kind, request.videos)
             }
         } else {
             pendingDownload = request
@@ -582,6 +591,19 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
+    uiState.favoriteBatchFolder?.let { folder ->
+        FavoriteBatchDownloadSheet(
+            folder = folder,
+            videos = uiState.favoriteBatchVideos,
+            loading = uiState.isFavoriteBatchLoading,
+            submitting = uiState.isFavoriteBatchSubmitting,
+            onDismiss = viewModel::dismissFavoriteBatchDownload,
+            onStart = { kind, videos ->
+                startOrRequestDownload(PendingDownload.FavoriteBatch(kind, videos))
+            },
+        )
+    }
+
     if (showCreatorConfig) {
         CreatorSelectionSheet(
             accountLoggedIn = uiState.account.isLoggedIn,
@@ -612,6 +634,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 onSelectedKindChange = { downloadTaskKind = it },
                 audioTasks = uiState.audioDownloads,
                 videoTasks = uiState.videoDownloads,
+                networkPreference = uiState.downloadNetworkPreference,
+                onNetworkPreferenceChange = viewModel::setDownloadUnmeteredOnly,
+                onRetryFailedAudio = viewModel::retryFailedAudioDownloads,
+                onRetryFailedVideo = viewModel::retryFailedVideoDownloads,
                 onResumeAudio = viewModel::resumeAudioDownload,
                 onPauseAudio = viewModel::pauseAudioDownload,
                 onCancelAudio = viewModel::cancelAudioDownload,
@@ -736,6 +762,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onClearLocalAudioDirectory = viewModel::clearLocalAudioDirectory,
                     onOpenFavoriteFolder = viewModel::openFavoriteFolder,
                     onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
+                    onOpenFavoriteBatchDownload = viewModel::openFavoriteBatchDownload,
                     onPlay = viewModel::play,
                     onPlayHistory = viewModel::play,
                     onPlayLocalAudio = viewModel::play,
@@ -1159,6 +1186,7 @@ private fun AccountScreen(
     onClearLocalAudioDirectory: () -> Unit,
     onOpenFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
     onCloseFavoriteFolder: () -> Unit,
+    onOpenFavoriteBatchDownload: (BilibiliFavoriteFolder) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onPlayHistory: (PlaybackHistoryEntity) -> Unit,
     onPlayLocalAudio: (LocalAudio) -> Unit,
@@ -1228,6 +1256,7 @@ private fun AccountScreen(
                     loading = state.isLibraryLoading,
                     onOpenFolder = onOpenFavoriteFolder,
                     onCloseFolder = onCloseFavoriteFolder,
+                    onBatchDownload = onOpenFavoriteBatchDownload,
                     onPlay = onPlay,
                     modifier = Modifier.weight(1f),
                 )
@@ -1514,6 +1543,7 @@ private fun FavoriteLibrary(
     loading: Boolean,
     onOpenFolder: (BilibiliFavoriteFolder) -> Unit,
     onCloseFolder: () -> Unit,
+    onBatchDownload: (BilibiliFavoriteFolder) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1540,6 +1570,9 @@ private fun FavoriteLibrary(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                IconButton(onClick = { onBatchDownload(selectedFolder) }) {
+                    Icon(Icons.Rounded.Download, contentDescription = "批量下载 ${selectedFolder.title}")
                 }
             }
             LibraryVideoList(videos, resolvingBvid, loading, onPlay, Modifier.weight(1f))
@@ -2172,6 +2205,225 @@ private fun CreatorSelectionSheet(
                         saving -> "正在保存"
                         selectedMids.isEmpty() -> "恢复音乐区和音乐榜"
                         else -> "保存 ${selectedMids.size} 位 UP"
+                    },
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FavoriteBatchDownloadSheet(
+    folder: BilibiliFavoriteFolder,
+    videos: List<BilibiliLibraryVideo>,
+    loading: Boolean,
+    submitting: Boolean,
+    onDismiss: () -> Unit,
+    onStart: (FavoriteBatchDownloadKind, List<BilibiliLibraryVideo>) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var kind by remember(folder.id) { mutableStateOf(FavoriteBatchDownloadKind.AUDIO) }
+    var selectedBvids by remember(folder.id, videos) {
+        mutableStateOf(videos.map { item -> item.video.bvid }.toSet())
+    }
+    val selectedVideos = remember(videos, selectedBvids) {
+        videos.filter { item -> item.video.bvid in selectedBvids }
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = Modifier.widthIn(max = 840.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        // long: 收藏夹可能包含大量资源和超长多 P，选择列表独立滚动，底部创建按钮始终固定可见。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("批量下载", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        folder.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onDismiss, enabled = !submitting) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭批量下载")
+                }
+            }
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FavoriteBatchDownloadKind.entries.forEach { option ->
+                    FilterChip(
+                        selected = kind == option,
+                        onClick = { kind = option },
+                        enabled = !submitting,
+                        label = { Text(option.label) },
+                        leadingIcon = {
+                            Icon(
+                                if (option == FavoriteBatchDownloadKind.AUDIO) {
+                                    Icons.Rounded.MusicNote
+                                } else {
+                                    Icons.Rounded.Movie
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        },
+                    )
+                }
+            }
+            Text(
+                "多 P 资源会按每个分 P 拆成独立任务；同类型文件按队列逐个下载。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "已选 ${selectedBvids.size} / ${videos.size}",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = {
+                        selectedBvids = if (selectedBvids.size == videos.size) {
+                            emptySet()
+                        } else {
+                            videos.map { item -> item.video.bvid }.toSet()
+                        }
+                    },
+                    enabled = videos.isNotEmpty() && !submitting,
+                ) {
+                    Text(if (selectedBvids.size == videos.size) "取消全选" else "全选")
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            ) {
+                when {
+                    loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    videos.isEmpty() -> BiuEmptyState(
+                        icon = Icons.Rounded.Folder,
+                        title = "没有可下载内容",
+                        message = "失效稿件和非普通视频不会加入批量任务",
+                    )
+                    else -> LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(vertical = 2.dp),
+                    ) {
+                        items(videos, key = { item -> item.video.bvid }) { item ->
+                            val selected = item.video.bvid in selectedBvids
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .semantics {
+                                        role = Role.Checkbox
+                                        this.selected = selected
+                                        stateDescription = if (selected) "已选择" else "未选择"
+                                    }
+                                    .clickable(enabled = !submitting) {
+                                        selectedBvids = if (selected) {
+                                            selectedBvids - item.video.bvid
+                                        } else {
+                                            selectedBvids + item.video.bvid
+                                        }
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                AsyncImage(
+                                    model = item.video.coverUrl,
+                                    contentDescription = item.video.title,
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                                    contentScale = ContentScale.Crop,
+                                )
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        item.video.title,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        item.video.author.ifBlank { "未知作者" },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Surface(
+                                    modifier = Modifier.size(28.dp),
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHighest
+                                    },
+                                    contentColor = if (selected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        if (selected) {
+                                            Icon(
+                                                Icons.Rounded.Check,
+                                                contentDescription = "已选择 ${item.video.title}",
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            MediaDivider(start = 80.dp)
+                        }
+                    }
+                }
+            }
+            Button(
+                onClick = { onStart(kind, selectedVideos) },
+                enabled = selectedVideos.isNotEmpty() && !loading && !submitting,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    if (submitting) {
+                        "正在解析分 P 并创建任务"
+                    } else {
+                        "下载 ${selectedVideos.size} 个资源的${kind.label}"
                     },
                 )
             }
@@ -2826,6 +3078,10 @@ private fun DownloadTaskPanel(
     onSelectedKindChange: (DownloadTaskKind) -> Unit,
     audioTasks: List<AudioDownloadTaskEntity>,
     videoTasks: List<VideoDownloadTaskEntity>,
+    networkPreference: DownloadNetworkPreference,
+    onNetworkPreferenceChange: (Boolean) -> Unit,
+    onRetryFailedAudio: () -> Unit,
+    onRetryFailedVideo: () -> Unit,
     onResumeAudio: (String) -> Unit,
     onPauseAudio: (String) -> Unit,
     onCancelAudio: (String) -> Unit,
@@ -2856,9 +3112,29 @@ private fun DownloadTaskPanel(
                 )
             }
         }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("仅 Wi-Fi 下载", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "实际按系统非计费网络判断，切网时保留断点等待恢复",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = networkPreference == DownloadNetworkPreference.UNMETERED_ONLY,
+                onCheckedChange = onNetworkPreferenceChange,
+            )
+        }
         when (selectedKind) {
             DownloadTaskKind.AUDIO -> AudioDownloadTaskList(
                 tasks = audioTasks,
+                onRetryFailed = onRetryFailedAudio,
                 onResume = onResumeAudio,
                 onPause = onPauseAudio,
                 onCancel = onCancelAudio,
@@ -2868,6 +3144,7 @@ private fun DownloadTaskPanel(
             )
             DownloadTaskKind.VIDEO -> VideoDownloadTaskList(
                 tasks = videoTasks,
+                onRetryFailed = onRetryFailedVideo,
                 onResume = onResumeVideo,
                 onPause = onPauseVideo,
                 onCancel = onCancelVideo,
@@ -2882,6 +3159,7 @@ private fun DownloadTaskPanel(
 @Composable
 private fun AudioDownloadTaskList(
     tasks: List<AudioDownloadTaskEntity>,
+    onRetryFailed: () -> Unit,
     onResume: (String) -> Unit,
     onPause: (String) -> Unit,
     onCancel: (String) -> Unit,
@@ -2893,7 +3171,11 @@ private fun AudioDownloadTaskList(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("音频任务 · ${tasks.size}", style = MaterialTheme.typography.bodySmall)
+            Text("音频任务 · ${tasks.size}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            val failedCount = tasks.count { task -> task.downloadStatus == AudioDownloadStatus.FAILED }
+            if (failedCount > 0) {
+                TextButton(onClick = onRetryFailed) { Text("重试失败 · $failedCount") }
+            }
         }
         if (tasks.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -3004,17 +3286,23 @@ private fun AudioDownloadTaskList(
 @Composable
 private fun VideoDownloadTaskList(
     tasks: List<VideoDownloadTaskEntity>,
+    onRetryFailed: () -> Unit,
     onResume: (String) -> Unit,
     onPause: (String) -> Unit,
     onCancel: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
-        Text(
-            "视频任务 · ${tasks.size}",
+        Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.bodySmall,
-        )
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("视频任务 · ${tasks.size}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            val failedCount = tasks.count { task -> task.downloadStatus == VideoDownloadStatus.FAILED }
+            if (failedCount > 0) {
+                TextButton(onClick = onRetryFailed) { Text("重试失败 · $failedCount") }
+            }
+        }
         if (tasks.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(

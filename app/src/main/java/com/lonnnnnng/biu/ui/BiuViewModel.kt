@@ -29,6 +29,12 @@ import com.lonnnnnng.biu.data.update.AppVersionPolicy
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadService
 import com.lonnnnnng.biu.download.AudioDownloadStatus
+import com.lonnnnnng.biu.download.DownloadBatchEnqueueResult
+import com.lonnnnnng.biu.download.DownloadNetworkPreference
+import com.lonnnnnng.biu.download.DownloadTempFilePolicy
+import com.lonnnnnng.biu.download.FavoriteBatchDownloadKind
+import com.lonnnnnng.biu.download.FavoriteBatchDownloadPolicy
+import com.lonnnnnng.biu.download.FavoriteDownloadPage
 import com.lonnnnnng.biu.download.VideoDownloadRequest
 import com.lonnnnnng.biu.download.VideoDownloadService
 import com.lonnnnnng.biu.download.VideoDownloadStatus
@@ -94,10 +100,13 @@ data class BiuUiState(
     val favoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
     val selectedFavoriteFolder: BilibiliFavoriteFolder? = null,
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
+    val favoriteBatchFolder: BilibiliFavoriteFolder? = null,
+    val favoriteBatchVideos: List<BilibiliLibraryVideo> = emptyList(),
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
     val localAudio: List<LocalAudio> = emptyList(),
     val audioDownloads: List<AudioDownloadTaskEntity> = emptyList(),
     val videoDownloads: List<VideoDownloadTaskEntity> = emptyList(),
+    val downloadNetworkPreference: DownloadNetworkPreference = DownloadNetworkPreference.ANY_VALIDATED,
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
@@ -107,6 +116,8 @@ data class BiuUiState(
     val isSearchLoading: Boolean = false,
     val isAccountLoading: Boolean = true,
     val isLibraryLoading: Boolean = false,
+    val isFavoriteBatchLoading: Boolean = false,
+    val isFavoriteBatchSubmitting: Boolean = false,
     val isPageQueueLoading: Boolean = false,
     val isLocalAudioLoading: Boolean = false,
     val availableUpdate: AppUpdate? = null,
@@ -124,6 +135,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val mutablePlaybackCommands = Channel<PlaybackCommand>(Channel.UNLIMITED)
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
+    private var favoriteBatchLoadJob: Job? = null
     private var localAudioJob: Job? = null
     private var localAudioDirectoryInitializationJob: Job? = null
     private var localAudioDirectoryInitialized = false
@@ -189,6 +201,23 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.videoDownloadRepository.tasks.collect { tasks ->
                 mutableState.update { it.copy(videoDownloads = tasks) }
+            }
+        }
+        viewModelScope.launch {
+            container.downloadNetworkPreferenceRepository.preference.collect { preference ->
+                mutableState.update { it.copy(downloadNetworkPreference = preference) }
+            }
+        }
+        viewModelScope.launch {
+            container.audioDownloadRecovery.await()
+            if (container.audioDownloadRepository.nextQueued() != null) {
+                AudioDownloadService.drain(getApplication<Application>().applicationContext)
+            }
+        }
+        viewModelScope.launch {
+            container.videoDownloadRecovery.await()
+            if (container.videoDownloadRepository.nextQueued() != null) {
+                VideoDownloadService.drain(getApplication<Application>().applicationContext)
             }
         }
     }
@@ -690,6 +719,162 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         VideoDownloadService.cancel(getApplication<Application>().applicationContext, taskId)
     }
 
+    fun openFavoriteBatchDownload(folder: BilibiliFavoriteFolder) {
+        // long: 用户可能快速切换收藏夹；取消旧分页请求可避免迟到结果覆盖当前弹层的资源列表。
+        favoriteBatchLoadJob?.cancel()
+        mutableState.update {
+            it.copy(
+                favoriteBatchFolder = folder,
+                favoriteBatchVideos = emptyList(),
+                isFavoriteBatchLoading = true,
+                isFavoriteBatchSubmitting = false,
+                message = null,
+            )
+        }
+        favoriteBatchLoadJob = viewModelScope.launch {
+            try {
+                val videos = repository.favoriteVideosAll(folder.id)
+                mutableState.update { current ->
+                    if (current.favoriteBatchFolder?.id != folder.id) {
+                        current
+                    } else {
+                        current.copy(favoriteBatchVideos = videos, isFavoriteBatchLoading = false)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    if (current.favoriteBatchFolder?.id != folder.id) {
+                        current
+                    } else {
+                        current.copy(
+                            isFavoriteBatchLoading = false,
+                            message = error.userMessage("批量下载列表加载失败"),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissFavoriteBatchDownload() {
+        if (state.value.isFavoriteBatchSubmitting) return
+        favoriteBatchLoadJob?.cancel()
+        favoriteBatchLoadJob = null
+        mutableState.update {
+            it.copy(
+                favoriteBatchFolder = null,
+                favoriteBatchVideos = emptyList(),
+                isFavoriteBatchLoading = false,
+            )
+        }
+    }
+
+    fun startFavoriteBatchDownload(
+        kind: FavoriteBatchDownloadKind,
+        videos: List<BilibiliLibraryVideo>,
+    ) {
+        if (state.value.isFavoriteBatchSubmitting) return
+        val selectedVideos = videos.distinctBy { item -> item.video.bvid }
+        if (selectedVideos.isEmpty()) {
+            mutableState.update { it.copy(message = "请至少选择一个收藏资源") }
+            return
+        }
+        val qualityPreference = state.value.qualityPreference
+        mutableState.update { it.copy(isFavoriteBatchSubmitting = true, message = null) }
+        viewModelScope.launch {
+            try {
+                val pageResults = resolveFavoriteDownloadPages(selectedVideos, qualityPreference)
+                val resolvedPages = pageResults.flatMap { result -> result.getOrNull().orEmpty() }
+                if (resolvedPages.isEmpty()) {
+                    throw pageResults.firstNotNullOfOrNull(Result<List<FavoriteDownloadPage>>::exceptionOrNull)
+                        ?: IllegalStateException("所选资源没有可下载分 P")
+                }
+                val filesDir = getApplication<Application>().filesDir
+                val enqueueResult = when (kind) {
+                    FavoriteBatchDownloadKind.AUDIO -> {
+                        val result = container.audioDownloadRepository.enqueueAll(
+                            requests = resolvedPages.map(FavoriteDownloadPage::toAudioRequest),
+                            tempFilePath = { taskId ->
+                                DownloadTempFilePolicy.audio(filesDir, taskId).absolutePath
+                            },
+                        )
+                        if (result.queuedCount > 0) {
+                            AudioDownloadService.drain(getApplication<Application>().applicationContext)
+                        }
+                        result
+                    }
+                    FavoriteBatchDownloadKind.VIDEO -> {
+                        val result = container.videoDownloadRepository.enqueueAll(
+                            requests = resolvedPages.map(FavoriteDownloadPage::toVideoRequest),
+                            tempFiles = { taskId -> DownloadTempFilePolicy.video(filesDir, taskId) },
+                        )
+                        if (result.queuedCount > 0) {
+                            VideoDownloadService.drain(getApplication<Application>().applicationContext)
+                        }
+                        result
+                    }
+                }
+                val failedResources = pageResults.count(Result<List<FavoriteDownloadPage>>::isFailure)
+                mutableState.update {
+                    it.copy(
+                        favoriteBatchFolder = null,
+                        favoriteBatchVideos = emptyList(),
+                        isFavoriteBatchLoading = false,
+                        isFavoriteBatchSubmitting = false,
+                        message = batchDownloadMessage(kind, enqueueResult, failedResources),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update {
+                    it.copy(
+                        isFavoriteBatchSubmitting = false,
+                        message = error.userMessage("批量下载任务创建失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun retryFailedAudioDownloads() {
+        viewModelScope.launch {
+            val count = container.audioDownloadRepository.retryFailedTasks()
+            if (count > 0) AudioDownloadService.drain(getApplication<Application>().applicationContext)
+            mutableState.update {
+                it.copy(message = if (count > 0) "已重新加入 $count 个失败音频任务" else "没有失败的音频任务")
+            }
+        }
+    }
+
+    fun retryFailedVideoDownloads() {
+        viewModelScope.launch {
+            val count = container.videoDownloadRepository.retryFailedTasks()
+            if (count > 0) VideoDownloadService.drain(getApplication<Application>().applicationContext)
+            mutableState.update {
+                it.copy(message = if (count > 0) "已重新加入 $count 个失败视频任务" else "没有失败的视频任务")
+            }
+        }
+    }
+
+    fun setDownloadUnmeteredOnly(enabled: Boolean) {
+        viewModelScope.launch {
+            container.downloadNetworkPreferenceRepository.setUnmeteredOnly(enabled)
+            val appContext = getApplication<Application>().applicationContext
+            if (state.value.audioDownloads.any { task -> task.downloadStatus in AUDIO_ACTIVE_DOWNLOAD_STATUSES }) {
+                AudioDownloadService.refreshNetworkConstraint(appContext)
+            }
+            if (state.value.videoDownloads.any { task -> task.downloadStatus in VIDEO_ACTIVE_DOWNLOAD_STATUSES }) {
+                VideoDownloadService.refreshNetworkConstraint(appContext)
+            }
+            mutableState.update {
+                it.copy(message = if (enabled) "下载已限制为 Wi-Fi 或其他非计费网络" else "下载可使用任意已验证网络")
+            }
+        }
+    }
+
     fun openFavoriteFolder(folder: BilibiliFavoriteFolder) {
         mutableState.update { it.copy(selectedFavoriteFolder = folder, isLibraryLoading = true, libraryVideos = emptyList()) }
         viewModelScope.launch {
@@ -727,6 +912,42 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     internal fun isActivePlaybackQueue(queueId: Long): Boolean = playbackEventIds.get() == queueId
+
+    private suspend fun resolveFavoriteDownloadPages(
+        videos: List<BilibiliLibraryVideo>,
+        qualityPreference: AudioQualityPreference,
+    ): List<Result<List<FavoriteDownloadPage>>> = coroutineScope {
+        val concurrency = Semaphore(FavoriteBatchDownloadPolicy.DETAIL_RESOLUTION_CONCURRENCY)
+        // long: 批量创建只并发解析少量视频详情，既缩短等待时间，也避免一次选择大量收藏后同时轰击 Bilibili 接口。
+        videos.map { item ->
+            async {
+                concurrency.withPermit {
+                    try {
+                        val detail = repository.videoDetail(item.video.bvid)
+                        Result.success(FavoriteBatchDownloadPolicy.expand(item.video, detail, qualityPreference))
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        Result.failure(error)
+                    }
+                }
+            }
+        }.awaitAll()
+    }
+
+    private fun batchDownloadMessage(
+        kind: FavoriteBatchDownloadKind,
+        result: DownloadBatchEnqueueResult,
+        failedResources: Int,
+    ): String {
+        val parts = buildList {
+            if (result.queuedCount > 0) add("已加入 ${result.queuedCount} 个${kind.label}任务")
+            if (result.skippedCompletedCount > 0) add("${result.skippedCompletedCount} 个已完成")
+            if (result.skippedExistingCount > 0) add("${result.skippedExistingCount} 个已在队列")
+            if (failedResources > 0) add("$failedResources 个资源解析失败")
+        }
+        return parts.joinToString("，").ifBlank { "没有新增${kind.label}任务" }
+    }
 
     internal fun currentPlaybackQueue(queueId: Long? = null): PlaybackQueueSnapshot<Track>? {
         return playbackQueueSnapshots.current(queueId)
@@ -826,11 +1047,17 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun clearOnlineLibrary() {
+        favoriteBatchLoadJob?.cancel()
+        favoriteBatchLoadJob = null
         mutableState.update {
             it.copy(
                 favoriteFolders = emptyList(),
                 selectedFavoriteFolder = null,
                 libraryVideos = emptyList(),
+                favoriteBatchFolder = null,
+                favoriteBatchVideos = emptyList(),
+                isFavoriteBatchLoading = false,
+                isFavoriteBatchSubmitting = false,
                 isLibraryLoading = false,
             )
         }
@@ -848,3 +1075,19 @@ internal object PlaybackResumePolicy {
 private fun Throwable.userMessage(fallback: String): String {
     return message?.takeIf(String::isNotBlank)?.let { "$fallback：$it" } ?: fallback
 }
+
+private val AUDIO_ACTIVE_DOWNLOAD_STATUSES = setOf(
+    AudioDownloadStatus.QUEUED,
+    AudioDownloadStatus.RESOLVING,
+    AudioDownloadStatus.DOWNLOADING,
+    AudioDownloadStatus.PUBLISHING,
+)
+
+private val VIDEO_ACTIVE_DOWNLOAD_STATUSES = setOf(
+    VideoDownloadStatus.QUEUED,
+    VideoDownloadStatus.RESOLVING,
+    VideoDownloadStatus.DOWNLOADING_VIDEO,
+    VideoDownloadStatus.DOWNLOADING_AUDIO,
+    VideoDownloadStatus.MUXING,
+    VideoDownloadStatus.PUBLISHING,
+)

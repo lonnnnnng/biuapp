@@ -11,6 +11,9 @@ import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.download.VideoDownloadRequest
 import com.lonnnnnng.biu.download.VideoDownloadStatePolicy
 import com.lonnnnnng.biu.download.VideoDownloadStatus
+import com.lonnnnnng.biu.download.DownloadBatchEnqueueResult
+import com.lonnnnnng.biu.download.VideoDownloadTempFiles
+import java.io.File
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "video_download_tasks")
@@ -78,11 +81,17 @@ interface VideoDownloadTaskDao {
     @Query("SELECT * FROM video_download_tasks WHERE taskId = :taskId LIMIT 1")
     suspend fun find(taskId: String): VideoDownloadTaskEntity?
 
+    @Query("SELECT * FROM video_download_tasks WHERE taskId IN (:taskIds)")
+    suspend fun findAll(taskIds: List<String>): List<VideoDownloadTaskEntity>
+
     @Query("SELECT * FROM video_download_tasks WHERE status = 'QUEUED' ORDER BY createdAtEpochMs ASC LIMIT 1")
     suspend fun nextQueued(): VideoDownloadTaskEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: VideoDownloadTaskEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(entities: List<VideoDownloadTaskEntity>)
 
     @Query(
         """
@@ -159,6 +168,17 @@ interface VideoDownloadTaskDao {
         pausedStatus: String,
         updatedAtEpochMs: Long,
     )
+
+    @Query(
+        """
+        UPDATE video_download_tasks
+        SET status = :queuedStatus,
+            errorMessage = NULL,
+            updatedAtEpochMs = :updatedAtEpochMs
+        WHERE status = :failedStatus
+        """,
+    )
+    suspend fun retryFailed(failedStatus: String, queuedStatus: String, updatedAtEpochMs: Long): Int
 }
 
 class VideoDownloadRepository(
@@ -189,37 +209,53 @@ class VideoDownloadRepository(
         ) {
             return existing
         }
-        val preservePartialFiles = existing?.downloadStatus in setOf(
-            VideoDownloadStatus.PAUSED,
-            VideoDownloadStatus.FAILED,
-        )
-        val entity = VideoDownloadTaskEntity(
-            taskId = request.taskId,
-            bvid = request.bvid,
-            cid = request.cid,
-            title = request.title,
-            artist = request.artist,
-            artworkUrl = request.artworkUrl,
-            qualityPreference = request.qualityPreference.name,
-            displayName = request.displayName,
-            status = VideoDownloadStatus.QUEUED.name,
-            videoDownloadedBytes = if (preservePartialFiles) existing?.videoDownloadedBytes ?: 0L else 0L,
-            videoTotalBytes = if (preservePartialFiles) existing?.videoTotalBytes ?: 0L else 0L,
-            audioDownloadedBytes = if (preservePartialFiles) existing?.audioDownloadedBytes ?: 0L else 0L,
-            audioTotalBytes = if (preservePartialFiles) existing?.audioTotalBytes ?: 0L else 0L,
-            videoTempFilePath = existing?.videoTempFilePath?.takeIf { preservePartialFiles } ?: videoTempFilePath,
-            audioTempFilePath = existing?.audioTempFilePath?.takeIf { preservePartialFiles } ?: audioTempFilePath,
-            outputTempFilePath = existing?.outputTempFilePath?.takeIf { preservePartialFiles } ?: outputTempFilePath,
-            videoQualityLabel = existing?.videoQualityLabel.orEmpty(),
-            audioQualityLabel = existing?.audioQualityLabel.orEmpty(),
-            outputBytes = 0L,
-            publishedUri = null,
-            errorMessage = null,
-            createdAtEpochMs = existing?.createdAtEpochMs ?: now,
-            updatedAtEpochMs = now,
+        val entity = queuedEntity(
+            request = request,
+            existing = existing,
+            paths = VideoDownloadTempFiles(File(videoTempFilePath), File(audioTempFilePath), File(outputTempFilePath)),
+            now = now,
         )
         dao.upsert(entity)
         return entity
+    }
+
+    suspend fun enqueueAll(
+        requests: List<VideoDownloadRequest>,
+        tempFiles: (String) -> VideoDownloadTempFiles,
+    ): DownloadBatchEnqueueResult {
+        val uniqueRequests = requests.distinctBy(VideoDownloadRequest::taskId)
+        if (uniqueRequests.isEmpty()) return DownloadBatchEnqueueResult(0, 0, 0, 0)
+        // long: 一个收藏资源可拆出数百个视频任务，分块读取既规避 SQLite 参数上限，也让音视频批量入队保持一致行为。
+        val existingById = uniqueRequests
+            .chunked(DATABASE_BATCH_SIZE)
+            .flatMap { chunk -> dao.findAll(chunk.map(VideoDownloadRequest::taskId)) }
+            .associateBy(VideoDownloadTaskEntity::taskId)
+        var skippedCompleted = 0
+        var skippedExisting = 0
+        val now = nowEpochMs()
+        val queued = buildList {
+            uniqueRequests.forEach { request ->
+                val existing = existingById[request.taskId]
+                when (existing?.downloadStatus) {
+                    VideoDownloadStatus.COMPLETED -> skippedCompleted += 1
+                    VideoDownloadStatus.QUEUED,
+                    VideoDownloadStatus.RESOLVING,
+                    VideoDownloadStatus.DOWNLOADING_VIDEO,
+                    VideoDownloadStatus.DOWNLOADING_AUDIO,
+                    VideoDownloadStatus.MUXING,
+                    VideoDownloadStatus.PUBLISHING,
+                    -> skippedExisting += 1
+                    else -> add(queuedEntity(request, existing, tempFiles(request.taskId), now))
+                }
+            }
+        }
+        queued.chunked(DATABASE_BATCH_SIZE).forEach { chunk -> dao.upsertAll(chunk) }
+        return DownloadBatchEnqueueResult(
+            requestedCount = uniqueRequests.size,
+            queuedCount = queued.size,
+            skippedCompletedCount = skippedCompleted,
+            skippedExistingCount = skippedExisting,
+        )
     }
 
     suspend fun transition(
@@ -280,5 +316,54 @@ class VideoDownloadRepository(
             pausedStatus = VideoDownloadStatus.PAUSED.name,
             updatedAtEpochMs = nowEpochMs(),
         )
+    }
+
+    suspend fun retryFailedTasks(): Int {
+        return dao.retryFailed(
+            failedStatus = VideoDownloadStatus.FAILED.name,
+            queuedStatus = VideoDownloadStatus.QUEUED.name,
+            updatedAtEpochMs = nowEpochMs(),
+        )
+    }
+
+    private fun queuedEntity(
+        request: VideoDownloadRequest,
+        existing: VideoDownloadTaskEntity?,
+        paths: VideoDownloadTempFiles,
+        now: Long,
+    ): VideoDownloadTaskEntity {
+        val preservePartialFiles = existing?.downloadStatus in setOf(
+            VideoDownloadStatus.PAUSED,
+            VideoDownloadStatus.FAILED,
+        )
+        return VideoDownloadTaskEntity(
+            taskId = request.taskId,
+            bvid = request.bvid,
+            cid = request.cid,
+            title = request.title,
+            artist = request.artist,
+            artworkUrl = request.artworkUrl,
+            qualityPreference = request.qualityPreference.name,
+            displayName = request.displayName,
+            status = VideoDownloadStatus.QUEUED.name,
+            videoDownloadedBytes = if (preservePartialFiles) existing?.videoDownloadedBytes ?: 0L else 0L,
+            videoTotalBytes = if (preservePartialFiles) existing?.videoTotalBytes ?: 0L else 0L,
+            audioDownloadedBytes = if (preservePartialFiles) existing?.audioDownloadedBytes ?: 0L else 0L,
+            audioTotalBytes = if (preservePartialFiles) existing?.audioTotalBytes ?: 0L else 0L,
+            videoTempFilePath = existing?.videoTempFilePath?.takeIf { preservePartialFiles } ?: paths.video.absolutePath,
+            audioTempFilePath = existing?.audioTempFilePath?.takeIf { preservePartialFiles } ?: paths.audio.absolutePath,
+            outputTempFilePath = existing?.outputTempFilePath?.takeIf { preservePartialFiles } ?: paths.output.absolutePath,
+            videoQualityLabel = existing?.videoQualityLabel.orEmpty(),
+            audioQualityLabel = existing?.audioQualityLabel.orEmpty(),
+            outputBytes = 0L,
+            publishedUri = null,
+            errorMessage = null,
+            createdAtEpochMs = existing?.createdAtEpochMs ?: now,
+            updatedAtEpochMs = now,
+        )
+    }
+
+    private companion object {
+        const val DATABASE_BATCH_SIZE = 400
     }
 }

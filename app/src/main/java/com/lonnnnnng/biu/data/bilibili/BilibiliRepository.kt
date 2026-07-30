@@ -127,20 +127,44 @@ class BilibiliRepository(
     }
 
     suspend fun favoriteVideos(folderId: Long, page: Int = 1): List<BilibiliLibraryVideo> {
+        return favoriteVideoPage(folderId, page).videos
+    }
+
+    suspend fun favoriteVideoPage(folderId: Long, page: Int = 1): BilibiliFavoriteVideoPage {
         val root = request(
             path = "/x/v3/fav/resource/list",
             parameters = mapOf(
                 "media_id" to folderId,
                 "pn" to page,
-                "ps" to 20,
+                "ps" to FAVORITE_PAGE_SIZE,
                 "order" to "mtime",
                 "platform" to "web",
             ),
         ).requireSuccess()
-        return root.optJSONObject("data")
-            ?.optJSONArray("medias")
-            .toObjects()
-            .mapNotNull(::parseFavoriteVideo)
+        val data = root.optJSONObject("data") ?: JSONObject()
+        val rawMedias = data.optJSONArray("medias")
+        val videos = rawMedias.toObjects().mapNotNull(::parseFavoriteVideo)
+        return BilibiliFavoriteVideoPage(
+            videos = videos,
+            // long: 失效稿件会被播放器过滤，是否继续翻页必须使用接口原始 has_more，不能按过滤后的可播放数量提前停止。
+            hasMore = if (data.has("has_more")) {
+                data.optBoolean("has_more", false)
+            } else {
+                (rawMedias?.length() ?: 0) >= FAVORITE_PAGE_SIZE
+            },
+        )
+    }
+
+    suspend fun favoriteVideosAll(folderId: Long): List<BilibiliLibraryVideo> {
+        val videos = mutableListOf<BilibiliLibraryVideo>()
+        var page = 1
+        while (page <= MAX_FAVORITE_PAGES) {
+            val result = favoriteVideoPage(folderId, page)
+            videos += result.videos
+            if (!result.hasMore) return videos
+            page += 1
+        }
+        throw BilibiliApiException(-429, "收藏夹分页过多，请缩小下载范围")
     }
 
     suspend fun watchLater(page: Int = 1): List<BilibiliLibraryVideo> {
@@ -649,6 +673,8 @@ class BilibiliRepository(
         const val API_BASE = "https://api.bilibili.com/"
         const val FOLLOWING_PAGE_SIZE = 50
         const val CREATOR_VIDEO_PAGE_SIZE = 30
+        const val FAVORITE_PAGE_SIZE = 20
+        const val MAX_FAVORITE_PAGES = 100
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
     }
 }

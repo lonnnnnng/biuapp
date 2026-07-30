@@ -11,6 +11,7 @@ import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadStatePolicy
 import com.lonnnnnng.biu.download.AudioDownloadStatus
+import com.lonnnnnng.biu.download.DownloadBatchEnqueueResult
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "audio_download_tasks")
@@ -68,11 +69,17 @@ interface AudioDownloadTaskDao {
     @Query("SELECT * FROM audio_download_tasks WHERE taskId = :taskId LIMIT 1")
     suspend fun find(taskId: String): AudioDownloadTaskEntity?
 
+    @Query("SELECT * FROM audio_download_tasks WHERE taskId IN (:taskIds)")
+    suspend fun findAll(taskIds: List<String>): List<AudioDownloadTaskEntity>
+
     @Query("SELECT * FROM audio_download_tasks WHERE status = 'QUEUED' ORDER BY createdAtEpochMs ASC LIMIT 1")
     suspend fun nextQueued(): AudioDownloadTaskEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: AudioDownloadTaskEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(entities: List<AudioDownloadTaskEntity>)
 
     @Query(
         """
@@ -143,6 +150,17 @@ interface AudioDownloadTaskDao {
         pausedStatus: String,
         updatedAtEpochMs: Long,
     )
+
+    @Query(
+        """
+        UPDATE audio_download_tasks
+        SET status = :queuedStatus,
+            errorMessage = NULL,
+            updatedAtEpochMs = :updatedAtEpochMs
+        WHERE status = :failedStatus
+        """,
+    )
+    suspend fun retryFailed(failedStatus: String, queuedStatus: String, updatedAtEpochMs: Long): Int
 }
 
 class AudioDownloadRepository(
@@ -168,31 +186,46 @@ class AudioDownloadRepository(
         ) {
             return existing
         }
-        val preservePartialFile = existing?.downloadStatus in setOf(
-            AudioDownloadStatus.PAUSED,
-            AudioDownloadStatus.FAILED,
-        )
-        val entity = AudioDownloadTaskEntity(
-            taskId = request.taskId,
-            bvid = request.bvid,
-            cid = request.cid,
-            title = request.title,
-            artist = request.artist,
-            artworkUrl = request.artworkUrl,
-            qualityPreference = request.qualityPreference.name,
-            displayName = request.displayName,
-            status = AudioDownloadStatus.QUEUED.name,
-            downloadedBytes = if (preservePartialFile) existing?.downloadedBytes ?: 0L else 0L,
-            totalBytes = if (preservePartialFile) existing?.totalBytes ?: 0L else 0L,
-            tempFilePath = existing?.tempFilePath?.takeIf { preservePartialFile } ?: tempFilePath,
-            qualityLabel = existing?.qualityLabel.orEmpty(),
-            publishedUri = null,
-            errorMessage = null,
-            createdAtEpochMs = existing?.createdAtEpochMs ?: now,
-            updatedAtEpochMs = now,
-        )
+        val entity = queuedEntity(request, existing, tempFilePath, now)
         dao.upsert(entity)
         return entity
+    }
+
+    suspend fun enqueueAll(
+        requests: List<AudioDownloadRequest>,
+        tempFilePath: (String) -> String,
+    ): DownloadBatchEnqueueResult {
+        val uniqueRequests = requests.distinctBy(AudioDownloadRequest::taskId)
+        if (uniqueRequests.isEmpty()) return DownloadBatchEnqueueResult(0, 0, 0, 0)
+        // long: 多 P 收藏资源可能产生上千个任务，分块查询避免超过 SQLite IN 参数上限，同时一次批量写入减少 Room 往返。
+        val existingById = uniqueRequests
+            .chunked(DATABASE_BATCH_SIZE)
+            .flatMap { chunk -> dao.findAll(chunk.map(AudioDownloadRequest::taskId)) }
+            .associateBy(AudioDownloadTaskEntity::taskId)
+        var skippedCompleted = 0
+        var skippedExisting = 0
+        val now = nowEpochMs()
+        val queued = buildList {
+            uniqueRequests.forEach { request ->
+                val existing = existingById[request.taskId]
+                when (existing?.downloadStatus) {
+                    AudioDownloadStatus.COMPLETED -> skippedCompleted += 1
+                    AudioDownloadStatus.QUEUED,
+                    AudioDownloadStatus.RESOLVING,
+                    AudioDownloadStatus.DOWNLOADING,
+                    AudioDownloadStatus.PUBLISHING,
+                    -> skippedExisting += 1
+                    else -> add(queuedEntity(request, existing, tempFilePath(request.taskId), now))
+                }
+            }
+        }
+        queued.chunked(DATABASE_BATCH_SIZE).forEach { chunk -> dao.upsertAll(chunk) }
+        return DownloadBatchEnqueueResult(
+            requestedCount = uniqueRequests.size,
+            queuedCount = queued.size,
+            skippedCompletedCount = skippedCompleted,
+            skippedExistingCount = skippedExisting,
+        )
     }
 
     suspend fun transition(
@@ -251,5 +284,48 @@ class AudioDownloadRepository(
             pausedStatus = AudioDownloadStatus.PAUSED.name,
             updatedAtEpochMs = nowEpochMs(),
         )
+    }
+
+    suspend fun retryFailedTasks(): Int {
+        return dao.retryFailed(
+            failedStatus = AudioDownloadStatus.FAILED.name,
+            queuedStatus = AudioDownloadStatus.QUEUED.name,
+            updatedAtEpochMs = nowEpochMs(),
+        )
+    }
+
+    private fun queuedEntity(
+        request: AudioDownloadRequest,
+        existing: AudioDownloadTaskEntity?,
+        tempFilePath: String,
+        now: Long,
+    ): AudioDownloadTaskEntity {
+        val preservePartialFile = existing?.downloadStatus in setOf(
+            AudioDownloadStatus.PAUSED,
+            AudioDownloadStatus.FAILED,
+        )
+        return AudioDownloadTaskEntity(
+            taskId = request.taskId,
+            bvid = request.bvid,
+            cid = request.cid,
+            title = request.title,
+            artist = request.artist,
+            artworkUrl = request.artworkUrl,
+            qualityPreference = request.qualityPreference.name,
+            displayName = request.displayName,
+            status = AudioDownloadStatus.QUEUED.name,
+            downloadedBytes = if (preservePartialFile) existing?.downloadedBytes ?: 0L else 0L,
+            totalBytes = if (preservePartialFile) existing?.totalBytes ?: 0L else 0L,
+            tempFilePath = existing?.tempFilePath?.takeIf { preservePartialFile } ?: tempFilePath,
+            qualityLabel = existing?.qualityLabel.orEmpty(),
+            publishedUri = null,
+            errorMessage = null,
+            createdAtEpochMs = existing?.createdAtEpochMs ?: now,
+            updatedAtEpochMs = now,
+        )
+    }
+
+    private companion object {
+        const val DATABASE_BATCH_SIZE = 400
     }
 }
