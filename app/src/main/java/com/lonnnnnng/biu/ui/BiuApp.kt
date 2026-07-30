@@ -44,6 +44,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.Login
+import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AccountCircle
@@ -92,7 +94,6 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Scaffold
@@ -151,6 +152,7 @@ import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.core.model.toMediaItem
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
+import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolderType
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
@@ -241,6 +243,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var playback by remember { mutableStateOf(PlaybackSnapshot()) }
     var showLogin by remember { mutableStateOf(false) }
     var showQualityMenu by remember { mutableStateOf(false) }
+    var showAccountMenu by remember { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
     var showNowPlaying by remember { mutableStateOf(false) }
     var showDownloads by remember { mutableStateOf(false) }
@@ -685,13 +688,44 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 section = uiState.section,
                 qualityPreference = uiState.qualityPreference,
                 qualityMenuExpanded = showQualityMenu,
-                onShowQualityMenu = { showQualityMenu = true },
+                account = uiState.account,
+                accountMenuExpanded = showAccountMenu,
+                isAccountLoading = uiState.isAccountLoading,
+                isUpdateChecking = uiState.isUpdateChecking,
+                onShowQualityMenu = {
+                    showAccountMenu = false
+                    showQualityMenu = true
+                },
                 onDismissQualityMenu = { showQualityMenu = false },
                 onQualitySelected = { preference ->
                     showQualityMenu = false
                     viewModel.selectQualityPreference(preference)
                 },
-                onAccount = { viewModel.selectSection(MainSection.ACCOUNT) },
+                onShowAccountMenu = {
+                    showQualityMenu = false
+                    showAccountMenu = true
+                },
+                onDismissAccountMenu = { showAccountMenu = false },
+                onLogin = {
+                    showAccountMenu = false
+                    showLogin = true
+                },
+                onRefreshAccount = {
+                    showAccountMenu = false
+                    viewModel.refreshAccount()
+                },
+                onShowDownloads = {
+                    showAccountMenu = false
+                    showDownloads = true
+                },
+                onCheckUpdate = {
+                    showAccountMenu = false
+                    viewModel.checkForUpdate()
+                },
+                onLogout = {
+                    showAccountMenu = false
+                    viewModel.logout()
+                },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -742,10 +776,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     state = uiState,
                     localAudioPermissionGranted = localAudioPermissionGranted,
                     onLogin = { showLogin = true },
-                    onRefresh = viewModel::refreshAccount,
-                    onCheckUpdate = viewModel::checkForUpdate,
-                    onShowDownloads = { showDownloads = true },
-                    onLogout = viewModel::logout,
                     onLoadLibrary = { section ->
                         if (section == AccountLibrarySection.LOCAL_MUSIC && !localAudioPermissionGranted) {
                             viewModel.showLocalAudioPermission()
@@ -842,10 +872,20 @@ private fun BiuTopBar(
     section: MainSection,
     qualityPreference: AudioQualityPreference,
     qualityMenuExpanded: Boolean,
+    account: BilibiliAccount,
+    accountMenuExpanded: Boolean,
+    isAccountLoading: Boolean,
+    isUpdateChecking: Boolean,
     onShowQualityMenu: () -> Unit,
     onDismissQualityMenu: () -> Unit,
     onQualitySelected: (AudioQualityPreference) -> Unit,
-    onAccount: () -> Unit,
+    onShowAccountMenu: () -> Unit,
+    onDismissAccountMenu: () -> Unit,
+    onLogin: () -> Unit,
+    onRefreshAccount: () -> Unit,
+    onShowDownloads: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    onLogout: () -> Unit,
 ) {
     TopAppBar(
         title = {
@@ -878,12 +918,150 @@ private fun BiuTopBar(
                     }
                 }
             }
-            IconButton(onClick = onAccount) {
-                Icon(Icons.Rounded.AccountCircle, contentDescription = "打开账号音乐库")
+            Box {
+                IconButton(onClick = onShowAccountMenu) {
+                    Icon(
+                        Icons.Rounded.AccountCircle,
+                        contentDescription = if (accountMenuExpanded) "关闭账号菜单" else "打开账号菜单",
+                    )
+                }
+                AccountDropdownMenu(
+                    account = account,
+                    expanded = accountMenuExpanded,
+                    isAccountLoading = isAccountLoading,
+                    isUpdateChecking = isUpdateChecking,
+                    onDismiss = onDismissAccountMenu,
+                    onLogin = onLogin,
+                    onRefresh = onRefreshAccount,
+                    onShowDownloads = onShowDownloads,
+                    onCheckUpdate = onCheckUpdate,
+                    onLogout = onLogout,
+                )
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
+}
+
+@Composable
+private fun AccountDropdownMenu(
+    account: BilibiliAccount,
+    expanded: Boolean,
+    isAccountLoading: Boolean,
+    isUpdateChecking: Boolean,
+    onDismiss: () -> Unit,
+    onLogin: () -> Unit,
+    onRefresh: () -> Unit,
+    onShowDownloads: () -> Unit,
+    onCheckUpdate: () -> Unit,
+    onLogout: () -> Unit,
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier.widthIn(min = 264.dp, max = 320.dp),
+    ) {
+        // long: 账号摘要上移到顶栏菜单，账号页首屏只保留音乐库和收藏内容。
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (account.isLoggedIn && account.faceUrl.isNotBlank()) {
+                AsyncImage(
+                    model = account.faceUrl,
+                    contentDescription = "${account.name}的头像",
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.AccountCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = if (account.isLoggedIn) account.name.ifBlank { "已登录" } else "未登录",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = if (account.isLoggedIn) "Bilibili 账号已连接" else "登录后同步在线音乐库",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (!account.isLoggedIn) {
+            DropdownMenuItem(
+                text = { Text("登录") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Login, contentDescription = null) },
+                onClick = onLogin,
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+        DropdownMenuItem(
+            text = { Text(if (isAccountLoading) "刷新中" else "刷新") },
+            leadingIcon = {
+                if (isAccountLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null)
+                }
+            },
+            enabled = !isAccountLoading,
+            onClick = onRefresh,
+        )
+        DropdownMenuItem(
+            text = { Text("下载") },
+            leadingIcon = { Icon(Icons.Rounded.Downloading, contentDescription = null) },
+            onClick = onShowDownloads,
+        )
+        DropdownMenuItem(
+            text = { Text(if (isUpdateChecking) "检查中" else "更新") },
+            leadingIcon = {
+                if (isUpdateChecking) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.SystemUpdate, contentDescription = null)
+                }
+            },
+            enabled = !isUpdateChecking,
+            onClick = onCheckUpdate,
+        )
+        if (account.isLoggedIn) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            DropdownMenuItem(
+                text = { Text("退出登录", color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.Logout,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                },
+                onClick = onLogout,
+            )
+        }
+    }
 }
 
 @Composable
@@ -1179,10 +1357,6 @@ private fun AccountScreen(
     state: BiuUiState,
     localAudioPermissionGranted: Boolean,
     onLogin: () -> Unit,
-    onRefresh: () -> Unit,
-    onCheckUpdate: () -> Unit,
-    onShowDownloads: () -> Unit,
-    onLogout: () -> Unit,
     onLoadLibrary: (AccountLibrarySection) -> Unit,
     onRequestLocalAudioPermission: () -> Unit,
     onSelectLocalAudioDirectory: () -> Unit,
@@ -1200,14 +1374,6 @@ private fun AccountScreen(
         if (state.isAccountLoading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
-        AccountHeader(
-            state = state,
-            onLogin = onLogin,
-            onRefresh = onRefresh,
-            onCheckUpdate = onCheckUpdate,
-            onShowDownloads = onShowDownloads,
-            onLogout = onLogout,
-        )
         AccountLibraryNavigation(
             selectedSection = state.librarySection,
             onSelect = onLoadLibrary,
@@ -1539,131 +1705,6 @@ private fun LocalAudioList(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun AccountHeader(
-    state: BiuUiState,
-    onLogin: () -> Unit,
-    onRefresh: () -> Unit,
-    onCheckUpdate: () -> Unit,
-    onShowDownloads: () -> Unit,
-    onLogout: () -> Unit,
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (state.account.isLoggedIn && state.account.faceUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = state.account.faceUrl,
-                        contentDescription = "${state.account.name}的头像",
-                        modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentScale = ContentScale.Crop,
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Rounded.AccountCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(30.dp),
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        )
-                    }
-                }
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        if (state.account.isLoggedIn) state.account.name else "未登录",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        if (state.account.isLoggedIn) "Bilibili 账号已连接" else "登录后同步在线音乐库",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (state.account.isLoggedIn) {
-                    TextButton(onClick = onLogout) { Text("退出") }
-                } else {
-                    FilledTonalButton(onClick = onLogin) { Text("登录") }
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                AccountQuickAction(
-                    label = "刷新",
-                    icon = Icons.Rounded.Refresh,
-                    onClick = onRefresh,
-                    modifier = Modifier.weight(1f),
-                )
-                AccountQuickAction(
-                    label = "下载",
-                    icon = Icons.Rounded.Downloading,
-                    onClick = onShowDownloads,
-                    modifier = Modifier.weight(1f),
-                )
-                AccountQuickAction(
-                    label = if (state.isUpdateChecking) "检查中" else "更新",
-                    icon = Icons.Rounded.SystemUpdate,
-                    onClick = onCheckUpdate,
-                    enabled = !state.isUpdateChecking,
-                    loading = state.isUpdateChecking,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AccountQuickAction(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    loading: Boolean = false,
-) {
-    OutlinedButton(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.heightIn(min = 40.dp),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(8.dp),
-    ) {
-        if (loading) {
-            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-        } else {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
-        }
-        Spacer(Modifier.width(5.dp))
-        Text(label, maxLines = 1, style = MaterialTheme.typography.bodySmall)
     }
 }
 
