@@ -65,8 +65,9 @@ interface PlaybackHistoryDao {
         VideoDownloadTaskEntity::class,
         PlaybackQueueStateEntity::class,
         PlaybackQueueItemEntity::class,
+        LyricsCacheEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
@@ -75,6 +76,7 @@ abstract class BiuDatabase : RoomDatabase() {
     abstract fun audioDownloadTaskDao(): AudioDownloadTaskDao
     abstract fun videoDownloadTaskDao(): VideoDownloadTaskDao
     abstract fun playbackQueueDao(): PlaybackQueueDao
+    abstract fun lyricsCacheDao(): LyricsCacheDao
 }
 
 object BiuDatabaseMigrations {
@@ -190,6 +192,27 @@ object BiuDatabaseMigrations {
                     `cid` INTEGER,
                     `qualityPreference` TEXT,
                     PRIMARY KEY(`position`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 歌词缓存作为独立附加数据升级，既有播放队列、历史进度和下载断点全部原样保留。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `lyrics_cache` (
+                    `cacheKey` TEXT NOT NULL,
+                    `source` TEXT NOT NULL,
+                    `rawLyrics` TEXT NOT NULL,
+                    `providerId` INTEGER,
+                    `trackName` TEXT,
+                    `artistName` TEXT,
+                    `isUserSelected` INTEGER NOT NULL,
+                    `updatedAtEpochMs` INTEGER NOT NULL,
+                    PRIMARY KEY(`cacheKey`)
                 )
                 """.trimIndent(),
             )

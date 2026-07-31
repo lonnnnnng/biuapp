@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lonnnnnng.biu.appContainer
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
+import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
@@ -21,11 +22,17 @@ import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
+import com.lonnnnnng.biu.data.local.AppThemeMode
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.toTrack
+import com.lonnnnnng.biu.data.lyrics.LrcParser
+import com.lonnnnnng.biu.data.lyrics.LyricsDocument
+import com.lonnnnnng.biu.data.lyrics.LyricsRateLimitedException
+import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
+import com.lonnnnnng.biu.data.lyrics.LyricsSource
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.data.update.AppVersionPolicy
 import com.lonnnnnng.biu.download.AudioDownloadRequest
@@ -88,6 +95,25 @@ data class VideoPageSelection(
     val detail: BilibiliVideoDetail,
 )
 
+enum class LyricsLoadStatus {
+    IDLE,
+    LOADING,
+    LOADED,
+    EMPTY,
+    ERROR,
+}
+
+data class LyricsUiState(
+    val cacheKey: String = "",
+    val status: LyricsLoadStatus = LyricsLoadStatus.IDLE,
+    val document: LyricsDocument? = null,
+    val searchResults: List<LyricsSearchResult> = emptyList(),
+    val isSearchLoading: Boolean = false,
+    val hasSearched: Boolean = false,
+    val errorMessage: String? = null,
+    val searchErrorMessage: String? = null,
+)
+
 data class BiuUiState(
     val section: MainSection = MainSection.RECOMMEND,
     val feed: RecommendFeed = RecommendFeed.MUSIC,
@@ -117,7 +143,9 @@ data class BiuUiState(
     val downloadNetworkPreference: DownloadNetworkPreference = DownloadNetworkPreference.ANY_VALIDATED,
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
+    val lyrics: LyricsUiState = LyricsUiState(),
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val reportPlayHistory: Boolean = true,
     val isFeedLoading: Boolean = true,
     val isCreatorConfigLoading: Boolean = false,
@@ -153,6 +181,9 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var onlineHistoryJob: Job? = null
     private var localAudioJob: Job? = null
     private var localAudioDirectoryInitializationJob: Job? = null
+    private var lyricsLoadJob: Job? = null
+    private var lyricsSearchJob: Job? = null
+    private var lyricsSaveJob: Job? = null
     private var localAudioDirectoryInitialized = false
     private var creatorSelectionInitialized = false
 
@@ -229,6 +260,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
+            container.themePreferenceRepository.mode.collect { mode ->
+                mutableState.update { it.copy(themeMode = mode) }
+            }
+        }
+        viewModelScope.launch {
             container.audioDownloadRecovery.await()
             if (container.audioDownloadRepository.nextQueued() != null) {
                 AudioDownloadService.drain(getApplication<Application>().applicationContext)
@@ -244,6 +280,145 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSection(section: MainSection) {
         mutableState.update { it.copy(section = section) }
+    }
+
+    fun prepareLyrics(source: BilibiliTrackSource?, mediaId: String) {
+        if (mediaId.isBlank()) {
+            lyricsLoadJob?.cancel()
+            lyricsSearchJob?.cancel()
+            lyricsSaveJob?.cancel()
+            mutableState.update { it.copy(lyrics = LyricsUiState()) }
+            return
+        }
+        val cacheKey = source?.let { "${it.bvid}:${it.cid}" } ?: "media:$mediaId"
+        if (state.value.lyrics.cacheKey == cacheKey) {
+            updateLyrics(cacheKey) { lyrics ->
+                lyrics.copy(
+                    searchResults = emptyList(),
+                    hasSearched = false,
+                    searchErrorMessage = null,
+                )
+            }
+            return
+        }
+        lyricsLoadJob?.cancel()
+        lyricsSearchJob?.cancel()
+        lyricsSaveJob?.cancel()
+        mutableState.update {
+            it.copy(
+                lyrics = LyricsUiState(
+                    cacheKey = cacheKey,
+                    status = LyricsLoadStatus.LOADING,
+                ),
+            )
+        }
+        lyricsLoadJob = viewModelScope.launch {
+            try {
+                val cached = container.lyricsCacheRepository.find(cacheKey)
+                if (cached != null) {
+                    updateLyrics(cacheKey) { lyrics ->
+                        lyrics.copy(status = LyricsLoadStatus.LOADED, document = cached)
+                    }
+                    return@launch
+                }
+                // long: 远端歌词只能由用户确认搜索后请求；这里仅检查本地缓存，避免打开播放页就访问第三方服务。
+                updateLyrics(cacheKey) { lyrics -> lyrics.copy(status = LyricsLoadStatus.IDLE) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                updateLyrics(cacheKey) { lyrics ->
+                    lyrics.copy(
+                        status = LyricsLoadStatus.ERROR,
+                        errorMessage = error.userMessage("歌词缓存读取失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun searchLyrics(query: String) {
+        val cacheKey = state.value.lyrics.cacheKey
+        val normalizedQuery = query.trim()
+        if (cacheKey.isBlank() || normalizedQuery.isBlank()) return
+        lyricsSearchJob?.cancel()
+        updateLyrics(cacheKey) { lyrics ->
+            lyrics.copy(
+                searchResults = emptyList(),
+                isSearchLoading = true,
+                hasSearched = true,
+                searchErrorMessage = null,
+            )
+        }
+        lyricsSearchJob = viewModelScope.launch {
+            try {
+                val results = container.lrclibRepository.search(normalizedQuery)
+                updateLyrics(cacheKey) { lyrics ->
+                    lyrics.copy(searchResults = results, isSearchLoading = false)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                val message = if (error is LyricsRateLimitedException) {
+                    error.retryAfterSeconds
+                        ?.let { seconds -> "请求过于频繁，请 $seconds 秒后重试" }
+                        ?: "请求过于频繁，请稍后重试"
+                } else {
+                    error.userMessage("歌词搜索失败")
+                }
+                updateLyrics(cacheKey) { lyrics ->
+                    lyrics.copy(isSearchLoading = false, searchErrorMessage = message)
+                }
+            }
+        }
+    }
+
+    fun selectLyrics(result: LyricsSearchResult) {
+        val cacheKey = state.value.lyrics.cacheKey
+        if (cacheKey.isBlank()) return
+        val lines = LrcParser.parse(result.syncedLyrics)
+        if (lines.isEmpty()) {
+            updateLyrics(cacheKey) { lyrics -> lyrics.copy(searchErrorMessage = "这条结果不包含有效时间轴") }
+            return
+        }
+        val document = LyricsDocument(
+            cacheKey = cacheKey,
+            source = LyricsSource.LRCLIB,
+            lines = lines,
+            rawLyrics = result.syncedLyrics,
+            providerId = result.id,
+            trackName = result.trackName,
+            artistName = result.artistName,
+            isUserSelected = true,
+        )
+        lyricsLoadJob?.cancel()
+        lyricsSaveJob?.cancel()
+        lyricsSaveJob = viewModelScope.launch {
+            try {
+                container.lyricsCacheRepository.save(document)
+                updateLyrics(cacheKey) { lyrics ->
+                    lyrics.copy(
+                        status = LyricsLoadStatus.LOADED,
+                        document = document,
+                        searchResults = emptyList(),
+                        hasSearched = false,
+                        searchErrorMessage = null,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                updateLyrics(cacheKey) { lyrics ->
+                    lyrics.copy(searchErrorMessage = error.userMessage("歌词保存失败"))
+                }
+            }
+        }
+    }
+
+    private fun updateLyrics(cacheKey: String, transform: (LyricsUiState) -> LyricsUiState) {
+        mutableState.update { current ->
+            // long: 切歌后旧网络响应可能迟到，只有请求键仍对应当前 bvid/cid 才允许写回界面状态。
+            if (current.lyrics.cacheKey != cacheKey) current else current.copy(lyrics = transform(current.lyrics))
+        }
     }
 
     fun loadRecommendations(feed: RecommendFeed = state.value.feed) {
@@ -437,6 +612,28 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     fun selectQualityPreference(preference: AudioQualityPreference) {
         mutableState.update {
             it.copy(qualityPreference = preference, message = "播放音质 · ${preference.label}（下一次播放生效）")
+        }
+    }
+
+    fun selectThemeMode(mode: AppThemeMode) {
+        val previousMode = state.value.themeMode
+        if (previousMode == mode) return
+        mutableState.update { it.copy(themeMode = mode) }
+        viewModelScope.launch {
+            runCatching { container.themePreferenceRepository.save(mode) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        // long: 快速连续切换时，旧保存任务失败不能覆盖用户随后选择的新主题。
+                        if (current.themeMode != mode) {
+                            current
+                        } else {
+                            current.copy(
+                                themeMode = previousMode,
+                                message = error.userMessage("保存主题设置失败"),
+                            )
+                        }
+                    }
+                }
         }
     }
 

@@ -1,15 +1,28 @@
 package com.lonnnnnng.biu.ui.theme
 
+import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.lonnnnnng.biu.data.local.AppThemeMode
 
 private val darkColors = darkColorScheme(
     primary = Color(0xFF3DDC84),
@@ -35,6 +48,30 @@ private val darkColors = darkColorScheme(
     error = Color(0xFFFFB4AB),
 )
 
+private val lightColors = lightColorScheme(
+    primary = Color(0xFF006D3B),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFA2F4C3),
+    onPrimaryContainer = Color(0xFF00210F),
+    secondary = Color(0xFF4F6356),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFD2E8D8),
+    onSecondaryContainer = Color(0xFF0C1F15),
+    tertiary = Color(0xFF3D6650),
+    background = Color(0xFFF7FAF8),
+    surface = Color(0xFFFFFFFF),
+    surfaceVariant = Color(0xFFDDE5DF),
+    surfaceContainer = Color(0xFFEDF2EE),
+    surfaceContainerLow = Color(0xFFF3F7F4),
+    surfaceContainerHigh = Color(0xFFE7ECE8),
+    onBackground = Color(0xFF181C19),
+    onSurface = Color(0xFF181C19),
+    onSurfaceVariant = Color(0xFF414943),
+    outline = Color(0xFF717973),
+    outlineVariant = Color(0xFFC1C9C3),
+    error = Color(0xFFBA1A1A),
+)
+
 private val biuTypography = Typography(
     headlineSmall = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold),
     titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold),
@@ -56,11 +93,55 @@ private val biuShapes = Shapes(
 )
 
 @Composable
-fun BiuTheme(content: @Composable () -> Unit) {
+fun BiuTheme(
+    themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    content: @Composable () -> Unit,
+) {
+    val useDarkTheme = when (themeMode) {
+        AppThemeMode.SYSTEM -> isSystemInDarkTheme()
+        AppThemeMode.LIGHT -> false
+        AppThemeMode.DARK -> true
+    }
+    val colorScheme = if (useDarkTheme) darkColors else lightColors
+    val systemBarColor = colorScheme.background.toArgb()
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            // long: 系统栏必须与当前主题同时切换背景和图标明暗，避免深色内容配亮色状态栏或反向低对比。
+            (view.context as? ComponentActivity)?.enableEdgeToEdge(
+                statusBarStyle = if (useDarkTheme) {
+                    SystemBarStyle.dark(systemBarColor)
+                } else {
+                    SystemBarStyle.light(systemBarColor, systemBarColor)
+                },
+                navigationBarStyle = if (useDarkTheme) {
+                    SystemBarStyle.dark(systemBarColor)
+                } else {
+                    SystemBarStyle.light(systemBarColor, systemBarColor)
+                },
+            )
+            (view.context as? ComponentActivity)?.makeGestureNavigationTransparent()
+        }
+    }
     MaterialTheme(
-        colorScheme = darkColors,
+        colorScheme = colorScheme,
         typography = biuTypography,
         shapes = biuShapes,
-        content = content,
-    )
+    ) {
+        // long: 根 Surface 延伸到透明系统栏下方，Android 15+ 强制 edge-to-edge 时也不会露出窗口默认底色。
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = colorScheme.background,
+            content = content,
+        )
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun ComponentActivity.makeGestureNavigationTransparent() {
+    // long: 底部 TabBar 会延伸到手势区，导航栏必须透明，否则系统颜色层会盖住贴底标签。
+    window.navigationBarColor = Color.Transparent.toArgb()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        window.isNavigationBarContrastEnforced = false
+    }
 }

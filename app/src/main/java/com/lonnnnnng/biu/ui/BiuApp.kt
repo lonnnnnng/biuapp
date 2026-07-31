@@ -23,11 +23,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +37,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,8 +54,10 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Downloading
@@ -64,6 +69,8 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MoreVert
@@ -144,6 +151,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -155,7 +163,9 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil3.compose.AsyncImage
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
+import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.core.model.Track
+import com.lonnnnnng.biu.core.model.bilibiliSource
 import com.lonnnnnng.biu.core.model.toMediaItem
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
@@ -167,11 +177,14 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
+import com.lonnnnnng.biu.data.local.AppThemeMode
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.LocalMediaPermissionPolicy
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
+import com.lonnnnnng.biu.data.lyrics.LrcParser
+import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadStatus
@@ -219,6 +232,7 @@ private data class PlaybackSnapshot(
     val queueItems: List<PlaybackQueueItem> = emptyList(),
     val downloadRequest: AudioDownloadRequest? = null,
     val videoDownloadRequest: VideoDownloadRequest? = null,
+    val bilibiliSource: BilibiliTrackSource? = null,
 )
 
 private enum class DownloadTaskKind(val label: String) {
@@ -253,6 +267,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     val snackbarHostState = remember { SnackbarHostState() }
     var playback by remember { mutableStateOf(PlaybackSnapshot()) }
     var showLogin by remember { mutableStateOf(false) }
+    var showThemeMenu by remember { mutableStateOf(false) }
     var showQualityMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
@@ -470,6 +485,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     },
                     downloadRequest = activeController.currentMediaItem?.let(AudioDownloadRequest::fromMediaItem),
                     videoDownloadRequest = activeController.currentMediaItem?.let(VideoDownloadRequest::fromMediaItem),
+                    bilibiliSource = activeController.currentMediaItem?.bilibiliSource(),
                 )
             } ?: PlaybackSnapshot()
         }
@@ -696,6 +712,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
             snapshot = playback,
+            lyrics = uiState.lyrics,
             controllerReady = controller != null,
             onBack = { showNowPlaying = false },
             onPrevious = { controller?.seekToPreviousMediaItem() },
@@ -737,6 +754,14 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     activeController.clearMediaItems()
                 }
             },
+            onPrepareLyrics = {
+                viewModel.prepareLyrics(
+                    source = playback.bilibiliSource,
+                    mediaId = playback.mediaId,
+                )
+            },
+            onSearchLyrics = viewModel::searchLyrics,
+            onSelectLyrics = viewModel::selectLyrics,
         )
         return
     }
@@ -745,13 +770,26 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         topBar = {
             BiuTopBar(
                 section = uiState.section,
+                themeMode = uiState.themeMode,
+                themeMenuExpanded = showThemeMenu,
                 qualityPreference = uiState.qualityPreference,
                 qualityMenuExpanded = showQualityMenu,
                 account = uiState.account,
                 accountMenuExpanded = showAccountMenu,
                 isAccountLoading = uiState.isAccountLoading,
                 isUpdateChecking = uiState.isUpdateChecking,
+                onShowThemeMenu = {
+                    showQualityMenu = false
+                    showAccountMenu = false
+                    showThemeMenu = true
+                },
+                onDismissThemeMenu = { showThemeMenu = false },
+                onThemeSelected = { mode ->
+                    showThemeMenu = false
+                    viewModel.selectThemeMode(mode)
+                },
                 onShowQualityMenu = {
+                    showThemeMenu = false
                     showAccountMenu = false
                     showQualityMenu = true
                 },
@@ -761,6 +799,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     viewModel.selectQualityPreference(preference)
                 },
                 onShowAccountMenu = {
+                    showThemeMenu = false
                     showQualityMenu = false
                     showAccountMenu = true
                 },
@@ -942,12 +981,17 @@ private fun AppUpdateDialog(
 @Composable
 private fun BiuTopBar(
     section: MainSection,
+    themeMode: AppThemeMode,
+    themeMenuExpanded: Boolean,
     qualityPreference: AudioQualityPreference,
     qualityMenuExpanded: Boolean,
     account: BilibiliAccount,
     accountMenuExpanded: Boolean,
     isAccountLoading: Boolean,
     isUpdateChecking: Boolean,
+    onShowThemeMenu: () -> Unit,
+    onDismissThemeMenu: () -> Unit,
+    onThemeSelected: (AppThemeMode) -> Unit,
     onShowQualityMenu: () -> Unit,
     onDismissQualityMenu: () -> Unit,
     onQualitySelected: (AudioQualityPreference) -> Unit,
@@ -964,6 +1008,36 @@ private fun BiuTopBar(
             Text(section.label, style = MaterialTheme.typography.titleLarge)
         },
         actions = {
+            Box {
+                IconButton(onClick = onShowThemeMenu) {
+                    Icon(
+                        imageVector = when (themeMode) {
+                            AppThemeMode.SYSTEM -> Icons.Rounded.BrightnessAuto
+                            AppThemeMode.LIGHT -> Icons.Rounded.LightMode
+                            AppThemeMode.DARK -> Icons.Rounded.DarkMode
+                        },
+                        contentDescription = "主题：${themeMode.label}",
+                    )
+                }
+                DropdownMenu(
+                    expanded = themeMenuExpanded,
+                    onDismissRequest = onDismissThemeMenu,
+                ) {
+                    AppThemeMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode.label) },
+                            leadingIcon = {
+                                if (themeMode == mode) {
+                                    Icon(Icons.Rounded.Check, contentDescription = "已选择")
+                                } else {
+                                    Spacer(Modifier.size(24.dp))
+                                }
+                            },
+                            onClick = { onThemeSelected(mode) },
+                        )
+                    }
+                }
+            }
             Box {
                 IconButton(onClick = onShowQualityMenu) {
                     Icon(
@@ -1166,12 +1240,17 @@ private fun BiuBottomBar(
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.surface,
                 tonalElevation = 0.dp,
+                // long: 底部 Tab 标签需要贴住物理屏幕底边，因此不消费系统手势区 Insets，允许手势条覆盖导航区域。
+                windowInsets = WindowInsets(0, 0, 0, 0),
             ) {
                 MainSection.entries.forEach { section ->
                     val icon = section.icon()
+                    val isSelected = selectedSection == section
                     NavigationBarItem(
-                        selected = selectedSection == section,
+                        selected = isSelected,
                         onClick = { onSectionSelected(section) },
+                        // long: 选中指示器比普通图标更高，分别补偿后两种状态的图标与标签组合都能视觉居中。
+                        modifier = Modifier.offset(y = if (isSelected) 3.dp else 0.dp),
                         icon = { Icon(icon, contentDescription = section.label) },
                         label = { Text(section.label) },
                         colors = NavigationBarItemDefaults.colors(
@@ -3506,6 +3585,7 @@ private fun MiniPlayer(
 @Composable
 private fun NowPlayingScreen(
     snapshot: PlaybackSnapshot,
+    lyrics: LyricsUiState,
     controllerReady: Boolean,
     onBack: () -> Unit,
     onPrevious: () -> Unit,
@@ -3521,10 +3601,28 @@ private fun NowPlayingScreen(
     onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
     onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
     onClearQueue: () -> Unit,
+    onPrepareLyrics: () -> Unit,
+    onSearchLyrics: (String) -> Unit,
+    onSelectLyrics: (LyricsSearchResult) -> Unit,
 ) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showQueue by remember { mutableStateOf(false) }
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
+    var showLyricsSearch by remember { mutableStateOf(false) }
+    val lyricsDefaults = lyricsSearchDefaults(snapshot.title, snapshot.pageTitle, snapshot.artist)
+    val defaultLyricsQuery = listOf(lyricsDefaults.trackName, lyricsDefaults.artistName)
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .distinct()
+        .joinToString(" ")
+    // long: 默认词直接来自当前播放快照，打开弹框无需等待 ViewModel 回传；mediaId 变化时同步切换到新 P 的名称。
+    var lyricsQuery by remember(snapshot.mediaId, defaultLyricsQuery) { mutableStateOf(defaultLyricsQuery) }
     var confirmClearQueue by remember { mutableStateOf(false) }
+    LaunchedEffect(snapshot.mediaId) {
+        // long: 切换曲目后必须回到封面并关闭旧搜索框，防止上一首歌词在用户尚未手动确认时显示到新曲目。
+        showLyrics = false
+        showLyricsSearch = false
+    }
     if (confirmClearQueue) {
         AlertDialog(
             onDismissRequest = { confirmClearQueue = false },
@@ -3561,6 +3659,27 @@ private fun NowPlayingScreen(
             )
         }
     }
+    if (showLyricsSearch) {
+        ModalBottomSheet(
+            onDismissRequest = { showLyricsSearch = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            LyricsSearchPanel(
+                query = lyricsQuery,
+                onQueryChange = { lyricsQuery = it },
+                state = lyrics,
+                onSearch = { onSearchLyrics(lyricsQuery) },
+                onSelect = { result ->
+                    onSelectLyrics(result)
+                    showLyricsSearch = false
+                    showLyrics = true
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 360.dp, max = 640.dp),
+            )
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -3570,12 +3689,46 @@ private fun NowPlayingScreen(
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
                     }
                 },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            if (showLyrics) {
+                                showLyrics = false
+                            } else {
+                                // long: 第三方歌词请求只能由用户从这里主动发起，打开播放页和切歌都不会自动访问 LRCLIB。
+                                onPrepareLyrics()
+                                showLyricsSearch = true
+                            }
+                        },
+                    ) {
+                        Icon(
+                            if (showLyrics) Icons.Rounded.Album else Icons.Rounded.Lyrics,
+                            contentDescription = if (showLyrics) "显示封面" else "搜索歌词",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    if (showLyrics) {
+                        IconButton(
+                            onClick = {
+                                onPrepareLyrics()
+                                showLyricsSearch = true
+                            },
+                        ) {
+                            Icon(
+                                Icons.Rounded.Search,
+                                contentDescription = if (lyrics.document == null) "搜索歌词" else "重新搜索歌词",
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
     ) { padding ->
         NowPlayingDetails(
             snapshot = snapshot,
+            lyrics = lyrics,
+            showLyrics = showLyrics,
             controllerReady = controllerReady,
             onPrevious = onPrevious,
             onToggle = onToggle,
@@ -3598,6 +3751,8 @@ private fun NowPlayingScreen(
 @Composable
 private fun NowPlayingDetails(
     snapshot: PlaybackSnapshot,
+    lyrics: LyricsUiState,
+    showLyrics: Boolean,
     controllerReady: Boolean,
     onPrevious: () -> Unit,
     onToggle: () -> Unit,
@@ -3661,7 +3816,15 @@ private fun NowPlayingDetails(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(32.dp),
         ) {
-            NowPlayingArtwork(snapshot, 240.dp)
+            if (showLyrics) {
+                NowPlayingLyrics(
+                    state = lyrics,
+                    positionMs = snapshot.positionMs,
+                    modifier = Modifier.size(300.dp, 240.dp),
+                )
+            } else {
+                NowPlayingArtwork(snapshot, 240.dp)
+            }
             controls(Modifier.weight(1f))
         }
     } else {
@@ -3670,7 +3833,17 @@ private fun NowPlayingDetails(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            NowPlayingArtwork(snapshot, 300.dp)
+            if (showLyrics) {
+                NowPlayingLyrics(
+                    state = lyrics,
+                    positionMs = snapshot.positionMs,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp),
+                )
+            } else {
+                NowPlayingArtwork(snapshot, 300.dp)
+            }
             Spacer(Modifier.height(24.dp))
             controls(Modifier.fillMaxWidth())
         }
@@ -3700,6 +3873,184 @@ private fun NowPlayingArtwork(snapshot: PlaybackSnapshot, size: androidx.compose
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
+        }
+    }
+}
+
+@Composable
+private fun NowPlayingLyrics(
+    state: LyricsUiState,
+    positionMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val document = state.document
+    val lines = document?.lines.orEmpty()
+    val currentIndex = LrcParser.currentLineIndex(lines, positionMs)
+    val listState = rememberLazyListState()
+    // long: 只在当前歌词行发生变化时滚动，不跟随每次进度 tick 重启动画，保证用户阅读和手动滚动不会持续抖动。
+    LaunchedEffect(document?.cacheKey, currentIndex) {
+        if (currentIndex >= 0) {
+            listState.animateScrollToItem(currentIndex)
+        }
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow),
+        contentAlignment = Alignment.Center,
+    ) {
+        // long: 歌词数据失败只替换中央展示区，底部 Media3 控件始终保留，因此网络和解析错误不会中断当前播放。
+        when (state.status) {
+            LyricsLoadStatus.LOADING -> CircularProgressIndicator(modifier = Modifier.size(28.dp))
+            LyricsLoadStatus.LOADED -> LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 112.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                itemsIndexed(
+                    items = lines,
+                    key = { index, line -> "${line.startTimeMs}:$index" },
+                ) { index, line ->
+                    val isCurrent = index == currentIndex
+                    Text(
+                        text = line.text,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (isCurrent) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        style = if (isCurrent) {
+                            MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                        } else {
+                            MaterialTheme.typography.bodyMedium
+                        },
+                    )
+                }
+            }
+            LyricsLoadStatus.EMPTY -> LyricsStatusMessage("暂未找到同步歌词")
+            LyricsLoadStatus.ERROR -> LyricsStatusMessage(state.errorMessage ?: "歌词加载失败")
+            LyricsLoadStatus.IDLE -> LyricsStatusMessage("可从右上角搜索歌词")
+        }
+    }
+}
+
+@Composable
+private fun LyricsStatusMessage(message: String) {
+    Text(
+        text = message,
+        modifier = Modifier.padding(24.dp),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun LyricsSearchPanel(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    state: LyricsUiState,
+    onSearch: () -> Unit,
+    onSelect: (LyricsSearchResult) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        Text(
+            text = "搜索歌词",
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text("歌曲名 + 歌手名") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            )
+            FilledIconButton(
+                onClick = onSearch,
+                enabled = query.isNotBlank() && !state.isSearchLoading,
+            ) {
+                Icon(Icons.Rounded.Search, contentDescription = "开始搜索")
+            }
+        }
+        when {
+            state.isSearchLoading -> Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(28.dp))
+            }
+            state.searchErrorMessage != null -> Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                LyricsStatusMessage(state.searchErrorMessage)
+            }
+            state.hasSearched && state.searchResults.isEmpty() -> Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                LyricsStatusMessage("没有找到同步歌词")
+            }
+            else -> LazyColumn(modifier = Modifier.weight(1f)) {
+                // long: 搜索结果保持可滚动的多候选列表；点击后由 ViewModel 写入当前媒体缓存，后续重启继续使用同一选择。
+                items(state.searchResults, key = LyricsSearchResult::id) { result ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(result) }
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Lyrics,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                result.trackName,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                listOfNotNull(
+                                    result.artistName.takeIf(String::isNotBlank),
+                                    result.albumName?.takeIf(String::isNotBlank),
+                                ).joinToString(" · "),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            formatDurationMs(result.durationSeconds * 1_000L),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
         }
     }
 }
@@ -4463,6 +4814,38 @@ private fun displayResourceTitle(title: String, pageTitle: String?): String {
     val pageName = pageTitle?.substringAfter(" · ", missingDelimiterValue = "")?.takeIf(String::isNotBlank)
     return pageName?.let { title.removeSuffix(" · $it") } ?: title
 }
+
+internal data class LyricsSearchDefaults(
+    val trackName: String,
+    val artistName: String,
+)
+
+internal fun lyricsSearchDefaults(title: String, pageTitle: String?, fallbackArtist: String): LyricsSearchDefaults {
+    val pageName = lyricsPageName(pageTitle)
+    val sourceName = pageName ?: displayResourceTitle(title, pageTitle)
+    val normalizedName = sourceName.replaceFirst(LEADING_TRACK_NUMBER_PATTERN, "").trim()
+    val separator = TRACK_ARTIST_SEPARATOR_PATTERN.findAll(normalizedName).lastOrNull()
+    val embeddedTrack = separator?.let { normalizedName.substring(0, it.range.first).trim() }
+    val embeddedArtist = separator?.let { normalizedName.substring(it.range.last + 1).trim() }
+    val hasEmbeddedMetadata = !embeddedTrack.isNullOrBlank() && !embeddedArtist.isNullOrBlank()
+    // long: 多 P 只信任当前 P 名称中的曲目信息，不能把视频 UP 主误当歌手；单 P 无内嵌歌手时才回退作者字段。
+    return LyricsSearchDefaults(
+        trackName = embeddedTrack.takeIf { hasEmbeddedMetadata } ?: normalizedName.ifBlank { sourceName },
+        artistName = when {
+            hasEmbeddedMetadata -> embeddedArtist.orEmpty()
+            pageName != null -> ""
+            else -> fallbackArtist.trim()
+        },
+    )
+}
+
+private fun lyricsPageName(pageTitle: String?): String? = pageTitle
+    ?.substringAfter(" · ", missingDelimiterValue = "")
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+
+private val LEADING_TRACK_NUMBER_PATTERN = Regex("""^\s*\d{1,3}\s*[.．、:：_-]\s*""")
+private val TRACK_ARTIST_SEPARATOR_PATTERN = Regex("""\s*[-－–—]\s*""")
 
 private fun formatProgress(positionMs: Long, durationMs: Long): String {
     val position = formatDuration((positionMs.coerceAtLeast(0L) / 1000L).toInt())
