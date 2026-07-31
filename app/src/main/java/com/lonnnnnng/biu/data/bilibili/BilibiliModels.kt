@@ -54,6 +54,7 @@ enum class AccountLibrarySection(val label: String) {
     ONLINE_HISTORY("在线历史"),
     LOCAL_HISTORY("本地历史"),
     LOCAL_MUSIC("本地音乐"),
+    DOWNLOADS("下载"),
 }
 
 /** long: 收藏入口来源直接对应账号页中的两个在线分组，避免 UI 再根据列表位置猜测数据归属。 */
@@ -156,21 +157,42 @@ data class DashVideoStream(
     val qualityLabel: String,
     val expiresAtEpochSeconds: Long?,
     val backupUrls: List<String> = emptyList(),
-)
+) {
+    fun replacementUrl(failedUrl: String): String {
+        return (listOf(url) + backupUrls).firstOrNull { candidate -> candidate != failedUrl } ?: url
+    }
+}
 
 data class DashDownloadStreams(
     val video: DashVideoStream,
     val audio: DashAudioStream,
 )
 
+data class DashVideoPlaybackStreams(
+    val video: DashVideoStream,
+    val audio: DashAudioStream,
+    val availableVideos: List<DashVideoStream>,
+)
+
+enum class DashVideoCodecPreference {
+    AVC,
+    HEVC,
+}
+
 object DashVideoSelector {
-    fun select(streams: List<DashVideoStream>): DashVideoStream? {
-        if (streams.isEmpty()) return null
-        // long: 视频下载产物要能在尽可能多的 Android 设备直接播放；同编码族内取最高画质，但 AVC 的兼容性优先于更高画质的 HEVC/AV1。
-        val preferredCodecPriority = streams.minOf(::codecPriority)
-        return streams
+    fun select(
+        streams: List<DashVideoStream>,
+        qualityId: Int? = null,
+        codecPreference: DashVideoCodecPreference = DashVideoCodecPreference.AVC,
+    ): DashVideoStream? {
+        val candidates = qualityId?.let { requested -> streams.filter { stream -> stream.qualityId == requested } }
+            ?: streams
+        if (candidates.isEmpty()) return null
+        // long: 下载和常规设备默认优先 AVC；存在明确设备兼容问题时可优先 HEVC，但用户指定清晰度后仍只在该清晰度内选编码。
+        val preferredCodecPriority = candidates.minOf { stream -> codecPriority(stream, codecPreference) }
+        return candidates
             .asSequence()
-            .filter { stream -> codecPriority(stream) == preferredCodecPriority }
+            .filter { stream -> codecPriority(stream, codecPreference) == preferredCodecPriority }
             .maxWithOrNull(
                 compareBy<DashVideoStream>(DashVideoStream::qualityId)
                     .thenBy { stream -> stream.width.toLong() * stream.height.toLong() }
@@ -178,13 +200,42 @@ object DashVideoSelector {
             )
     }
 
-    private fun codecPriority(stream: DashVideoStream): Int {
+    fun selectableStreams(
+        streams: List<DashVideoStream>,
+        codecPreference: DashVideoCodecPreference = DashVideoCodecPreference.AVC,
+    ): List<DashVideoStream> {
+        // long: 同一清晰度常同时返回 AVC、HEVC、AV1 多条轨；菜单只展示一次，并保留实际会交给设备解码的编码名称。
+        return streams
+            .groupBy(DashVideoStream::qualityId)
+            .values
+            .mapNotNull { candidates -> select(candidates, codecPreference = codecPreference) }
+            .sortedWith(
+                compareByDescending<DashVideoStream>(DashVideoStream::qualityId)
+                    .thenByDescending { stream -> stream.width.toLong() * stream.height.toLong() }
+                    .thenByDescending(DashVideoStream::bandwidth),
+            )
+    }
+
+    private fun codecPriority(
+        stream: DashVideoStream,
+        codecPreference: DashVideoCodecPreference,
+    ): Int {
         val codecs = stream.codecs.lowercase()
-        return when {
-            codecs.startsWith("avc1") || codecs.startsWith("avc3") -> 0
-            codecs.startsWith("hev1") || codecs.startsWith("hvc1") -> 1
-            codecs.startsWith("av01") -> 2
-            else -> 3
+        val isAvc = codecs.startsWith("avc1") || codecs.startsWith("avc3")
+        val isHevc = codecs.startsWith("hev1") || codecs.startsWith("hvc1")
+        return when (codecPreference) {
+            DashVideoCodecPreference.AVC -> when {
+                isAvc -> 0
+                isHevc -> 1
+                codecs.startsWith("av01") -> 2
+                else -> 3
+            }
+            DashVideoCodecPreference.HEVC -> when {
+                isHevc -> 0
+                codecs.startsWith("av01") -> 1
+                isAvc -> 2
+                else -> 3
+            }
         }
     }
 }

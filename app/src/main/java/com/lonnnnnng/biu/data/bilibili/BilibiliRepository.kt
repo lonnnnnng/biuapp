@@ -623,6 +623,26 @@ class BilibiliRepository(
         return DashDownloadStreams(video = video, audio = audio)
     }
 
+    suspend fun resolveVideoPlaybackStreams(
+        bvid: String,
+        cid: Long,
+        qualityId: Int? = null,
+        codecPreference: DashVideoCodecPreference = DashVideoCodecPreference.AVC,
+    ): DashVideoPlaybackStreams {
+        val streams = resolveDashStreams(bvid, cid)
+        val availableVideos = DashVideoSelector.selectableStreams(streams.video, codecPreference)
+        val video = DashVideoSelector.select(streams.video, qualityId, codecPreference)
+            ?: throw BilibiliApiException(-404, if (qualityId == null) "没有可播放的视频轨" else "所选画质当前不可用")
+        val audio = streams.standard.maxByOrNull(DashAudioStream::bandwidth)
+            ?: throw BilibiliApiException(-404, "没有可播放的标准 AAC 音频")
+        // long: UI 只接收清晰度与编码标签，带签名的 DASH URL 始终留在播放服务内，避免泄漏到展示层或日志。
+        return DashVideoPlaybackStreams(
+            video = video,
+            audio = audio,
+            availableVideos = availableVideos,
+        )
+    }
+
     private suspend fun resolveDashStreams(bvid: String, cid: Long): ParsedDashStreams {
         val root = request(
             path = "/x/player/wbi/playurl",

@@ -5,18 +5,20 @@
 | Bilibili 登录 | WebView + CookieManager + 专用 OkHttpClient | M2 | 原型完成，账号态待人工验收 |
 | 推荐音乐、搜索 | Compose 列表 + Bilibili API + WBI | M2 | 已完成 |
 | 视频详情、分 P | `view` 详情与 cid 解析；分 P 选择与渐进队列 | M2/M3 | 单 P、多 P 选择、顺序播放和大型队列渐进解析已完成 |
-| 收藏夹与视频合集 | 账号 API + 普通收藏夹/视频合集统一模型 | M3/M9 | “我创建的”“我收藏的”浏览、播放和批量下载完成；管理操作待 M9 |
-| 在线历史、本地历史 | 账号 API + Room 本地历史 | M3/M8 | 在线首屏浏览、本地进度与续播完成；在线分页、搜索和删除待 M8 |
+| 收藏夹与视频合集 | 账号 API + 普通收藏夹/视频合集统一模型 | M3/M9 | 浏览、播放、批量下载、收藏夹 CRUD 及视频加入/移出已完成 |
+| 在线历史、本地历史 | 账号 API + Room 本地历史 | M3/M8 | 在线分页、搜索、删除、清空、进度上报及本地续播已完成 |
 | 稍后再看 | 保留 API，不提供 Android 页面入口 | - | 产品决策为不迁移入口 |
 | 关注、动态、用户空间 | 独立 feature 页面 | M11/M12 | 首页 UP 范围选择已完成；独立页面与互动待开发 |
 | DASH 音频播放 | Media3 + 最高音质/省流量选择 + URL 刷新 + 备用 CDN | M2 | 已完成 |
+| DASH 视频播放 | Media3 `MergingMediaSource` + SessionCommand + 实际轨画质菜单 | M10.1 | 默认音频、竖屏小窗、横屏沉浸全屏、自动旋转控制和画质切换已实现；真机最终验收进行中 |
 | 播放队列 | Media3 playlist + Room 镜像 | M1/M3/M7 | 完整队列、当前索引与进度持久化、进程重启恢复、设为下一首、移除和清空已完成；任意拖动排序待评估 |
 | 播放模式与倍速 | Media3 repeat/shuffle/playback parameters + DataStore | M7 | 顺序、列表循环、随机、单曲循环及七档倍速已完成并持久化 |
 | 后台播放 | MediaSessionService | M1 | 已完成 |
 | 快捷键、任务栏 | 通知栏、锁屏、耳机、蓝牙 MediaSession | M1 | 已完成 |
-| 全屏播放器 | Compose Now Playing 页面 | M3 | 已完成 |
+| 全屏播放器 | Compose 音频 Now Playing + 小窗/沉浸式视频控制层 | M3/M10.1 | 音频封面/歌词、竖屏视频小窗与横屏视频全屏模式已完成 |
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |
-| 歌词 | 歌词搜索、时间轴展示与 Room 缓存 | M10 | 待开发，数据源开发前核验 |
+| 歌词 | LRCLIB 手动搜索、时间轴展示与 Room 缓存 | M10 | 已完成；单 P/多 P 使用各自歌曲名称 |
+| 主题 | Material 亮色、暗色、跟随系统 + 系统栏同步 | M10 | 已完成基础三态切换；自定义强调色和字体待后续 |
 | 本地音乐 | MediaStore 查询 + SAF 目录授权（Android 10+） | M4 | 扫描、播放、目录筛选与重启恢复已完成 |
 | 音频下载 | Room 任务 + 前台下载服务 + Range 续传 + MediaStore.Audio | M4 | 标准 AAC 下载、暂停/继续/取消、通知进度与发布已完成 |
 | 视频下载 | Room 视频任务 + 双轨 Range 下载 + Media3 Mp4Muxer + MediaStore.Video | M5 | 当前单 P/当前分 P 下载、暂停恢复、取消、合并与 `Movies/Biu/` 发布已完成 |

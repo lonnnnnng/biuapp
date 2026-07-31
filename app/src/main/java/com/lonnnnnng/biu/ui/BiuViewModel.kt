@@ -712,6 +712,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 isLibraryLoading = section !in setOf(
                     AccountLibrarySection.LOCAL_HISTORY,
                     AccountLibrarySection.LOCAL_MUSIC,
+                    AccountLibrarySection.DOWNLOADS,
                 ),
                 selectedFavoriteFolder = if (section == AccountLibrarySection.FAVORITES) it.selectedFavoriteFolder else null,
                 favoriteNextPage = if (section == AccountLibrarySection.FAVORITES) it.favoriteNextPage else null,
@@ -719,6 +720,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 libraryVideos = if (section in setOf(
                         AccountLibrarySection.LOCAL_HISTORY,
                         AccountLibrarySection.LOCAL_MUSIC,
+                        AccountLibrarySection.DOWNLOADS,
                     )
                 ) {
                     it.libraryVideos
@@ -729,6 +731,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         if (section == AccountLibrarySection.LOCAL_HISTORY) return
+        if (section == AccountLibrarySection.DOWNLOADS) return
         if (section == AccountLibrarySection.LOCAL_MUSIC) {
             loadLocalAudio()
             return
@@ -762,6 +765,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     AccountLibrarySection.ONLINE_HISTORY -> Unit
                     AccountLibrarySection.LOCAL_HISTORY -> Unit
                     AccountLibrarySection.LOCAL_MUSIC -> Unit
+                    AccountLibrarySection.DOWNLOADS -> Unit
                 }
             }.onFailure { error ->
                 mutableState.update {

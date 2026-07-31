@@ -95,6 +95,63 @@ class BilibiliModelsTest {
         )
     }
 
+    @Test
+    fun `视频画质候选按清晰度去重并在指定清晰度优先 AVC`() {
+        val candidates = listOf(
+            videoStream("hevc-4k", qualityId = 120, codecs = "hev1.1.6.L153.B0", bandwidth = 8_000_000),
+            videoStream("hevc-1080", qualityId = 80, codecs = "hev1.1.6.L120.B0", bandwidth = 1_900_000),
+            videoStream("avc-1080", qualityId = 80, codecs = "avc1.640028", bandwidth = 2_400_000),
+            videoStream("avc-720", qualityId = 64, codecs = "avc1.64001f", bandwidth = 1_200_000),
+        )
+
+        assertEquals(
+            listOf("hevc-4k", "avc-1080", "avc-720"),
+            DashVideoSelector.selectableStreams(candidates).map(DashVideoStream::url),
+        )
+        assertEquals("avc-1080", DashVideoSelector.select(candidates, qualityId = 80)?.url)
+        assertNull(DashVideoSelector.select(candidates, qualityId = 32))
+    }
+
+    @Test
+    fun `MTK 播放偏好在同清晰度优先 HEVC 并保留画质顺序`() {
+        val candidates = listOf(
+            videoStream("hevc-1080", qualityId = 80, codecs = "hev1.1.6.L120.B0", bandwidth = 1_900_000),
+            videoStream("avc-1080", qualityId = 80, codecs = "avc1.640028", bandwidth = 2_400_000),
+            videoStream("hevc-720", qualityId = 64, codecs = "hev1.1.6.L120.B0", bandwidth = 1_100_000),
+            videoStream("avc-720", qualityId = 64, codecs = "avc1.64001f", bandwidth = 1_200_000),
+        )
+
+        assertEquals(
+            "hevc-1080",
+            DashVideoSelector.select(
+                candidates,
+                qualityId = 80,
+                codecPreference = DashVideoCodecPreference.HEVC,
+            )?.url,
+        )
+        assertEquals(
+            listOf("hevc-1080", "hevc-720"),
+            DashVideoSelector.selectableStreams(
+                candidates,
+                codecPreference = DashVideoCodecPreference.HEVC,
+            ).map(DashVideoStream::url),
+        )
+    }
+
+    @Test
+    fun `视频主播放地址失败后切换备用 CDN`() {
+        val stream = videoStream(
+            url = "https://primary.example/video",
+            qualityId = 80,
+            codecs = "avc1.640028",
+            bandwidth = 2_400_000,
+            backupUrls = listOf("https://backup.example/video"),
+        )
+
+        assertEquals("https://backup.example/video", stream.replacementUrl(stream.url))
+        assertEquals(stream.url, stream.replacementUrl("https://old.example/video"))
+    }
+
     private fun stream(url: String, bandwidth: Long): DashAudioStream {
         return DashAudioStream(url, bandwidth, "mp4a.40.2", "test", null)
     }
@@ -104,6 +161,7 @@ class BilibiliModelsTest {
         qualityId: Int,
         codecs: String,
         bandwidth: Long,
+        backupUrls: List<String> = emptyList(),
     ): DashVideoStream {
         return DashVideoStream(
             url = url,
@@ -115,6 +173,7 @@ class BilibiliModelsTest {
             frameRate = 30.0,
             qualityLabel = "test",
             expiresAtEpochSeconds = null,
+            backupUrls = backupUrls,
         )
     }
 }

@@ -9,6 +9,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -74,6 +75,51 @@ class BilibiliTrackQueueTest {
         assertEquals("202", requests[2]?.requestUrl?.queryParameter("cid"))
     }
 
+    @Test
+    fun `视频播放解析独立视频轨和最高码率AAC音频轨`() = runBlocking {
+        server.enqueue(jsonResponse(wbiKeyPayload()))
+        server.enqueue(jsonResponse(videoPlayUrlPayload()))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            nowEpochSeconds = { 1_700_000_000L },
+            apiBase = server.url("/"),
+        )
+
+        val streams = repository.resolveVideoDownloadStreams("BVQUEUE", 202L)
+
+        assertEquals("https://cdn.example/video-1080.m4s", streams.video.url)
+        assertEquals(listOf("https://backup.example/video-1080.m4s"), streams.video.backupUrls)
+        assertEquals("avc1.640028", streams.video.codecs)
+        assertTrue(streams.video.qualityLabel.startsWith("1080p"))
+        assertEquals("https://cdn.example/audio-high.m4s", streams.audio.url)
+        assertEquals(192_000L, streams.audio.bandwidth)
+        val requests = List(2) { server.takeRequest(1, TimeUnit.SECONDS) }
+        assertEquals("/x/player/wbi/playurl", requests[1]?.requestUrl?.encodedPath)
+        assertEquals("202", requests[1]?.requestUrl?.queryParameter("cid"))
+        assertEquals("4048", requests[1]?.requestUrl?.queryParameter("fnval"))
+    }
+
+    @Test
+    fun `视频播放按指定清晰度选轨并返回实际可用画质`() = runBlocking {
+        server.enqueue(jsonResponse(wbiKeyPayload()))
+        server.enqueue(jsonResponse(videoPlayUrlPayload()))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            nowEpochSeconds = { 1_700_000_000L },
+            apiBase = server.url("/"),
+        )
+
+        val streams = repository.resolveVideoPlaybackStreams("BVQUEUE", 202L, qualityId = 64)
+
+        assertEquals("https://cdn.example/video-720.m4s", streams.video.url)
+        assertEquals(listOf(120, 80, 64), streams.availableVideos.map(DashVideoStream::qualityId))
+        assertEquals(
+            listOf("https://cdn.example/video-4k-hevc.m4s", "https://cdn.example/video-1080.m4s", "https://cdn.example/video-720.m4s"),
+            streams.availableVideos.map(DashVideoStream::url),
+        )
+        assertEquals("https://cdn.example/audio-high.m4s", streams.audio.url)
+    }
+
     private fun video() = BilibiliVideo(
         bvid = "BVQUEUE",
         aid = 1L,
@@ -124,6 +170,68 @@ class BilibiliTrackQueueTest {
                 {
                   "baseUrl": "$url",
                   "bandwidth": $bandwidth,
+                  "codecs": "mp4a.40.2"
+                }
+              ]
+            }
+          }
+        }
+        """.trimIndent()
+
+    private fun videoPlayUrlPayload(): String =
+        """
+        {
+          "code": 0,
+          "data": {
+            "dash": {
+              "video": [
+                {
+                  "id": 120,
+                  "baseUrl": "https://cdn.example/video-4k-hevc.m4s",
+                  "bandwidth": 8000000,
+                  "codecs": "hev1.1.6.L153.B0",
+                  "width": 3840,
+                  "height": 2160,
+                  "frameRate": "30"
+                },
+                {
+                  "id": 80,
+                  "baseUrl": "https://cdn.example/video-1080-hevc.m4s",
+                  "bandwidth": 1900000,
+                  "codecs": "hev1.1.6.L120.B0",
+                  "width": 1920,
+                  "height": 1080,
+                  "frameRate": "30"
+                },
+                {
+                  "id": 80,
+                  "baseUrl": "https://cdn.example/video-1080.m4s",
+                  "backupUrl": ["https://backup.example/video-1080.m4s"],
+                  "bandwidth": 2400000,
+                  "codecs": "avc1.640028",
+                  "width": 1920,
+                  "height": 1080,
+                  "frameRate": "30"
+                },
+                {
+                  "id": 64,
+                  "baseUrl": "https://cdn.example/video-720.m4s",
+                  "bandwidth": 1200000,
+                  "codecs": "avc1.64001f",
+                  "width": 1280,
+                  "height": 720,
+                  "frameRate": "30"
+                }
+              ],
+              "audio": [
+                {
+                  "baseUrl": "https://cdn.example/audio-low.m4s",
+                  "bandwidth": 64000,
+                  "codecs": "mp4a.40.2"
+                },
+                {
+                  "baseUrl": "https://cdn.example/audio-high.m4s",
+                  "bandwidth": 192000,
                   "codecs": "mp4a.40.2"
                 }
               ]

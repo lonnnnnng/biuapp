@@ -89,9 +89,64 @@ fun MediaItem.bilibiliSource(): BilibiliTrackSource? {
     return BilibiliTrackSource(bvid, cid, qualityPreference, aid)
 }
 
+fun MediaItem.playbackMediaMode(): PlaybackMediaMode {
+    return PlaybackMediaMode.fromStoredValue(mediaMetadata.extras?.getString(EXTRA_PLAYBACK_MEDIA_MODE))
+}
+
+fun MediaItem.playbackStreamMetadata(): PlaybackStreamMetadata? {
+    val extras = mediaMetadata.extras
+    val localUrl = localConfiguration?.uri?.toString()?.takeIf(String::isNotBlank) ?: return null
+    return if (playbackMediaMode() == PlaybackMediaMode.VIDEO) {
+        val audioUrl = extras?.getString(EXTRA_AUDIO_STREAM_URL)?.takeIf(String::isNotBlank) ?: return null
+        val videoUrl = extras.getString(EXTRA_VIDEO_STREAM_URL)?.takeIf(String::isNotBlank) ?: localUrl
+        PlaybackStreamMetadata.video(
+            audioUrl = audioUrl,
+            videoUrl = videoUrl,
+            audioQualityLabel = extras.getString(EXTRA_AUDIO_QUALITY_LABEL)?.takeIf(String::isNotBlank),
+            videoQualityLabel = extras.getString(EXTRA_VIDEO_QUALITY_LABEL)?.takeIf(String::isNotBlank),
+            selectedVideoQualityId = extras.getInt(EXTRA_SELECTED_VIDEO_QUALITY_ID, 0).takeIf { it > 0 },
+            availableVideoQualities = playbackVideoQualities(extras),
+        )
+    } else {
+        PlaybackStreamMetadata.audio(
+            audioUrl = extras?.getString(EXTRA_AUDIO_STREAM_URL)?.takeIf(String::isNotBlank) ?: localUrl,
+            qualityLabel = extras?.getString(EXTRA_AUDIO_QUALITY_LABEL)?.takeIf(String::isNotBlank)
+                ?: mediaMetadata.description?.toString()?.takeIf(String::isNotBlank),
+        )
+    }
+}
+
+fun MediaItem.withAudioPlaybackStream(audioUrl: String, qualityLabel: String?): MediaItem {
+    return withPlaybackStreamMetadata(PlaybackStreamMetadata.audio(audioUrl, qualityLabel))
+}
+
+fun MediaItem.withVideoPlaybackStreams(
+    audioUrl: String,
+    videoUrl: String,
+    audioQualityLabel: String?,
+    videoQualityLabel: String?,
+    selectedVideoQualityId: Int? = null,
+    availableVideoQualities: List<PlaybackVideoQuality> = emptyList(),
+): MediaItem {
+    return withPlaybackStreamMetadata(
+        PlaybackStreamMetadata.video(
+            audioUrl = audioUrl,
+            videoUrl = videoUrl,
+            audioQualityLabel = audioQualityLabel,
+            videoQualityLabel = videoQualityLabel,
+            selectedVideoQualityId = selectedVideoQualityId,
+            availableVideoQualities = availableVideoQualities,
+        ),
+    )
+}
+
 fun MediaItem.toTrackOrNull(): Track? {
     val normalizedMediaId = mediaId.takeIf(String::isNotBlank) ?: return null
-    val normalizedStreamUrl = localConfiguration?.uri?.toString()?.takeIf(String::isNotBlank) ?: return null
+    // long: 内存中的视频项以视频轨作为主 URI；队列持久化必须改存音频轨，冷启动才能恢复产品默认的音频播放。
+    val streamMetadata = playbackStreamMetadata()
+    val normalizedStreamUrl = streamMetadata?.persistentAudioUrl
+        ?: localConfiguration?.uri?.toString()?.takeIf(String::isNotBlank)
+        ?: return null
     val pageTitle = mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank)
     val albumTitle = mediaMetadata.albumTitle?.toString()?.takeIf(String::isNotBlank)
     val fallbackTitle = mediaMetadata.title?.toString().orEmpty().ifBlank { normalizedMediaId }
@@ -108,7 +163,8 @@ fun MediaItem.toTrackOrNull(): Track? {
         artist = mediaMetadata.artist?.toString().orEmpty(),
         streamUrl = normalizedStreamUrl,
         artworkUrl = mediaMetadata.artworkUri?.toString(),
-        qualityLabel = mediaMetadata.description?.toString()?.takeIf(String::isNotBlank),
+        qualityLabel = streamMetadata?.audioQualityLabel
+            ?: mediaMetadata.description?.toString()?.takeIf(String::isNotBlank),
         pageTitle = pageTitle,
         source = bilibiliSource(),
     )
@@ -118,6 +174,9 @@ private fun Track.toExtras(): Bundle {
     return Bundle().apply {
         // long: MediaSession 只保留展示标题会丢失多 P 的完整资源名，额外字段用于 Room 队列恢复后重建同一 Track。
         putString(EXTRA_RESOURCE_TITLE, title)
+        putString(EXTRA_PLAYBACK_MEDIA_MODE, PlaybackMediaMode.AUDIO.name)
+        putString(EXTRA_AUDIO_STREAM_URL, streamUrl)
+        qualityLabel?.takeIf(String::isNotBlank)?.let { putString(EXTRA_AUDIO_QUALITY_LABEL, it) }
         source?.let { bilibiliSource ->
             putString(EXTRA_BVID, bilibiliSource.bvid)
             putLong(EXTRA_CID, bilibiliSource.cid)
@@ -127,9 +186,62 @@ private fun Track.toExtras(): Bundle {
     }
 }
 
+private fun MediaItem.withPlaybackStreamMetadata(stream: PlaybackStreamMetadata): MediaItem {
+    val extras = Bundle(mediaMetadata.extras ?: Bundle()).apply {
+        putString(EXTRA_PLAYBACK_MEDIA_MODE, stream.mode.name)
+        putString(EXTRA_AUDIO_STREAM_URL, stream.audioUrl)
+        putString(EXTRA_VIDEO_STREAM_URL, stream.videoUrl)
+        putString(EXTRA_AUDIO_QUALITY_LABEL, stream.audioQualityLabel)
+        putString(EXTRA_VIDEO_QUALITY_LABEL, stream.videoQualityLabel)
+        if (stream.mode == PlaybackMediaMode.VIDEO) {
+            stream.selectedVideoQualityId?.let { putInt(EXTRA_SELECTED_VIDEO_QUALITY_ID, it) }
+                ?: remove(EXTRA_SELECTED_VIDEO_QUALITY_ID)
+            putIntArray(
+                EXTRA_AVAILABLE_VIDEO_QUALITY_IDS,
+                stream.availableVideoQualities.map(PlaybackVideoQuality::qualityId).toIntArray(),
+            )
+            putStringArray(
+                EXTRA_AVAILABLE_VIDEO_QUALITY_LABELS,
+                stream.availableVideoQualities.map(PlaybackVideoQuality::label).toTypedArray(),
+            )
+        } else {
+            // long: 视频画质只属于当前分 P 的内存播放状态；切回音频必须清理，队列持久化后不会误恢复旧视频模式。
+            remove(EXTRA_SELECTED_VIDEO_QUALITY_ID)
+            remove(EXTRA_AVAILABLE_VIDEO_QUALITY_IDS)
+            remove(EXTRA_AVAILABLE_VIDEO_QUALITY_LABELS)
+        }
+    }
+    val metadata = mediaMetadata.buildUpon()
+        .setDescription(stream.displayQualityLabel)
+        .setExtras(extras)
+        .build()
+    return buildUpon()
+        .setUri(stream.playbackUrl.toUri())
+        .setMediaMetadata(metadata)
+        .build()
+}
+
+private fun playbackVideoQualities(extras: Bundle): List<PlaybackVideoQuality> {
+    val ids = extras.getIntArray(EXTRA_AVAILABLE_VIDEO_QUALITY_IDS) ?: intArrayOf()
+    val labels = extras.getStringArray(EXTRA_AVAILABLE_VIDEO_QUALITY_LABELS).orEmpty()
+    return ids.indices.mapNotNull { index ->
+        val id = ids[index]
+        val label = labels.getOrNull(index)?.takeIf(String::isNotBlank)
+        if (id > 0 && label != null) PlaybackVideoQuality(id, label) else null
+    }
+}
+
 private const val EXTRA_BVID = "biu.bilibili.bvid"
 private const val EXTRA_CID = "biu.bilibili.cid"
 private const val EXTRA_AID = "biu.bilibili.aid"
 private const val EXTRA_QUALITY_PREFERENCE = "biu.bilibili.quality_preference"
 private const val EXTRA_RESOURCE_TITLE = "biu.playback.resource_title"
+private const val EXTRA_PLAYBACK_MEDIA_MODE = "biu.playback.media_mode"
+private const val EXTRA_AUDIO_STREAM_URL = "biu.playback.audio_stream_url"
+private const val EXTRA_VIDEO_STREAM_URL = "biu.playback.video_stream_url"
+private const val EXTRA_AUDIO_QUALITY_LABEL = "biu.playback.audio_quality_label"
+private const val EXTRA_VIDEO_QUALITY_LABEL = "biu.playback.video_quality_label"
+private const val EXTRA_SELECTED_VIDEO_QUALITY_ID = "biu.playback.selected_video_quality_id"
+private const val EXTRA_AVAILABLE_VIDEO_QUALITY_IDS = "biu.playback.available_video_quality_ids"
+private const val EXTRA_AVAILABLE_VIDEO_QUALITY_LABELS = "biu.playback.available_video_quality_labels"
 private const val PAGE_TITLE_SEPARATOR = " · "

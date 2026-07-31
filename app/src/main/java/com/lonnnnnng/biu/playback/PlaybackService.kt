@@ -1,9 +1,11 @@
 package com.lonnnnnng.biu.playback
 
+import android.os.Bundle
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -12,15 +14,33 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
+import androidx.media3.session.SessionResult
 import com.lonnnnnng.biu.appContainer
-import com.lonnnnnng.biu.core.model.toMediaItem
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
+import com.lonnnnnng.biu.core.model.BilibiliTrackSource
+import com.lonnnnnng.biu.core.model.PlaybackMediaMode
+import com.lonnnnnng.biu.core.model.PlaybackStreamMetadata
+import com.lonnnnnng.biu.core.model.PlaybackVideoQuality
 import com.lonnnnnng.biu.core.model.bilibiliSource
+import com.lonnnnnng.biu.core.model.playbackMediaMode
+import com.lonnnnnng.biu.core.model.playbackStreamMetadata
+import com.lonnnnnng.biu.core.model.toMediaItem
 import com.lonnnnnng.biu.core.model.toTrackOrNull
+import com.lonnnnnng.biu.core.model.withAudioPlaybackStream
+import com.lonnnnnng.biu.core.model.withVideoPlaybackStreams
 import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
+import com.lonnnnnng.biu.data.bilibili.DashVideoCodecPreference
 import com.lonnnnnng.biu.data.local.PlaybackQueueRecord
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -35,12 +55,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
     private val endEventClock = PlaybackEndEventClock()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var refreshInFlight = false
+    private var mediaModeSwitchInFlight = false
     private var retryConsumedForCurrentItem = false
     private var recordedMediaId: String? = null
     private var progressPersistenceJob: Job? = null
@@ -52,6 +74,12 @@ class PlaybackService : MediaSessionService() {
     private val queuePersistenceGeneration = AtomicLong(0L)
     private val queuePersistenceMutex = Mutex()
     private var restoringPlaybackQueue = false
+    private lateinit var mediaSourceFactory: DefaultMediaSourceFactory
+    private val videoCodecPreference: DashVideoCodecPreference by lazy {
+        if (defaultAvcDecoderIsMtk()) DashVideoCodecPreference.HEVC else DashVideoCodecPreference.AVC
+    }
+    private val isMediaReplacementInFlight: Boolean
+        get() = refreshInFlight || mediaModeSwitchInFlight
     private val sessionCallback = object : MediaSession.Callback {
         @UnstableApi
         override fun onConnect(
@@ -59,16 +87,44 @@ class PlaybackService : MediaSessionService() {
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
             val trustPolicy = ControllerTrustPolicy(packageName, applicationInfo.uid)
-            return if (
+            val isAllowed =
                 trustPolicy.isAllowed(
                     controllerPackage = controller.packageName,
                     controllerUid = controller.uid,
                     isSystemTrusted = controller.isTrusted,
                 )
-            ) {
-                super.onConnect(session, controller)
-            } else {
-                MediaSession.ConnectionResult.reject()
+            if (!isAllowed) return MediaSession.ConnectionResult.reject()
+
+            val defaultResult = super.onConnect(session, controller)
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailablePlayerCommands(defaultResult.availablePlayerCommands)
+                .setAvailableSessionCommands(
+                    defaultResult.availableSessionCommands.buildUpon()
+                        .add(PlaybackSessionCommands.setMediaMode)
+                        .add(PlaybackSessionCommands.setVideoQuality)
+                        .build(),
+                )
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            return when (customCommand) {
+                PlaybackSessionCommands.setMediaMode -> {
+                    val requestedMode = PlaybackSessionCommands.requestedMediaMode(args)
+                        ?: return immediateSessionResult(SessionError.ERROR_BAD_VALUE, "播放类型无效")
+                    switchCurrentPlaybackMediaMode(requestedMode)
+                }
+                PlaybackSessionCommands.setVideoQuality -> {
+                    val qualityId = PlaybackSessionCommands.requestedVideoQualityId(args)
+                        ?: return immediateSessionResult(SessionError.ERROR_BAD_VALUE, "视频画质无效")
+                    switchCurrentVideoQuality(qualityId)
+                }
+                else -> super.onCustomCommand(session, controller, customCommand, args)
             }
         }
     }
@@ -122,18 +178,21 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (!refreshInFlight) retryConsumedForCurrentItem = false
-            val isNewPlaybackRequest = !refreshInFlight && reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+            if (!isMediaReplacementInFlight) retryConsumedForCurrentItem = false
+            val isNewPlaybackRequest =
+                !isMediaReplacementInFlight && reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
             if (isNewPlaybackRequest) recordedMediaId = null
-            if (!refreshInFlight && player?.isPlaying == true && mediaItem != null) {
+            if (!isMediaReplacementInFlight && player?.isPlaying == true && mediaItem != null) {
                 // long: 分 P 队列切换时播放态可能始终为 true，必须在媒体项变化回调中单独登记新 cid 的播放历史。
                 recordStartedIfNeeded(mediaItem)
-                reportPlaybackHeartbeat(
-                    mediaItem = mediaItem,
-                    event = PlaybackHeartbeatEvent.START,
-                    positionMs = player?.currentPosition ?: 0L,
-                    durationMs = player?.duration ?: C.TIME_UNSET,
-                )
+                if (!isMediaReplacementInFlight) {
+                    reportPlaybackHeartbeat(
+                        mediaItem = mediaItem,
+                        event = PlaybackHeartbeatEvent.START,
+                        positionMs = player?.currentPosition ?: 0L,
+                        durationMs = player?.duration ?: C.TIME_UNSET,
+                    )
+                }
             }
         }
 
@@ -152,7 +211,12 @@ class PlaybackService : MediaSessionService() {
                 stopProgressPersistence()
                 persistCurrentProgress()
                 val activePlayer = player
-                if (activePlayer != null && !activePlayer.playWhenReady && activePlayer.playbackState != Player.STATE_ENDED) {
+                if (
+                    !isMediaReplacementInFlight &&
+                    activePlayer != null &&
+                    !activePlayer.playWhenReady &&
+                    activePlayer.playbackState != Player.STATE_ENDED
+                ) {
                     activePlayer.currentMediaItem?.let { mediaItem ->
                         reportPlaybackHeartbeat(
                             mediaItem = mediaItem,
@@ -191,7 +255,7 @@ class PlaybackService : MediaSessionService() {
                 Log.w(LOG_TAG, "DASH request failed: host=${failure.host}, code=${failure.code}")
             }
             if (error.isExpiredDashUrlError()) {
-                refreshCurrentBilibiliTrack()
+                refreshCurrentBilibiliTrack(error.failedDashUrl())
             }
         }
     }
@@ -204,8 +268,13 @@ class PlaybackService : MediaSessionService() {
             this,
             OkHttpDataSource.Factory(appContainer.bilibiliHttpClient),
         )
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-        val exoPlayer = ExoPlayer.Builder(this)
+        mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        val renderersFactory = DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
+            // long: Redmi 的 MTK OMX 异步队列在高 profile DASH 轨上会在播放中让 mediaserver 崩溃；同步适配器仍保留 Media3 的解码器回退能力。
+            .forceDisableMediaCodecAsynchronousQueueing()
+            .setMediaCodecSelector(mtkAvcSafeCodecSelector())
+        val exoPlayer = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
@@ -222,6 +291,33 @@ class PlaybackService : MediaSessionService() {
         restorePlaybackPreferences()
         observePlaybackPreferences()
         restorePlaybackQueue()
+    }
+
+    private fun mtkAvcSafeCodecSelector(): MediaCodecSelector {
+        return MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+            val defaultDecoders = MediaCodecSelector.DEFAULT.getDecoderInfos(
+                mimeType,
+                requiresSecureDecoder,
+                requiresTunnelingDecoder,
+            )
+            if (
+                mimeType == MimeTypes.VIDEO_H264 &&
+                defaultDecoders.firstOrNull()?.name?.startsWith("OMX.MTK.") == true
+            ) {
+                // long: 这台 MTK ROM 的软件 AVC 会在颜色转换线程原生崩溃；只保留厂商解码器，实际播放则优先选择同清晰度 HEVC 轨。
+                defaultDecoders.filterNot { decoder -> decoder.name.startsWith("c2.android.") }
+            } else {
+                defaultDecoders
+            }
+        }
+    }
+
+    private fun defaultAvcDecoderIsMtk(): Boolean {
+        return MediaCodecSelector.DEFAULT.getDecoderInfos(
+            MimeTypes.VIDEO_H264,
+            false,
+            false,
+        ).firstOrNull()?.name?.startsWith("OMX.MTK.") == true
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -277,35 +373,239 @@ class PlaybackService : MediaSessionService() {
         progressPersistenceJob = null
     }
 
-    private fun refreshCurrentBilibiliTrack() {
+    private fun refreshCurrentBilibiliTrack(failedUrl: String?) {
         val activePlayer = player ?: return
         val currentItem = activePlayer.currentMediaItem ?: return
         val source = currentItem.bilibiliSource() ?: return
-        if (refreshInFlight || retryConsumedForCurrentItem) return
+        if (isMediaReplacementInFlight || retryConsumedForCurrentItem) return
 
         refreshInFlight = true
         retryConsumedForCurrentItem = true
-        val mediaIndex = activePlayer.currentMediaItemIndex
-        val positionMs = activePlayer.currentPosition
-        val resumeAfterRefresh = activePlayer.playWhenReady
+        val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
         serviceScope.launch {
             runCatching {
-                appContainer.bilibiliRepository.resolveAudioStream(
+                resolvePlaybackStreamMetadata(
+                    mode = currentItem.playbackMediaMode(),
+                    source = source,
+                    failedUrl = failedUrl,
+                    requestedVideoQualityId = currentItem.playbackStreamMetadata()?.selectedVideoQualityId,
+                )
+            }.onSuccess { streamMetadata ->
+                // long: 网络解析期间用户可能已切歌或编辑队列；只有当前 bvid/cid 和索引仍一致时才允许替换媒体源。
+                if (target.matches(activePlayer)) {
+                    applyPlaybackStreamMetadata(activePlayer, target, streamMetadata)
+                }
+            }
+            refreshInFlight = false
+        }
+    }
+
+    private fun switchCurrentPlaybackMediaMode(mode: PlaybackMediaMode): ListenableFuture<SessionResult> {
+        val activePlayer = player
+            ?: return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "播放器尚未连接")
+        val currentItem = activePlayer.currentMediaItem
+            ?: return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "当前没有播放内容")
+        val source = currentItem.bilibiliSource()
+            ?: return immediateSessionResult(SessionError.ERROR_NOT_SUPPORTED, "本地音频不支持视频播放")
+        if (currentItem.playbackMediaMode() == mode) {
+            return immediateSessionResult(SessionResult.RESULT_SUCCESS)
+        }
+        if (isMediaReplacementInFlight) {
+            return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "正在切换播放类型")
+        }
+
+        return replaceCurrentPlaybackStream(
+            activePlayer = activePlayer,
+            currentItem = currentItem,
+            source = source,
+            mode = mode,
+            requestedVideoQualityId = null,
+            failureMessage = if (mode == PlaybackMediaMode.VIDEO) "视频地址解析失败" else "音频地址解析失败",
+        )
+    }
+
+    private fun switchCurrentVideoQuality(qualityId: Int): ListenableFuture<SessionResult> {
+        val activePlayer = player
+            ?: return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "播放器尚未连接")
+        val currentItem = activePlayer.currentMediaItem
+            ?: return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "当前没有播放内容")
+        val source = currentItem.bilibiliSource()
+            ?: return immediateSessionResult(SessionError.ERROR_NOT_SUPPORTED, "本地音频不支持视频画质切换")
+        val currentStream = currentItem.playbackStreamMetadata()
+        if (currentStream?.mode != PlaybackMediaMode.VIDEO) {
+            return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "请先切换到视频播放")
+        }
+        if (currentStream.selectedVideoQualityId == qualityId) {
+            return immediateSessionResult(SessionResult.RESULT_SUCCESS)
+        }
+        if (currentStream.availableVideoQualities.none { quality -> quality.qualityId == qualityId }) {
+            return immediateSessionResult(SessionError.ERROR_BAD_VALUE, "所选画质当前不可用")
+        }
+        if (isMediaReplacementInFlight) {
+            return immediateSessionResult(SessionError.ERROR_INVALID_STATE, "正在切换视频画质")
+        }
+
+        return replaceCurrentPlaybackStream(
+            activePlayer = activePlayer,
+            currentItem = currentItem,
+            source = source,
+            mode = PlaybackMediaMode.VIDEO,
+            requestedVideoQualityId = qualityId,
+            failureMessage = "视频画质切换失败",
+        )
+    }
+
+    private fun replaceCurrentPlaybackStream(
+        activePlayer: ExoPlayer,
+        currentItem: MediaItem,
+        source: BilibiliTrackSource,
+        mode: PlaybackMediaMode,
+        requestedVideoQualityId: Int?,
+        failureMessage: String,
+    ): ListenableFuture<SessionResult> {
+        mediaModeSwitchInFlight = true
+        val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
+        val future = SettableFuture.create<SessionResult>()
+        serviceScope.launch {
+            val result = runCatching {
+                resolvePlaybackStreamMetadata(
+                    mode = mode,
+                    source = source,
+                    failedUrl = null,
+                    requestedVideoQualityId = requestedVideoQualityId,
+                )
+            }.fold(
+                onSuccess = { streamMetadata ->
+                    if (!target.matches(activePlayer)) {
+                        SessionResult(SessionResult.RESULT_SUCCESS)
+                    } else {
+                        // long: 切换只重建当前分 P 的媒体源，保留完整队列、进度、倍速、循环模式和用户原来的播放/暂停意图。
+                        applyPlaybackStreamMetadata(activePlayer, target, streamMetadata)
+                        retryConsumedForCurrentItem = false
+                        SessionResult(SessionResult.RESULT_SUCCESS)
+                    }
+                },
+                onFailure = { error ->
+                    val message = (error as? BilibiliApiException)?.message?.takeIf(String::isNotBlank) ?: failureMessage
+                    SessionResult(SessionError.ERROR_IO, PlaybackSessionCommands.resultExtras(message))
+                },
+            )
+            mediaModeSwitchInFlight = false
+            future.set(result)
+        }
+        return future
+    }
+
+    private suspend fun resolvePlaybackStreamMetadata(
+        mode: PlaybackMediaMode,
+        source: BilibiliTrackSource,
+        failedUrl: String?,
+        requestedVideoQualityId: Int?,
+    ): PlaybackStreamMetadata {
+        return when (mode) {
+            PlaybackMediaMode.AUDIO -> {
+                val stream = appContainer.bilibiliRepository.resolveAudioStream(
                     source.bvid,
                     source.cid,
                     source.qualityPreference,
                 )
-            }.onSuccess { stream ->
-                // long: 主 CDN 失效时优先切换新解析地址或备用 CDN，同时保留标题、封面、队列位置和已播放进度。
-                val failedUrl = currentItem.localConfiguration?.uri?.toString().orEmpty()
-                val refreshedItem = currentItem.buildUpon().setUri(stream.replacementUrl(failedUrl)).build()
-                activePlayer.replaceMediaItem(mediaIndex, refreshedItem)
-                activePlayer.seekTo(mediaIndex, positionMs)
-                activePlayer.prepare()
-                // long: 冷启动恢复的队列默认保持暂停；过期地址刷新只能恢复原播放意图，不能擅自开始播放。
-                if (resumeAfterRefresh) activePlayer.play()
+                PlaybackStreamMetadata.audio(
+                    audioUrl = failedUrl?.let(stream::replacementUrl) ?: stream.url,
+                    qualityLabel = stream.qualityLabel,
+                )
             }
-            refreshInFlight = false
+            PlaybackMediaMode.VIDEO -> {
+                val streams = appContainer.bilibiliRepository.resolveVideoPlaybackStreams(
+                    source.bvid,
+                    source.cid,
+                    requestedVideoQualityId,
+                    videoCodecPreference,
+                )
+                PlaybackStreamMetadata.video(
+                    audioUrl = failedUrl?.let(streams.audio::replacementUrl) ?: streams.audio.url,
+                    videoUrl = failedUrl?.let(streams.video::replacementUrl) ?: streams.video.url,
+                    audioQualityLabel = streams.audio.qualityLabel,
+                    videoQualityLabel = streams.video.qualityLabel,
+                    selectedVideoQualityId = streams.video.qualityId,
+                    availableVideoQualities = streams.availableVideos.map { video ->
+                        PlaybackVideoQuality(video.qualityId, video.qualityLabel)
+                    },
+                )
+            }
+        }
+    }
+
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun applyPlaybackStreamMetadata(
+        activePlayer: ExoPlayer,
+        target: PlaybackMediaSwitchTarget,
+        stream: PlaybackStreamMetadata,
+    ) {
+        val currentItem = activePlayer.currentMediaItem ?: return
+        val replacementItem = when (stream.mode) {
+            PlaybackMediaMode.AUDIO -> currentItem.withAudioPlaybackStream(
+                audioUrl = stream.audioUrl,
+                qualityLabel = stream.audioQualityLabel,
+            )
+            PlaybackMediaMode.VIDEO -> currentItem.withVideoPlaybackStreams(
+                audioUrl = stream.audioUrl,
+                videoUrl = stream.videoUrl.orEmpty(),
+                audioQualityLabel = stream.audioQualityLabel,
+                videoQualityLabel = stream.videoQualityLabel,
+                selectedVideoQualityId = stream.selectedVideoQualityId,
+                availableVideoQualities = stream.availableVideoQualities,
+            )
+        }
+        if (stream.mode == PlaybackMediaMode.VIDEO) {
+            val sources = (0 until activePlayer.mediaItemCount).map { index ->
+                val item = if (index == target.mediaIndex) replacementItem else activePlayer.getMediaItemAt(index)
+                createPlaybackMediaSource(item)
+            }
+            activePlayer.setMediaSources(sources, target.mediaIndex, target.positionMs)
+        } else {
+            activePlayer.replaceMediaItem(target.mediaIndex, replacementItem)
+            activePlayer.seekTo(target.mediaIndex, target.positionMs)
+        }
+        activePlayer.prepare()
+        // long: 暂停状态切视频只预加载画面，不得因为媒体源重建而擅自开始播放。
+        if (target.playWhenReady) activePlayer.play() else activePlayer.pause()
+    }
+
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun createPlaybackMediaSource(mediaItem: MediaItem): MediaSource {
+        val stream = mediaItem.playbackStreamMetadata()
+        if (stream?.mode != PlaybackMediaMode.VIDEO || stream.videoUrl.isNullOrBlank()) {
+            return mediaSourceFactory.createMediaSource(mediaItem)
+        }
+        val videoItem = mediaItem.withVideoPlaybackStreams(
+            audioUrl = stream.audioUrl,
+            videoUrl = stream.videoUrl,
+            audioQualityLabel = stream.audioQualityLabel,
+            videoQualityLabel = stream.videoQualityLabel,
+            selectedVideoQualityId = stream.selectedVideoQualityId,
+            availableVideoQualities = stream.availableVideoQualities,
+        )
+        val audioItem = MediaItem.Builder()
+            .setMediaId("${mediaItem.mediaId}:audio-companion")
+            .setUri(stream.audioUrl)
+            .build()
+        return MergingMediaSource(
+            true,
+            true,
+            mediaSourceFactory.createMediaSource(videoItem),
+            mediaSourceFactory.createMediaSource(audioItem),
+        )
+    }
+
+    private fun immediateSessionResult(resultCode: Int, message: String? = null): ListenableFuture<SessionResult> {
+        return SettableFuture.create<SessionResult>().apply {
+            set(
+                if (message == null) {
+                    SessionResult(resultCode)
+                } else {
+                    SessionResult(resultCode, PlaybackSessionCommands.resultExtras(message))
+                },
+            )
         }
     }
 
@@ -523,6 +823,18 @@ private fun PlaybackException.isExpiredDashUrlError(): Boolean {
     return false
 }
 
+@UnstableApi
+private fun PlaybackException.failedDashUrl(): String? {
+    var current: Throwable? = this
+    while (current != null) {
+        if (current is HttpDataSource.InvalidResponseCodeException) {
+            return current.dataSpec.uri.toString()
+        }
+        current = current.cause
+    }
+    return null
+}
+
 class ControllerTrustPolicy(
     private val applicationPackage: String,
     private val applicationUid: Int,
@@ -539,6 +851,37 @@ class ControllerTrustPolicy(
 }
 
 private data class DashHttpFailure(val host: String, val code: Int)
+
+private data class PlaybackMediaSwitchTarget(
+    val mediaId: String,
+    val mediaIndex: Int,
+    val bvid: String,
+    val cid: Long,
+    val positionMs: Long,
+    val playWhenReady: Boolean,
+) {
+    fun matches(player: ExoPlayer): Boolean {
+        val currentItem = player.currentMediaItem ?: return false
+        val currentSource = currentItem.bilibiliSource() ?: return false
+        return player.currentMediaItemIndex == mediaIndex &&
+            currentItem.mediaId == mediaId &&
+            currentSource.bvid == bvid &&
+            currentSource.cid == cid
+    }
+
+    companion object {
+        fun capture(player: ExoPlayer, mediaItem: MediaItem, bvid: String, cid: Long): PlaybackMediaSwitchTarget {
+            return PlaybackMediaSwitchTarget(
+                mediaId = mediaItem.mediaId,
+                mediaIndex = player.currentMediaItemIndex,
+                bvid = bvid,
+                cid = cid,
+                positionMs = player.currentPosition.coerceAtLeast(0L),
+                playWhenReady = player.playWhenReady,
+            )
+        }
+    }
+}
 
 private data class ActiveHeartbeatSession(
     val mediaId: String,
