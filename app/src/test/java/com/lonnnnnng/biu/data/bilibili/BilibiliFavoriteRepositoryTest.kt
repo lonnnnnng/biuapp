@@ -32,6 +32,7 @@ class BilibiliFavoriteRepositoryTest {
                 {
                   "code": 0,
                   "data": {
+                    "info": {"media_count": 2},
                     "has_more": true,
                     "medias": [
                       {"id": 1, "type": 2, "attr": 0, "bvid": "BV1PAGE1", "title": "第一条", "upper": {"name": "UP1"}},
@@ -67,6 +68,33 @@ class BilibiliFavoriteRepositoryTest {
         assertEquals("1", first.queryParameter("pn"))
         assertEquals("2", second.queryParameter("pn"))
         assertEquals("20", first.queryParameter("ps"))
+    }
+
+    @Test
+    fun `普通收藏夹详情解析服务端内容数量`() = runBlocking {
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "info": {"media_count": 23},
+                    "has_more": true,
+                    "medias": [
+                      {"id": 1, "type": 2, "attr": 0, "bvid": "BV1COUNT", "title": "计数样本", "upper": {"name": "UP"}}
+                    ]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val page = repository.favoriteVideoPage(folderId = 99L)
+
+        assertEquals(23, page.mediaCount)
+        assertTrue(page.hasMore)
+        assertEquals("BV1COUNT", page.videos.single().video.bvid)
     }
 
     @Test
@@ -111,11 +139,13 @@ class BilibiliFavoriteRepositoryTest {
 
         assertEquals(BilibiliFavoriteFolderGroup.CREATED, created.single().group)
         assertEquals(BilibiliFavoriteFolderType.VIDEO_FOLDER, created.single().type)
+        assertTrue(created.single().isUserManaged)
         assertEquals(
             listOf(BilibiliFavoriteFolderType.VIDEO_FOLDER, BilibiliFavoriteFolderType.VIDEO_COLLECTION),
             collected.map(BilibiliFavoriteFolder::type),
         )
         assertTrue(collected.all { folder -> folder.group == BilibiliFavoriteFolderGroup.COLLECTED })
+        assertTrue(collected.none(BilibiliFavoriteFolder::isUserManaged))
         assertEquals(listOf("歌单作者", "合集作者"), collected.map(BilibiliFavoriteFolder::ownerName))
 
         val createdRequest = server.takeRequest().requestUrl!!
@@ -173,6 +203,7 @@ class BilibiliFavoriteRepositoryTest {
 
         assertEquals("BV1SEASON", videos.single().video.bvid)
         assertEquals("合集作者", videos.single().video.author)
+        assertEquals(1, page.mediaCount)
         assertFalse(page.hasMore)
         assertEquals("/x/web-interface/nav", server.takeRequest().requestUrl!!.encodedPath)
         val seasonRequest = server.takeRequest().requestUrl!!
@@ -180,6 +211,102 @@ class BilibiliFavoriteRepositoryTest {
         assertEquals("300", seasonRequest.queryParameter("season_id"))
         assertEquals("1", seasonRequest.queryParameter("pn"))
         assertTrue(seasonRequest.queryParameter("w_rid").orEmpty().isNotBlank())
+    }
+
+    @Test
+    fun `收藏夹新建重命名删除使用CSRF表单`() = runBlocking {
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {"id": 501, "title": "新收藏夹", "cover": "", "media_count": 0, "mid": 7}
+                }
+                """.trimIndent(),
+            ),
+        )
+        server.enqueue(jsonResponse("{\"code\":0,\"message\":\"0\"}"))
+        server.enqueue(jsonResponse("{\"code\":0,\"message\":\"0\"}"))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            apiBase = server.url("/"),
+            csrfProvider = { "csrf-token" },
+        )
+
+        val created = repository.createFavoriteFolder(" 新收藏夹 ")
+        repository.renameFavoriteFolder(folderId = created.id, title = "改名后")
+        repository.deleteFavoriteFolder(created.id)
+
+        assertEquals(501L, created.id)
+        assertEquals(BilibiliFavoriteFolderGroup.CREATED, created.group)
+        assertEquals(BilibiliFavoriteFolderType.VIDEO_FOLDER, created.type)
+        val createRequest = server.takeRequest()
+        assertEquals("/x/v3/fav/folder/add", createRequest.requestUrl!!.encodedPath)
+        assertEquals("title=%E6%96%B0%E6%94%B6%E8%97%8F%E5%A4%B9&privacy=0&csrf=csrf-token", createRequest.body.readUtf8())
+        val renameRequest = server.takeRequest()
+        assertEquals("/x/v3/fav/folder/edit", renameRequest.requestUrl!!.encodedPath)
+        assertEquals("media_id=501&title=%E6%94%B9%E5%90%8D%E5%90%8E&csrf=csrf-token", renameRequest.body.readUtf8())
+        val deleteRequest = server.takeRequest()
+        assertEquals("/x/v3/fav/folder/del", deleteRequest.requestUrl!!.encodedPath)
+        assertEquals("media_ids=501&csrf=csrf-token", deleteRequest.body.readUtf8())
+    }
+
+    @Test
+    fun `视频加入和移出收藏夹使用同一deal接口`() = runBlocking {
+        server.enqueue(jsonResponse("{\"code\":0,\"message\":\"0\"}"))
+        server.enqueue(jsonResponse("{\"code\":0,\"message\":\"0\"}"))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            apiBase = server.url("/"),
+            csrfProvider = { "csrf-token" },
+        )
+
+        repository.addVideoToFavorite(aid = 9988L, folderId = 501L)
+        repository.removeVideoFromFavorite(aid = 9988L, folderId = 501L)
+
+        val addRequest = server.takeRequest()
+        assertEquals("/x/v3/fav/resource/deal", addRequest.requestUrl!!.encodedPath)
+        assertEquals(
+            "rid=9988&type=2&add_media_ids=501&platform=web&ga=1&gaia_source=web_normal&csrf=csrf-token",
+            addRequest.body.readUtf8(),
+        )
+        val removeRequest = server.takeRequest()
+        assertEquals("/x/v3/fav/resource/deal", removeRequest.requestUrl!!.encodedPath)
+        assertEquals(
+            "rid=9988&type=2&del_media_ids=501&platform=web&ga=1&gaia_source=web_normal&csrf=csrf-token",
+            removeRequest.body.readUtf8(),
+        )
+    }
+
+    @Test
+    fun `收藏夹成员关系返回视频是否已存在及权威数量`() = runBlocking {
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "count": 2,
+                    "list": [
+                      {"id": 501, "title": "已收藏", "media_count": 8, "mid": 7, "fav_state": 1},
+                      {"id": 502, "title": "未收藏", "media_count": 3, "mid": 7, "fav_state": 0}
+                    ]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val memberships = repository.createdFavoriteFolderMemberships(mid = 7L, aid = 9988L)
+
+        assertEquals(listOf(true, false), memberships.map(BilibiliFavoriteFolderMembership::containsVideo))
+        assertEquals(listOf(8, 3), memberships.map { membership -> membership.folder.mediaCount })
+        val request = server.takeRequest().requestUrl!!
+        assertEquals("/x/v3/fav/folder/created/list-all", request.encodedPath)
+        assertEquals("7", request.queryParameter("up_mid"))
+        assertEquals("2", request.queryParameter("type"))
+        assertEquals("9988", request.queryParameter("rid"))
     }
 
     private fun jsonResponse(body: String) = MockResponse()

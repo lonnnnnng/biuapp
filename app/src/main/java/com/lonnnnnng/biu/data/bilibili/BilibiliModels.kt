@@ -85,6 +85,15 @@ data class BilibiliFavoriteFolder(
     val group: BilibiliFavoriteFolderGroup = BilibiliFavoriteFolderGroup.CREATED,
     val ownerMid: Long = 0L,
     val ownerName: String = "",
+) {
+    /** long: 只有账号本人创建的普通收藏夹支持写操作；收藏的视频合集和他人收藏夹始终只读。 */
+    val isUserManaged: Boolean
+        get() = group == BilibiliFavoriteFolderGroup.CREATED && type == BilibiliFavoriteFolderType.VIDEO_FOLDER
+}
+
+data class BilibiliFavoriteFolderMembership(
+    val folder: BilibiliFavoriteFolder,
+    val containsVideo: Boolean,
 )
 
 data class BilibiliLibraryVideo(
@@ -115,6 +124,7 @@ data class BilibiliOnlineHistorySearchPage(
 data class BilibiliFavoriteVideoPage(
     val videos: List<BilibiliLibraryVideo>,
     val hasMore: Boolean,
+    val mediaCount: Int? = null,
 )
 
 data class WbiKeys(

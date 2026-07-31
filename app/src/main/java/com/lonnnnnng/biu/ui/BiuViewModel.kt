@@ -103,6 +103,7 @@ data class BiuUiState(
     val collectedFavoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
     val selectedFavoriteFolder: BilibiliFavoriteFolder? = null,
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
+    val favoriteNextPage: Int? = null,
     val onlineHistoryQuery: String = "",
     val onlineHistoryNextCursor: BilibiliOnlineHistoryCursor? = null,
     val onlineHistoryNextSearchPage: Int? = null,
@@ -124,6 +125,8 @@ data class BiuUiState(
     val isSearchLoading: Boolean = false,
     val isAccountLoading: Boolean = true,
     val isLibraryLoading: Boolean = false,
+    val isFavoriteLoadingMore: Boolean = false,
+    val isFavoriteMutating: Boolean = false,
     val isOnlineHistoryLoadingMore: Boolean = false,
     val isOnlineHistoryMutating: Boolean = false,
     val isFavoriteBatchLoading: Boolean = false,
@@ -146,6 +149,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
     private var favoriteBatchLoadJob: Job? = null
+    private var favoriteFolderJob: Job? = null
     private var onlineHistoryJob: Job? = null
     private var localAudioJob: Job? = null
     private var localAudioDirectoryInitializationJob: Job? = null
@@ -513,6 +517,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     AccountLibrarySection.LOCAL_MUSIC,
                 ),
                 selectedFavoriteFolder = if (section == AccountLibrarySection.FAVORITES) it.selectedFavoriteFolder else null,
+                favoriteNextPage = if (section == AccountLibrarySection.FAVORITES) it.favoriteNextPage else null,
+                isFavoriteLoadingMore = false,
                 libraryVideos = if (section in setOf(
                         AccountLibrarySection.LOCAL_HISTORY,
                         AccountLibrarySection.LOCAL_MUSIC,
@@ -544,17 +550,14 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 when (section) {
                     AccountLibrarySection.FAVORITES -> {
                         // long: 两个收藏分组来自独立接口，并行加载可避免“我收藏的”拖慢整个账号页首屏。
-                        val (createdFolders, collectedFolders) = coroutineScope {
-                            val created = async { repository.createdFavoriteFolders(account.mid) }
-                            val collected = async { repository.collectedFavoriteFolders(account.mid) }
-                            created.await() to collected.await()
-                        }
+                        val (createdFolders, collectedFolders) = favoriteFolders(account.mid)
                         mutableState.update {
                             it.copy(
                                 createdFavoriteFolders = createdFolders,
                                 collectedFavoriteFolders = collectedFolders,
                                 selectedFavoriteFolder = null,
                                 libraryVideos = emptyList(),
+                                favoriteNextPage = null,
                                 isLibraryLoading = false,
                             )
                         }
@@ -914,22 +917,197 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openFavoriteFolder(folder: BilibiliFavoriteFolder) {
-        mutableState.update { it.copy(selectedFavoriteFolder = folder, isLibraryLoading = true, libraryVideos = emptyList()) }
-        viewModelScope.launch {
-            runCatching { repository.favoriteVideos(folder) }
-                .onSuccess { videos ->
-                    mutableState.update { it.copy(libraryVideos = videos, isLibraryLoading = false) }
-                }
-                .onFailure { error ->
-                    mutableState.update {
-                        it.copy(isLibraryLoading = false, message = error.userMessage("收藏夹内容加载失败"))
-                    }
-                }
+        favoriteFolderJob?.cancel()
+        mutableState.update {
+            it.copy(
+                selectedFavoriteFolder = folder,
+                isLibraryLoading = true,
+                isFavoriteLoadingMore = false,
+                favoriteNextPage = null,
+                libraryVideos = emptyList(),
+                message = null,
+            )
         }
+        loadFavoriteFolderPage(folder = folder, page = 1, reset = true)
+    }
+
+    fun loadMoreFavoriteFolder() {
+        val current = state.value
+        val folder = current.selectedFavoriteFolder ?: return
+        val nextPage = current.favoriteNextPage ?: return
+        if (current.isLibraryLoading || current.isFavoriteLoadingMore || current.isFavoriteMutating) return
+        loadFavoriteFolderPage(folder = folder, page = nextPage, reset = false)
     }
 
     fun closeFavoriteFolder() {
-        mutableState.update { it.copy(selectedFavoriteFolder = null, libraryVideos = emptyList()) }
+        favoriteFolderJob?.cancel()
+        favoriteFolderJob = null
+        mutableState.update {
+            it.copy(
+                selectedFavoriteFolder = null,
+                libraryVideos = emptyList(),
+                favoriteNextPage = null,
+                isLibraryLoading = false,
+                isFavoriteLoadingMore = false,
+            )
+        }
+    }
+
+    fun createFavoriteFolder(title: String) {
+        if (!beginFavoriteMutation()) return
+        viewModelScope.launch {
+            runCatching { repository.createFavoriteFolder(title) }
+                .onSuccess { folder ->
+                    mutableState.update { current ->
+                        current.copy(
+                            createdFavoriteFolders = listOf(folder) + current.createdFavoriteFolders
+                                .filterNot { item -> item.id == folder.id },
+                            isFavoriteMutating = false,
+                            message = "已新建收藏夹“${folder.title}”",
+                        )
+                    }
+                }
+                .onFailure { error -> handleFavoriteMutationFailure(error, "新建收藏夹失败") }
+        }
+    }
+
+    fun renameFavoriteFolder(folder: BilibiliFavoriteFolder, title: String) {
+        if (!requireManagedFavoriteFolder(folder) || !beginFavoriteMutation()) return
+        val normalizedTitle = title.trim()
+        viewModelScope.launch {
+            runCatching { repository.renameFavoriteFolder(folder.id, normalizedTitle) }
+                .onSuccess {
+                    mutableState.update { current ->
+                        val renamed = folder.copy(title = normalizedTitle)
+                        current.copy(
+                            createdFavoriteFolders = current.createdFavoriteFolders.map { item ->
+                                if (item.id == folder.id) item.copy(title = normalizedTitle) else item
+                            },
+                            selectedFavoriteFolder = current.selectedFavoriteFolder
+                                ?.let { selected -> if (selected.id == folder.id) renamed else selected },
+                            isFavoriteMutating = false,
+                            message = "收藏夹已重命名",
+                        )
+                    }
+                }
+                .onFailure { error -> handleFavoriteMutationFailure(error, "重命名收藏夹失败") }
+        }
+    }
+
+    fun deleteFavoriteFolder(folder: BilibiliFavoriteFolder) {
+        if (!requireManagedFavoriteFolder(folder) || !beginFavoriteMutation()) return
+        viewModelScope.launch {
+            runCatching { repository.deleteFavoriteFolder(folder.id) }
+                .onSuccess {
+                    if (state.value.selectedFavoriteFolder?.id == folder.id) {
+                        // long: 删除当前打开的收藏夹后，详情请求已经失去归属，必须同步终止并收起加载态。
+                        favoriteFolderJob?.cancel()
+                        favoriteFolderJob = null
+                    }
+                    mutableState.update { current ->
+                        val deletingSelected = current.selectedFavoriteFolder?.id == folder.id
+                        current.copy(
+                            createdFavoriteFolders = current.createdFavoriteFolders.filterNot { item -> item.id == folder.id },
+                            selectedFavoriteFolder = current.selectedFavoriteFolder.takeUnless { deletingSelected },
+                            libraryVideos = if (deletingSelected) emptyList() else current.libraryVideos,
+                            favoriteNextPage = if (deletingSelected) null else current.favoriteNextPage,
+                            isLibraryLoading = if (deletingSelected) false else current.isLibraryLoading,
+                            isFavoriteLoadingMore = if (deletingSelected) false else current.isFavoriteLoadingMore,
+                            isFavoriteMutating = false,
+                            message = "收藏夹已删除",
+                        )
+                    }
+                }
+                .onFailure { error -> handleFavoriteMutationFailure(error, "删除收藏夹失败") }
+        }
+    }
+
+    fun addVideoToFavorite(video: BilibiliVideo, folder: BilibiliFavoriteFolder) {
+        if (!requireManagedFavoriteFolder(folder) || !beginFavoriteMutation()) return
+        viewModelScope.launch {
+            try {
+                val aid = video.aid ?: repository.videoDetail(video.bvid).aid
+                    ?: throw BilibiliApiException(-400, "视频缺少 aid")
+                val membership = favoriteFolderMembership(aid, folder.id)
+                if (membership?.containsVideo == true) {
+                    mutableState.update { current ->
+                        current.copy(
+                            createdFavoriteFolders = current.createdFavoriteFolders.updateFolderCount(
+                                folder,
+                                membership.folder.mediaCount,
+                            ),
+                            isFavoriteMutating = false,
+                            message = "已在“${folder.title}”中",
+                        )
+                    }
+                    return@launch
+                }
+                repository.addVideoToFavorite(aid = aid, folderId = folder.id)
+                mutableState.update { current ->
+                    val currentCount = current.createdFavoriteFolders
+                        .firstOrNull { existing -> existing.id == folder.id }
+                        ?.mediaCount ?: folder.mediaCount
+                    // long: list-all 在提交前给出该视频是否已存在；只有明确新增成功时才递增，规避重复收藏导致的虚高计数。
+                    val refreshedCount = (membership?.folder?.mediaCount ?: currentCount) + 1
+                    current.copy(
+                        createdFavoriteFolders = current.createdFavoriteFolders.map { existing ->
+                            if (existing.id == folder.id) existing.copy(mediaCount = refreshedCount) else existing
+                        },
+                        isFavoriteMutating = false,
+                        message = "已加入“${folder.title}”",
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                handleFavoriteMutationFailure(error, "加入收藏夹失败")
+            }
+        }
+    }
+
+    fun removeVideoFromFavorite(item: BilibiliLibraryVideo) {
+        val folder = state.value.selectedFavoriteFolder ?: return
+        if (!requireManagedFavoriteFolder(folder) || !beginFavoriteMutation()) return
+        viewModelScope.launch {
+            try {
+                val aid = item.video.aid ?: repository.videoDetail(item.video.bvid).aid
+                    ?: throw BilibiliApiException(-400, "视频缺少 aid")
+                val membership = favoriteFolderMembership(aid, folder.id)
+                repository.removeVideoFromFavorite(aid = aid, folderId = folder.id)
+                mutableState.update { current ->
+                    val currentCount = current.selectedFavoriteFolder?.mediaCount ?: folder.mediaCount
+                    // long: 移出接口后的元数据存在短暂缓存，使用操作前的成员关系扣减才能让空夹标题立即归零。
+                    val refreshedCount = if (membership?.containsVideo == true) {
+                        (membership.folder.mediaCount - 1).coerceAtLeast(0)
+                    } else {
+                        (currentCount - 1).coerceAtLeast(0)
+                    }
+                    if (current.selectedFavoriteFolder?.id != folder.id) {
+                        current.copy(
+                            createdFavoriteFolders = current.createdFavoriteFolders.map { existing ->
+                                if (existing.id == folder.id) existing.copy(mediaCount = refreshedCount) else existing
+                            },
+                            isFavoriteMutating = false,
+                            message = "已从“${folder.title}”移出",
+                        )
+                    } else {
+                        current.copy(
+                            createdFavoriteFolders = current.createdFavoriteFolders.map { existing ->
+                                if (existing.id == folder.id) existing.copy(mediaCount = refreshedCount) else existing
+                            },
+                            selectedFavoriteFolder = current.selectedFavoriteFolder.copy(mediaCount = refreshedCount),
+                            libraryVideos = current.libraryVideos.filterNot { video -> video.video.bvid == item.video.bvid },
+                            isFavoriteMutating = false,
+                            message = "已从“${folder.title}”移出",
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                handleFavoriteMutationFailure(error, "移出收藏夹失败")
+            }
+        }
     }
 
     fun clearLocalHistory() {
@@ -1119,6 +1297,124 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(libraryVideos = videos, isLibraryLoading = false) }
     }
 
+    private suspend fun favoriteFolders(mid: Long): Pair<List<BilibiliFavoriteFolder>, List<BilibiliFavoriteFolder>> =
+        coroutineScope {
+            val created = async { repository.createdFavoriteFolders(mid) }
+            val collected = async { repository.collectedFavoriteFolders(mid) }
+            created.await() to collected.await()
+        }
+
+    private fun loadFavoriteFolderPage(folder: BilibiliFavoriteFolder, page: Int, reset: Boolean) {
+        if (reset) favoriteFolderJob?.cancel()
+        mutableState.update {
+            it.copy(
+                isLibraryLoading = reset,
+                isFavoriteLoadingMore = !reset,
+                message = null,
+            )
+        }
+        favoriteFolderJob = viewModelScope.launch {
+            try {
+                val loaded = loadPlayableFavoritePage(folder, page)
+                mutableState.update { current ->
+                    val selected = current.selectedFavoriteFolder
+                    if (selected?.id != folder.id || selected.group != folder.group || selected.type != folder.type) {
+                        current
+                    } else {
+                        val videos = if (reset) {
+                            loaded.videos
+                        } else {
+                            (current.libraryVideos + loaded.videos).distinctBy { item -> item.video.bvid }
+                        }
+                        current.copy(
+                            libraryVideos = videos,
+                            favoriteNextPage = loaded.nextPage,
+                            createdFavoriteFolders = current.createdFavoriteFolders.updateFolderCount(folder, loaded.mediaCount),
+                            collectedFavoriteFolders = current.collectedFavoriteFolders.updateFolderCount(folder, loaded.mediaCount),
+                            selectedFavoriteFolder = selected.copy(
+                                mediaCount = loaded.mediaCount ?: selected.mediaCount,
+                            ),
+                            isLibraryLoading = false,
+                            isFavoriteLoadingMore = false,
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    if (current.selectedFavoriteFolder?.id != folder.id) {
+                        current
+                    } else {
+                        current.copy(
+                            isLibraryLoading = false,
+                            isFavoriteLoadingMore = false,
+                            message = error.userMessage("收藏夹内容加载失败"),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun loadPlayableFavoritePage(
+        folder: BilibiliFavoriteFolder,
+        startPage: Int,
+    ): FavoriteFolderLoadResult {
+        var page = startPage.coerceAtLeast(1)
+        repeat(MAX_EMPTY_FAVORITE_PAGES) {
+            val result = repository.favoriteVideoPage(folder, page)
+            if (result.videos.isNotEmpty() || !result.hasMore) {
+                return FavoriteFolderLoadResult(
+                    videos = result.videos,
+                    nextPage = (page + 1).takeIf { result.hasMore },
+                    mediaCount = result.mediaCount,
+                )
+            }
+            // long: 某一页可能全部是失效资源；继续沿服务端分页读取，避免页面错误显示“暂无内容”。
+            page += 1
+        }
+        throw BilibiliApiException(-429, "连续失效收藏内容过多，请稍后重试")
+    }
+
+    private fun beginFavoriteMutation(): Boolean {
+        if (state.value.isFavoriteMutating) return false
+        mutableState.update { it.copy(isFavoriteMutating = true, message = null) }
+        return true
+    }
+
+    private suspend fun favoriteFolderMembership(
+        aid: Long,
+        folderId: Long,
+    ) = state.value.account.mid
+        .takeIf { mid -> mid > 0L }
+        ?.let { mid -> repository.createdFavoriteFolderMemberships(mid, aid) }
+        ?.firstOrNull { membership -> membership.folder.id == folderId }
+
+    private fun requireManagedFavoriteFolder(folder: BilibiliFavoriteFolder): Boolean {
+        if (folder.isUserManaged) return true
+        mutableState.update { it.copy(message = "“我收藏的”和视频合集为只读内容") }
+        return false
+    }
+
+    private fun handleFavoriteMutationFailure(error: Throwable, fallback: String) {
+        if (error is BilibiliApiException && error.code == -101) {
+            clearOnlineLibrary()
+            mutableState.update {
+                it.copy(
+                    account = BilibiliAccount(false, "", ""),
+                    isFavoriteMutating = false,
+                    message = "登录已失效，请重新登录",
+                )
+            }
+            refreshAccount()
+            return
+        }
+        mutableState.update {
+            it.copy(isFavoriteMutating = false, message = error.userMessage(fallback))
+        }
+    }
+
     private fun loadOnlineHistory(reset: Boolean) {
         val account = state.value.account
         if (!account.isLoggedIn) {
@@ -1283,12 +1579,15 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         onlineHistoryJob = null
         favoriteBatchLoadJob?.cancel()
         favoriteBatchLoadJob = null
+        favoriteFolderJob?.cancel()
+        favoriteFolderJob = null
         mutableState.update {
             it.copy(
                 createdFavoriteFolders = emptyList(),
                 collectedFavoriteFolders = emptyList(),
                 selectedFavoriteFolder = null,
                 libraryVideos = emptyList(),
+                favoriteNextPage = null,
                 onlineHistoryQuery = "",
                 onlineHistoryNextCursor = null,
                 onlineHistoryNextSearchPage = null,
@@ -1297,10 +1596,32 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 favoriteBatchVideos = emptyList(),
                 isFavoriteBatchLoading = false,
                 isFavoriteBatchSubmitting = false,
+                isFavoriteLoadingMore = false,
+                isFavoriteMutating = false,
                 isLibraryLoading = false,
                 isOnlineHistoryLoadingMore = false,
                 isOnlineHistoryMutating = false,
             )
+        }
+    }
+}
+
+private data class FavoriteFolderLoadResult(
+    val videos: List<BilibiliLibraryVideo>,
+    val nextPage: Int?,
+    val mediaCount: Int?,
+)
+
+private fun List<BilibiliFavoriteFolder>.updateFolderCount(
+    folder: BilibiliFavoriteFolder,
+    mediaCount: Int?,
+): List<BilibiliFavoriteFolder> {
+    if (mediaCount == null) return this
+    return map { existing ->
+        if (existing.id == folder.id && existing.group == folder.group && existing.type == folder.type) {
+            existing.copy(mediaCount = mediaCount)
+        } else {
+            existing
         }
     }
 }
@@ -1339,3 +1660,5 @@ private val VIDEO_ACTIVE_DOWNLOAD_STATUSES = setOf(
     VideoDownloadStatus.MUXING,
     VideoDownloadStatus.PUBLISHING,
 )
+
+private const val MAX_EMPTY_FAVORITE_PAGES = 100

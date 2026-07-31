@@ -134,6 +134,76 @@ class BilibiliRepository(
         )
     }
 
+    suspend fun createFavoriteFolder(title: String): BilibiliFavoriteFolder {
+        val normalizedTitle = requireFavoriteFolderTitle(title)
+        val root = postForm(
+            path = "/x/v3/fav/folder/add",
+            parameters = mapOf(
+                "title" to normalizedTitle,
+                "privacy" to "0",
+                "csrf" to requireCsrf(),
+            ),
+        ).requireSuccess()
+        return root.optJSONObject("data")
+            ?.let { data -> parseFavoriteFolder(data, BilibiliFavoriteFolderGroup.CREATED) }
+            ?: throw BilibiliApiException(-1, "新建收藏夹后未返回收藏夹信息")
+    }
+
+    suspend fun renameFavoriteFolder(folderId: Long, title: String) {
+        require(folderId > 0L) { "收藏夹 id 无效" }
+        postForm(
+            path = "/x/v3/fav/folder/edit",
+            parameters = mapOf(
+                "media_id" to folderId.toString(),
+                "title" to requireFavoriteFolderTitle(title),
+                "csrf" to requireCsrf(),
+            ),
+        ).requireSuccess()
+    }
+
+    suspend fun deleteFavoriteFolder(folderId: Long) {
+        require(folderId > 0L) { "收藏夹 id 无效" }
+        postForm(
+            path = "/x/v3/fav/folder/del",
+            parameters = mapOf(
+                "media_ids" to folderId.toString(),
+                "csrf" to requireCsrf(),
+            ),
+        ).requireSuccess()
+    }
+
+    suspend fun addVideoToFavorite(aid: Long, folderId: Long) {
+        updateVideoFavorite(aid = aid, folderId = folderId, adding = true)
+    }
+
+    suspend fun removeVideoFromFavorite(aid: Long, folderId: Long) {
+        updateVideoFavorite(aid = aid, folderId = folderId, adding = false)
+    }
+
+    suspend fun createdFavoriteFolderMemberships(
+        mid: Long,
+        aid: Long,
+    ): List<BilibiliFavoriteFolderMembership> {
+        require(mid > 0L) { "账号 mid 无效" }
+        require(aid > 0L) { "视频 aid 无效" }
+        val data = request(
+            path = "/x/v3/fav/folder/created/list-all",
+            parameters = mapOf(
+                "up_mid" to mid,
+                "type" to "2",
+                "rid" to aid,
+            ),
+        ).requireSuccess().optJSONObject("data") ?: JSONObject()
+        return data.optJSONArray("list").toObjects().mapNotNull { item ->
+            parseFavoriteFolder(item, BilibiliFavoriteFolderGroup.CREATED)?.let { folder ->
+                BilibiliFavoriteFolderMembership(
+                    folder = folder,
+                    containsVideo = item.optInt("fav_state", 0) == 1,
+                )
+            }
+        }
+    }
+
     private suspend fun favoriteFolders(
         mid: Long,
         path: String,
@@ -198,6 +268,7 @@ class BilibiliRepository(
         val data = root.optJSONObject("data") ?: JSONObject()
         val rawMedias = data.optJSONArray("medias")
         val videos = rawMedias.toObjects().mapNotNull(::parseFavoriteVideo)
+        val info = data.optJSONObject("info")
         return BilibiliFavoriteVideoPage(
             videos = videos,
             // long: 失效稿件会被播放器过滤，是否继续翻页必须使用接口原始 has_more，不能按过滤后的可播放数量提前停止。
@@ -206,6 +277,10 @@ class BilibiliRepository(
             } else {
                 (rawMedias?.length() ?: 0) >= FAVORITE_PAGE_SIZE
             },
+            mediaCount = info
+                ?.takeIf { metadata -> metadata.has("media_count") }
+                ?.optInt("media_count", 0)
+                ?.coerceAtLeast(0),
         )
     }
 
@@ -223,7 +298,11 @@ class BilibiliRepository(
         val data = root.optJSONObject("data") ?: JSONObject()
         val rawMedias = data.optJSONArray("medias")
         val videos = rawMedias.toObjects().mapNotNull(::parseFavoriteCollectionVideo)
-        val total = data.optJSONObject("info")?.optInt("media_count", 0)?.coerceAtLeast(0) ?: 0
+        val mediaCount = data.optJSONObject("info")
+            ?.takeIf { metadata -> metadata.has("media_count") }
+            ?.optInt("media_count", 0)
+            ?.coerceAtLeast(0)
+        val total = mediaCount ?: 0
         val rawCount = rawMedias?.length() ?: 0
         return BilibiliFavoriteVideoPage(
             videos = videos,
@@ -234,6 +313,7 @@ class BilibiliRepository(
                 total > 0 -> rawCount == FAVORITE_PAGE_SIZE && page * FAVORITE_PAGE_SIZE < total
                 else -> rawCount >= FAVORITE_PAGE_SIZE
             },
+            mediaCount = mediaCount,
         )
     }
 
@@ -677,6 +757,29 @@ class BilibiliRepository(
     private fun requireCsrf(): String {
         return csrfProvider()?.takeIf(String::isNotBlank)
             ?: throw IllegalStateException("登录凭据缺少 CSRF Token，请刷新登录状态后重试")
+    }
+
+    private suspend fun updateVideoFavorite(aid: Long, folderId: Long, adding: Boolean) {
+        require(aid > 0L) { "视频 aid 无效" }
+        require(folderId > 0L) { "收藏夹 id 无效" }
+        postForm(
+            path = "/x/v3/fav/resource/deal",
+            parameters = buildMap {
+                put("rid", aid.toString())
+                put("type", "2")
+                put(if (adding) "add_media_ids" else "del_media_ids", folderId.toString())
+                put("platform", "web")
+                put("ga", "1")
+                put("gaia_source", "web_normal")
+                put("csrf", requireCsrf())
+            },
+        ).requireSuccess()
+    }
+
+    private fun requireFavoriteFolderTitle(title: String): String {
+        return title.trim().also { normalized ->
+            require(normalized.isNotBlank()) { "收藏夹名称不能为空" }
+        }
     }
 
     private fun buildUrl(path: String, parameters: Map<String, Any?>): HttpUrl {

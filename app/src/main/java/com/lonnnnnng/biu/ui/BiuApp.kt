@@ -49,6 +49,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -58,12 +59,14 @@ import androidx.compose.material.icons.rounded.Downloading
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -253,6 +256,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showQualityMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
+    var favoritePickerVideo by remember { mutableStateOf<BilibiliVideo?>(null) }
     var showNowPlaying by remember { mutableStateOf(false) }
     var showDownloads by remember { mutableStateOf(false) }
     var downloadTaskKind by remember { mutableStateOf(DownloadTaskKind.AUDIO) }
@@ -623,6 +627,24 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
+    favoritePickerVideo?.let { video ->
+        FavoritePickerDialog(
+            video = video,
+            folders = uiState.createdFavoriteFolders.filter(BilibiliFavoriteFolder::isUserManaged),
+            mutating = uiState.isFavoriteMutating,
+            onDismiss = { favoritePickerVideo = null },
+            onSelect = { folder ->
+                favoritePickerVideo = null
+                viewModel.addVideoToFavorite(video, folder)
+            },
+            onOpenAccount = {
+                favoritePickerVideo = null
+                viewModel.selectSection(MainSection.ACCOUNT)
+                viewModel.loadLibrary(AccountLibrarySection.FAVORITES)
+            },
+        )
+    }
+
     if (showCreatorConfig) {
         CreatorSelectionSheet(
             accountLoggedIn = uiState.account.isLoggedIn,
@@ -807,6 +829,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         viewModel.loadFollowingCreators()
                     },
                     onPlay = viewModel::play,
+                    onAddFavorite = { video ->
+                        if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
+                    },
                     modifier = pageModifier,
                 )
                 MainSection.ACCOUNT -> AccountScreen(
@@ -833,6 +858,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onOpenFavoriteFolder = viewModel::openFavoriteFolder,
                     onCloseFavoriteFolder = viewModel::closeFavoriteFolder,
                     onOpenFavoriteBatchDownload = viewModel::openFavoriteBatchDownload,
+                    onLoadMoreFavoriteFolder = viewModel::loadMoreFavoriteFolder,
+                    onCreateFavoriteFolder = viewModel::createFavoriteFolder,
+                    onRenameFavoriteFolder = viewModel::renameFavoriteFolder,
+                    onDeleteFavoriteFolder = viewModel::deleteFavoriteFolder,
+                    onRemoveFavoriteVideo = viewModel::removeVideoFromFavorite,
                     onPlay = viewModel::play,
                     onPlayHistory = viewModel::play,
                     onPlayLocalAudio = viewModel::play,
@@ -1204,6 +1234,7 @@ private fun RecommendationScreen(
     onClearSearch: () -> Unit,
     onOpenCreatorConfig: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
+    onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var keyword by remember(submittedKeyword) { mutableStateOf(submittedKeyword) }
@@ -1322,7 +1353,7 @@ private fun RecommendationScreen(
                 modifier = Modifier.weight(1f),
             )
         } else {
-            VideoList(activeVideos, resolvingBvid, onPlay, Modifier.weight(1f))
+            VideoList(activeVideos, resolvingBvid, onPlay, onAddFavorite, Modifier.weight(1f))
         }
     }
 }
@@ -1406,6 +1437,11 @@ private fun AccountScreen(
     onOpenFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
     onCloseFavoriteFolder: () -> Unit,
     onOpenFavoriteBatchDownload: (BilibiliFavoriteFolder) -> Unit,
+    onLoadMoreFavoriteFolder: () -> Unit,
+    onCreateFavoriteFolder: (String) -> Unit,
+    onRenameFavoriteFolder: (BilibiliFavoriteFolder, String) -> Unit,
+    onDeleteFavoriteFolder: (BilibiliFavoriteFolder) -> Unit,
+    onRemoveFavoriteVideo: (BilibiliLibraryVideo) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onPlayHistory: (PlaybackHistoryEntity) -> Unit,
     onPlayLocalAudio: (LocalAudio) -> Unit,
@@ -1450,9 +1486,16 @@ private fun AccountScreen(
                     videos = state.libraryVideos,
                     resolvingBvid = state.resolvingBvid,
                     loading = state.isLibraryLoading,
+                    loadingMore = state.isFavoriteLoadingMore,
+                    mutating = state.isFavoriteMutating,
                     onOpenFolder = onOpenFavoriteFolder,
                     onCloseFolder = onCloseFavoriteFolder,
                     onBatchDownload = onOpenFavoriteBatchDownload,
+                    onLoadMore = onLoadMoreFavoriteFolder,
+                    onCreateFolder = onCreateFavoriteFolder,
+                    onRenameFolder = onRenameFavoriteFolder,
+                    onDeleteFolder = onDeleteFavoriteFolder,
+                    onRemoveVideo = onRemoveFavoriteVideo,
                     onPlay = onPlay,
                     modifier = Modifier.weight(1f),
                 )
@@ -1767,6 +1810,99 @@ private fun LocalAudioList(
 }
 
 @Composable
+private fun FavoritePickerDialog(
+    video: BilibiliVideo,
+    folders: List<BilibiliFavoriteFolder>,
+    mutating: Boolean,
+    onDismiss: () -> Unit,
+    onSelect: (BilibiliFavoriteFolder) -> Unit,
+    onOpenAccount: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("收藏到") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    video.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (folders.isEmpty()) {
+                    Text("还没有可用的自建收藏夹，请先在账号页新建。", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    folders.forEach { folder ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable(enabled = !mutating) { onSelect(folder) }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(Icons.Rounded.Folder, contentDescription = null)
+                            Text(
+                                folder.title,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                "${folder.mediaCount} 项",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (folders.isEmpty()) TextButton(onClick = onOpenAccount) { Text("前往账号页") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun FavoriteFolderNameDialog(
+    title: String,
+    initialName: String,
+    mutating: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var name by remember(initialName) { mutableStateOf(initialName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                singleLine = true,
+                label = { Text("收藏夹名称") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank() && !mutating,
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
 private fun FavoriteLibrary(
     createdFolders: List<BilibiliFavoriteFolder>,
     collectedFolders: List<BilibiliFavoriteFolder>,
@@ -1774,14 +1910,67 @@ private fun FavoriteLibrary(
     videos: List<BilibiliLibraryVideo>,
     resolvingBvid: String?,
     loading: Boolean,
+    loadingMore: Boolean,
+    mutating: Boolean,
     onOpenFolder: (BilibiliFavoriteFolder) -> Unit,
     onCloseFolder: () -> Unit,
     onBatchDownload: (BilibiliFavoriteFolder) -> Unit,
+    onLoadMore: () -> Unit,
+    onCreateFolder: (String) -> Unit,
+    onRenameFolder: (BilibiliFavoriteFolder, String) -> Unit,
+    onDeleteFolder: (BilibiliFavoriteFolder) -> Unit,
+    onRemoveVideo: (BilibiliLibraryVideo) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var createdExpanded by rememberSaveable { mutableStateOf(true) }
     var collectedExpanded by rememberSaveable { mutableStateOf(true) }
+    var namingFolder by remember { mutableStateOf<BilibiliFavoriteFolder?>(null) }
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var deletingFolder by remember { mutableStateOf<BilibiliFavoriteFolder?>(null) }
+    var selectedMenuExpanded by remember { mutableStateOf(false) }
+
+    if (showCreateDialog) {
+        FavoriteFolderNameDialog(
+            title = "新建收藏夹",
+            initialName = "",
+            mutating = mutating,
+            onDismiss = { showCreateDialog = false },
+            onConfirm = { name ->
+                showCreateDialog = false
+                onCreateFolder(name)
+            },
+        )
+    }
+    namingFolder?.let { folder ->
+        FavoriteFolderNameDialog(
+            title = "重命名收藏夹",
+            initialName = folder.title,
+            mutating = mutating,
+            onDismiss = { namingFolder = null },
+            onConfirm = { name ->
+                namingFolder = null
+                onRenameFolder(folder, name)
+            },
+        )
+    }
+    deletingFolder?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { deletingFolder = null },
+            title = { Text("删除收藏夹") },
+            text = { Text("删除“${folder.title}”？收藏夹中的内容不会从 Bilibili 删除，但该收藏关系无法恢复。") },
+            confirmButton = {
+                TextButton(
+                    enabled = !mutating,
+                    onClick = {
+                        deletingFolder = null
+                        onDeleteFolder(folder)
+                    },
+                ) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { deletingFolder = null }) { Text("取消") } },
+        )
+    }
     if (selectedFolder != null) {
         Column(modifier) {
             Row(
@@ -1809,13 +1998,54 @@ private fun FavoriteLibrary(
                 IconButton(onClick = { onBatchDownload(selectedFolder) }) {
                     Icon(Icons.Rounded.Download, contentDescription = "批量下载 ${selectedFolder.title}")
                 }
+                if (selectedFolder.isUserManaged) {
+                    Box {
+                        IconButton(
+                            onClick = { selectedMenuExpanded = true },
+                            enabled = !mutating,
+                        ) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = "管理 ${selectedFolder.title}")
+                        }
+                        DropdownMenu(
+                            expanded = selectedMenuExpanded,
+                            onDismissRequest = { selectedMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("重命名") },
+                                onClick = {
+                                    selectedMenuExpanded = false
+                                    namingFolder = selectedFolder
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除") },
+                                onClick = {
+                                    selectedMenuExpanded = false
+                                    deletingFolder = selectedFolder
+                                },
+                            )
+                        }
+                    }
+                }
             }
-            LibraryVideoList(videos, resolvingBvid, loading, onPlay, Modifier.weight(1f))
+            LibraryVideoList(
+                videos = videos,
+                resolvingBvid = resolvingBvid,
+                loading = loading,
+                loadingMore = loadingMore,
+                mutating = mutating,
+                onPlay = onPlay,
+                onLoadMore = onLoadMore,
+                onRemove = onRemoveVideo.takeIf { selectedFolder.isUserManaged },
+                modifier = Modifier.weight(1f),
+            )
         }
     } else if (!loading && createdFolders.isEmpty() && collectedFolders.isEmpty()) {
         BiuEmptyState(
             icon = Icons.Rounded.Folder,
             title = "还没有收藏内容",
+            actionLabel = "新建收藏夹",
+            onAction = { showCreateDialog = true },
             modifier = modifier,
         )
     } else {
@@ -1829,11 +2059,18 @@ private fun FavoriteLibrary(
                     count = createdFolders.size,
                     expanded = createdExpanded,
                     onToggle = { createdExpanded = !createdExpanded },
+                    onAdd = { showCreateDialog = true },
                 )
             }
             if (createdExpanded) {
                 items(createdFolders, key = { folder -> "created:${folder.id}" }) { folder ->
-                    FavoriteFolderRow(folder = folder, onClick = { onOpenFolder(folder) })
+                    FavoriteFolderRow(
+                        folder = folder,
+                        mutating = mutating,
+                        onClick = { onOpenFolder(folder) },
+                        onRename = { namingFolder = folder },
+                        onDelete = { deletingFolder = folder },
+                    )
                 }
             }
             item(key = "collected-header") {
@@ -1846,7 +2083,7 @@ private fun FavoriteLibrary(
             }
             if (collectedExpanded) {
                 items(collectedFolders, key = { folder -> "collected:${folder.type.apiValue}:${folder.id}" }) { folder ->
-                    FavoriteFolderRow(folder = folder, onClick = { onOpenFolder(folder) })
+                    FavoriteFolderRow(folder = folder, mutating = mutating, onClick = { onOpenFolder(folder) })
                 }
             }
         }
@@ -1859,6 +2096,7 @@ private fun FavoriteFolderGroupHeader(
     count: Int,
     expanded: Boolean,
     onToggle: () -> Unit,
+    onAdd: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -1874,6 +2112,11 @@ private fun FavoriteFolderGroupHeader(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (onAdd != null) {
+            IconButton(onClick = onAdd, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Rounded.Add, contentDescription = "新建$title", modifier = Modifier.size(20.dp))
+            }
+        }
         Icon(
             if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
             contentDescription = if (expanded) "收起$title" else "展开$title",
@@ -1885,8 +2128,12 @@ private fun FavoriteFolderGroupHeader(
 @Composable
 private fun FavoriteFolderRow(
     folder: BilibiliFavoriteFolder,
+    mutating: Boolean,
     onClick: () -> Unit,
+    onRename: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1937,11 +2184,39 @@ private fun FavoriteFolderRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Icon(
-            Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-            contentDescription = "打开 ${folder.title}",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (folder.isUserManaged && onRename != null && onDelete != null) {
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    enabled = !mutating,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "管理 ${folder.title}")
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("重命名") },
+                        onClick = {
+                            menuExpanded = false
+                            onRename()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除") },
+                        onClick = {
+                            menuExpanded = false
+                            onDelete()
+                        },
+                    )
+                }
+            }
+        } else {
+            Icon(
+                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = "打开 ${folder.title}",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
     MediaDivider(start = 76.dp)
 }
@@ -1951,9 +2226,31 @@ private fun LibraryVideoList(
     videos: List<BilibiliLibraryVideo>,
     resolvingBvid: String?,
     loading: Boolean,
+    loadingMore: Boolean,
+    mutating: Boolean,
     onPlay: (BilibiliVideo) -> Unit,
+    onLoadMore: () -> Unit,
+    onRemove: ((BilibiliLibraryVideo) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
+    var pendingRemove by remember { mutableStateOf<BilibiliLibraryVideo?>(null) }
+    pendingRemove?.let { item ->
+        AlertDialog(
+            onDismissRequest = { pendingRemove = null },
+            title = { Text("移出收藏夹") },
+            text = { Text("将“${item.video.title}”从当前收藏夹移出？") },
+            confirmButton = {
+                TextButton(
+                    enabled = !mutating,
+                    onClick = {
+                        pendingRemove = null
+                        onRemove?.invoke(item)
+                    },
+                ) { Text("移出") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRemove = null }) { Text("取消") } },
+        )
+    }
     if (!loading && videos.isEmpty()) {
         BiuEmptyState(
             icon = Icons.Rounded.LibraryMusic,
@@ -1966,14 +2263,47 @@ private fun LibraryVideoList(
         modifier.fillMaxWidth(),
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
-        items(videos, key = { item -> "${item.video.bvid}:${item.savedAtEpochSeconds ?: 0L}" }) { item ->
-            LibraryVideoRow(
-                item = item,
-                resolving = resolvingBvid == item.video.bvid,
-                enabled = resolvingBvid == null,
-                onClick = { onPlay(item.video) },
-            )
+        itemsIndexed(
+            items = videos,
+            key = { _, item -> "${item.video.bvid}:${item.savedAtEpochSeconds ?: 0L}" },
+        ) { index, item ->
+            if (index >= videos.lastIndex - 2) {
+                LaunchedEffect(videos.size, index) { onLoadMore() }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.weight(1f)) {
+                    LibraryVideoRow(
+                        item = item,
+                        resolving = resolvingBvid == item.video.bvid,
+                        enabled = resolvingBvid == null && !mutating,
+                        onClick = { onPlay(item.video) },
+                    )
+                }
+                if (onRemove != null) {
+                    IconButton(
+                        onClick = { pendingRemove = item },
+                        enabled = !mutating,
+                        modifier = Modifier.padding(end = 4.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.DeleteOutline,
+                            contentDescription = "移出 ${item.video.title}",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
             MediaDivider(start = 124.dp)
+        }
+        if (loadingMore) {
+            item(key = "favorite-loading") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
         }
     }
 }
@@ -2360,6 +2690,7 @@ private fun VideoList(
     videos: List<BilibiliVideo>,
     resolvingBvid: String?,
     onPlay: (BilibiliVideo) -> Unit,
+    onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -2372,6 +2703,7 @@ private fun VideoList(
                 resolving = resolvingBvid == video.bvid,
                 enabled = resolvingBvid == null,
                 onClick = { onPlay(video) },
+                onAddFavorite = { onAddFavorite(video) },
             )
             MediaDivider()
         }
@@ -2384,6 +2716,7 @@ private fun VideoRow(
     resolving: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
+    onAddFavorite: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -2441,10 +2774,19 @@ private fun VideoRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (resolving) {
-            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-        } else {
-            PlayAffordance(contentDescription = "播放 ${video.title}")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onAddFavorite, enabled = enabled) {
+                Icon(
+                    Icons.Rounded.FavoriteBorder,
+                    contentDescription = "收藏 ${video.title}",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            if (resolving) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            } else {
+                PlayAffordance(contentDescription = "播放 ${video.title}")
+            }
         }
     }
 }
