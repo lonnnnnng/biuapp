@@ -39,6 +39,7 @@ data class BilibiliVideoDetail(
     val author: String,
     val coverUrl: String,
     val pages: List<BilibiliVideoPage>,
+    val aid: Long? = null,
 )
 
 data class BilibiliAccount(
@@ -90,6 +91,25 @@ data class BilibiliLibraryVideo(
     val video: BilibiliVideo,
     val progressSeconds: Int? = null,
     val savedAtEpochSeconds: Long? = null,
+    val historyKey: String? = null,
+)
+
+data class BilibiliOnlineHistoryCursor(
+    val max: Long,
+    val viewAtEpochSeconds: Long,
+    val business: String,
+)
+
+data class BilibiliOnlineHistoryPage(
+    val videos: List<BilibiliLibraryVideo>,
+    val nextCursor: BilibiliOnlineHistoryCursor?,
+    val hasMore: Boolean,
+)
+
+data class BilibiliOnlineHistorySearchPage(
+    val videos: List<BilibiliLibraryVideo>,
+    val nextSearchPage: Int?,
+    val hasMore: Boolean,
 )
 
 data class BilibiliFavoriteVideoPage(

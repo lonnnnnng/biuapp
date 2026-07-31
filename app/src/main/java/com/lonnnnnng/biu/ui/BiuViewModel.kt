@@ -9,9 +9,11 @@ import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
+import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
+import com.lonnnnnng.biu.data.bilibili.BilibiliOnlineHistoryCursor
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideoDetail
 import com.lonnnnnng.biu.data.bilibili.CreatorFeedPolicy
@@ -101,6 +103,10 @@ data class BiuUiState(
     val collectedFavoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
     val selectedFavoriteFolder: BilibiliFavoriteFolder? = null,
     val libraryVideos: List<BilibiliLibraryVideo> = emptyList(),
+    val onlineHistoryQuery: String = "",
+    val onlineHistoryNextCursor: BilibiliOnlineHistoryCursor? = null,
+    val onlineHistoryNextSearchPage: Int? = null,
+    val onlineHistoryHasMore: Boolean = false,
     val favoriteBatchFolder: BilibiliFavoriteFolder? = null,
     val favoriteBatchVideos: List<BilibiliLibraryVideo> = emptyList(),
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
@@ -111,12 +117,15 @@ data class BiuUiState(
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    val reportPlayHistory: Boolean = true,
     val isFeedLoading: Boolean = true,
     val isCreatorConfigLoading: Boolean = false,
     val isCreatorConfigSaving: Boolean = false,
     val isSearchLoading: Boolean = false,
     val isAccountLoading: Boolean = true,
     val isLibraryLoading: Boolean = false,
+    val isOnlineHistoryLoadingMore: Boolean = false,
+    val isOnlineHistoryMutating: Boolean = false,
     val isFavoriteBatchLoading: Boolean = false,
     val isFavoriteBatchSubmitting: Boolean = false,
     val isPageQueueLoading: Boolean = false,
@@ -137,6 +146,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
     private var favoriteBatchLoadJob: Job? = null
+    private var onlineHistoryJob: Job? = null
     private var localAudioJob: Job? = null
     private var localAudioDirectoryInitializationJob: Job? = null
     private var localAudioDirectoryInitialized = false
@@ -207,6 +217,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.downloadNetworkPreferenceRepository.preference.collect { preference ->
                 mutableState.update { it.copy(downloadNetworkPreference = preference) }
+            }
+        }
+        viewModelScope.launch {
+            container.playbackPreferenceRepository.preferences.collect { preferences ->
+                mutableState.update { it.copy(reportPlayHistory = preferences.reportPlayHistory) }
             }
         }
         viewModelScope.launch {
@@ -421,6 +436,18 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setReportPlayHistory(enabled: Boolean) {
+        mutableState.update { it.copy(reportPlayHistory = enabled) }
+        viewModelScope.launch {
+            runCatching { container.playbackPreferenceRepository.saveReportPlayHistory(enabled) }
+                .onFailure { error ->
+                    mutableState.update {
+                        it.copy(reportPlayHistory = !enabled, message = error.userMessage("保存播放历史设置失败"))
+                    }
+                }
+        }
+    }
+
     fun refreshAccount() {
         mutableState.update { it.copy(isAccountLoading = true) }
         viewModelScope.launch {
@@ -503,6 +530,10 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             loadLocalAudio()
             return
         }
+        if (section == AccountLibrarySection.ONLINE_HISTORY) {
+            loadOnlineHistory(reset = true)
+            return
+        }
         val account = state.value.account
         if (!account.isLoggedIn) {
             mutableState.update { it.copy(isLibraryLoading = false) }
@@ -528,7 +559,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                     }
-                    AccountLibrarySection.ONLINE_HISTORY -> publishLibraryVideos(repository.onlineHistory())
+                    AccountLibrarySection.ONLINE_HISTORY -> Unit
                     AccountLibrarySection.LOCAL_HISTORY -> Unit
                     AccountLibrarySection.LOCAL_MUSIC -> Unit
                 }
@@ -907,6 +938,72 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun searchOnlineHistory(query: String) {
+        val normalized = query.trim()
+        mutableState.update {
+            it.copy(
+                onlineHistoryQuery = normalized,
+                libraryVideos = emptyList(),
+                onlineHistoryNextCursor = null,
+                onlineHistoryNextSearchPage = null,
+                onlineHistoryHasMore = false,
+                message = null,
+            )
+        }
+        loadOnlineHistory(reset = true)
+    }
+
+    fun loadMoreOnlineHistory() {
+        val current = state.value
+        if (current.librarySection != AccountLibrarySection.ONLINE_HISTORY ||
+            !current.onlineHistoryHasMore ||
+            current.isLibraryLoading ||
+            current.isOnlineHistoryLoadingMore ||
+            current.isOnlineHistoryMutating
+        ) {
+            return
+        }
+        loadOnlineHistory(reset = false)
+    }
+
+    fun deleteOnlineHistory(item: BilibiliLibraryVideo) {
+        val historyKey = item.historyKey ?: return
+        if (state.value.isOnlineHistoryMutating) return
+        mutableState.update { it.copy(isOnlineHistoryMutating = true, message = null) }
+        viewModelScope.launch {
+            runCatching { repository.deleteOnlineHistory(historyKey) }
+                .onSuccess {
+                    mutableState.update { current ->
+                        current.copy(
+                            libraryVideos = current.libraryVideos.filterNot { video -> video.historyKey == historyKey },
+                            isOnlineHistoryMutating = false,
+                        )
+                    }
+                }
+                .onFailure(::handleOnlineHistoryMutationFailure)
+        }
+    }
+
+    fun clearOnlineHistory() {
+        if (state.value.isOnlineHistoryMutating) return
+        mutableState.update { it.copy(isOnlineHistoryMutating = true, message = null) }
+        viewModelScope.launch {
+            runCatching { repository.clearOnlineHistory() }
+                .onSuccess {
+                    mutableState.update { current ->
+                        current.copy(
+                            libraryVideos = emptyList(),
+                            onlineHistoryNextCursor = null,
+                            onlineHistoryNextSearchPage = null,
+                            onlineHistoryHasMore = false,
+                            isOnlineHistoryMutating = false,
+                        )
+                    }
+                }
+                .onFailure(::handleOnlineHistoryMutationFailure)
+        }
+    }
+
     fun logout() {
         container.cookieStore.clear {
             container.cookieStore.flush()
@@ -1022,6 +1119,113 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(libraryVideos = videos, isLibraryLoading = false) }
     }
 
+    private fun loadOnlineHistory(reset: Boolean) {
+        val account = state.value.account
+        if (!account.isLoggedIn) {
+            mutableState.update {
+                it.copy(isLibraryLoading = false, isOnlineHistoryLoadingMore = false)
+            }
+            return
+        }
+        if (reset) onlineHistoryJob?.cancel()
+        val snapshot = state.value
+        val query = snapshot.onlineHistoryQuery
+        val cursor = if (reset) null else snapshot.onlineHistoryNextCursor
+        val searchPage = if (query.isBlank() || reset) {
+            1
+        } else {
+            snapshot.onlineHistoryNextSearchPage ?: return
+        }
+        mutableState.update {
+            it.copy(
+                isLibraryLoading = reset,
+                isOnlineHistoryLoadingMore = !reset,
+                message = null,
+            )
+        }
+        onlineHistoryJob = viewModelScope.launch {
+            try {
+                val page = if (query.isBlank()) {
+                    val result = repository.onlineHistory(cursor)
+                    OnlineHistoryLoadResult(
+                        videos = result.videos,
+                        nextCursor = result.nextCursor,
+                        nextSearchPage = null,
+                        hasMore = result.hasMore,
+                    )
+                } else {
+                    val result = repository.searchOnlineHistory(query, searchPage)
+                    OnlineHistoryLoadResult(
+                        videos = result.videos,
+                        nextCursor = null,
+                        nextSearchPage = result.nextSearchPage,
+                        hasMore = result.hasMore,
+                    )
+                }
+                mutableState.update { current ->
+                    if (current.librarySection != AccountLibrarySection.ONLINE_HISTORY ||
+                        current.onlineHistoryQuery != query
+                    ) {
+                        current
+                    } else {
+                        val videos = if (reset) page.videos else {
+                            (current.libraryVideos + page.videos).distinctBy { item ->
+                                item.historyKey ?: item.video.bvid
+                            }
+                        }
+                        current.copy(
+                            libraryVideos = videos,
+                            onlineHistoryNextCursor = page.nextCursor,
+                            onlineHistoryNextSearchPage = page.nextSearchPage,
+                            onlineHistoryHasMore = page.hasMore,
+                            isLibraryLoading = false,
+                            isOnlineHistoryLoadingMore = false,
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                handleOnlineHistoryLoadFailure(error)
+            }
+        }
+    }
+
+    private fun handleOnlineHistoryLoadFailure(error: Throwable) {
+        if (error is BilibiliApiException && error.code == -101) {
+            // long: 登录失效只清理账号在线区；Room 本地历史由独立 Flow 维护，必须继续可用。
+            clearOnlineLibrary()
+            mutableState.update {
+                it.copy(
+                    account = BilibiliAccount(false, "", ""),
+                    message = "登录已失效，请重新登录",
+                )
+            }
+            refreshAccount()
+            return
+        }
+        mutableState.update {
+            it.copy(
+                isLibraryLoading = false,
+                isOnlineHistoryLoadingMore = false,
+                message = error.userMessage("在线历史加载失败"),
+            )
+        }
+    }
+
+    private fun handleOnlineHistoryMutationFailure(error: Throwable) {
+        if (error is BilibiliApiException && error.code == -101) {
+            handleOnlineHistoryLoadFailure(error)
+            return
+        }
+        mutableState.update {
+            it.copy(
+                isOnlineHistoryMutating = false,
+                message = error.userMessage("在线历史操作失败"),
+            )
+        }
+    }
+
     private fun loadHomeFeed(selectedCreators: List<BilibiliCreator>, feed: RecommendFeed) {
         // long: 切换来源或手动刷新时取消旧请求，防止较慢的旧响应覆盖用户刚保存的新范围。
         recommendationsJob?.cancel()
@@ -1075,6 +1279,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun clearOnlineLibrary() {
+        onlineHistoryJob?.cancel()
+        onlineHistoryJob = null
         favoriteBatchLoadJob?.cancel()
         favoriteBatchLoadJob = null
         mutableState.update {
@@ -1083,15 +1289,28 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 collectedFavoriteFolders = emptyList(),
                 selectedFavoriteFolder = null,
                 libraryVideos = emptyList(),
+                onlineHistoryQuery = "",
+                onlineHistoryNextCursor = null,
+                onlineHistoryNextSearchPage = null,
+                onlineHistoryHasMore = false,
                 favoriteBatchFolder = null,
                 favoriteBatchVideos = emptyList(),
                 isFavoriteBatchLoading = false,
                 isFavoriteBatchSubmitting = false,
                 isLibraryLoading = false,
+                isOnlineHistoryLoadingMore = false,
+                isOnlineHistoryMutating = false,
             )
         }
     }
 }
+
+private data class OnlineHistoryLoadResult(
+    val videos: List<BilibiliLibraryVideo>,
+    val nextCursor: BilibiliOnlineHistoryCursor?,
+    val nextSearchPage: Int?,
+    val hasMore: Boolean,
+)
 
 internal object PlaybackResumePolicy {
     fun startPositionMs(lastPositionMs: Long, durationMs: Long): Long {

@@ -2,6 +2,7 @@ package com.lonnnnnng.biu.playback
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -37,6 +38,7 @@ enum class PlaybackMode(val label: String) {
 data class PlaybackPreferences(
     val mode: PlaybackMode = PlaybackMode.SEQUENTIAL,
     val speed: Float = PlaybackSpeedPolicy.DEFAULT,
+    val reportPlayHistory: Boolean = true,
 )
 
 object PlaybackSpeedPolicy {
@@ -58,6 +60,7 @@ class PlaybackPreferenceRepository(context: Context) {
                 ?.let { stored -> PlaybackMode.entries.firstOrNull { it.name == stored } }
                 ?: PlaybackMode.SEQUENTIAL,
             speed = PlaybackSpeedPolicy.normalize(values[KEY_SPEED] ?: PlaybackSpeedPolicy.DEFAULT),
+            reportPlayHistory = values[KEY_REPORT_PLAY_HISTORY] ?: true,
         )
     }
 
@@ -70,9 +73,14 @@ class PlaybackPreferenceRepository(context: Context) {
         }
     }
 
+    suspend fun saveReportPlayHistory(enabled: Boolean) {
+        dataStore.edit { values -> values[KEY_REPORT_PLAY_HISTORY] = enabled }
+    }
+
     private companion object {
         val KEY_MODE = stringPreferencesKey("mode")
         val KEY_SPEED = floatPreferencesKey("speed")
+        val KEY_REPORT_PLAY_HISTORY = booleanPreferencesKey("report_play_history")
     }
 }
 

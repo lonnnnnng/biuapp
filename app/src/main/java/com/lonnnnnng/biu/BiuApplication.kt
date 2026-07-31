@@ -44,7 +44,10 @@ class AppContainer(context: Context) {
         .readTimeout(20, TimeUnit.SECONDS)
         .addInterceptor(BilibiliRequestHeadersInterceptor(cookieStore::cookieHeader))
         .build()
-    val bilibiliRepository = BilibiliRepository(bilibiliHttpClient)
+    val bilibiliRepository = BilibiliRepository(
+        client = bilibiliHttpClient,
+        csrfProvider = cookieStore::csrfToken,
+    )
     // long: GitHub 更新检查必须使用不带 Bilibili Cookie 拦截器的独立客户端，避免账号凭据发往第三方域名。
     private val appUpdateHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)

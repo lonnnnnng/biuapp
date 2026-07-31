@@ -837,6 +837,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onPlayHistory = viewModel::play,
                     onPlayLocalAudio = viewModel::play,
                     onClearLocalHistory = viewModel::clearLocalHistory,
+                    onSearchOnlineHistory = viewModel::searchOnlineHistory,
+                    onLoadMoreOnlineHistory = viewModel::loadMoreOnlineHistory,
+                    onDeleteOnlineHistory = viewModel::deleteOnlineHistory,
+                    onClearOnlineHistory = viewModel::clearOnlineHistory,
+                    onReportPlayHistoryChange = viewModel::setReportPlayHistory,
                     modifier = pageModifier,
                 )
             }
@@ -1405,6 +1410,11 @@ private fun AccountScreen(
     onPlayHistory: (PlaybackHistoryEntity) -> Unit,
     onPlayLocalAudio: (LocalAudio) -> Unit,
     onClearLocalHistory: () -> Unit,
+    onSearchOnlineHistory: (String) -> Unit,
+    onLoadMoreOnlineHistory: () -> Unit,
+    onDeleteOnlineHistory: (BilibiliLibraryVideo) -> Unit,
+    onClearOnlineHistory: () -> Unit,
+    onReportPlayHistoryChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -1416,7 +1426,9 @@ private fun AccountScreen(
             onSelect = onLoadLibrary,
         )
 
-        if (state.isLibraryLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (state.isLibraryLoading && state.librarySection != AccountLibrarySection.ONLINE_HISTORY) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
         val onlineSection = state.librarySection in setOf(
             AccountLibrarySection.FAVORITES,
             AccountLibrarySection.ONLINE_HISTORY,
@@ -1444,11 +1456,20 @@ private fun AccountScreen(
                     onPlay = onPlay,
                     modifier = Modifier.weight(1f),
                 )
-                AccountLibrarySection.ONLINE_HISTORY -> LibraryVideoList(
+                AccountLibrarySection.ONLINE_HISTORY -> OnlineHistoryList(
                     videos = state.libraryVideos,
                     resolvingBvid = state.resolvingBvid,
                     loading = state.isLibraryLoading,
+                    loadingMore = state.isOnlineHistoryLoadingMore,
+                    mutating = state.isOnlineHistoryMutating,
+                    query = state.onlineHistoryQuery,
+                    reportPlayHistory = state.reportPlayHistory,
                     onPlay = onPlay,
+                    onSearch = onSearchOnlineHistory,
+                    onLoadMore = onLoadMoreOnlineHistory,
+                    onDelete = onDeleteOnlineHistory,
+                    onClear = onClearOnlineHistory,
+                    onReportPlayHistoryChange = onReportPlayHistoryChange,
                     modifier = Modifier.weight(1f),
                 )
                 AccountLibrarySection.LOCAL_HISTORY -> LocalHistoryList(
@@ -1953,6 +1974,179 @@ private fun LibraryVideoList(
                 onClick = { onPlay(item.video) },
             )
             MediaDivider(start = 124.dp)
+        }
+    }
+}
+
+@Composable
+private fun OnlineHistoryList(
+    videos: List<BilibiliLibraryVideo>,
+    resolvingBvid: String?,
+    loading: Boolean,
+    loadingMore: Boolean,
+    mutating: Boolean,
+    query: String,
+    reportPlayHistory: Boolean,
+    onPlay: (BilibiliVideo) -> Unit,
+    onSearch: (String) -> Unit,
+    onLoadMore: () -> Unit,
+    onDelete: (BilibiliLibraryVideo) -> Unit,
+    onClear: () -> Unit,
+    onReportPlayHistoryChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var searchText by rememberSaveable(query) { mutableStateOf(query) }
+    var pendingDelete by remember { mutableStateOf<BilibiliLibraryVideo?>(null) }
+    var showClearConfirmation by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+
+    pendingDelete?.let { item ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除在线历史") },
+            text = { Text("从 Bilibili 在线历史中删除“${item.video.title}”？本地历史不会受到影响。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDelete = null
+                        onDelete(item)
+                    },
+                ) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
+    }
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text("清空在线历史") },
+            text = { Text("清空 Bilibili 账号的全部在线历史？此操作不会删除本机 Room 播放记录。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirmation = false
+                        onClear()
+                    },
+                ) { Text("清空") }
+            },
+            dismissButton = { TextButton(onClick = { showClearConfirmation = false }) { Text("取消") } },
+        )
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = searchText,
+                onValueChange = { searchText = it },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text("标题或 UP 主") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = if (searchText.isNotEmpty()) {
+                    {
+                        IconButton(
+                            onClick = {
+                                searchText = ""
+                                onSearch("")
+                            },
+                        ) { Icon(Icons.Rounded.Close, contentDescription = "清除在线历史搜索") }
+                    }
+                } else {
+                    null
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        focusManager.clearFocus()
+                        onSearch(searchText)
+                    },
+                ),
+            )
+            IconButton(
+                onClick = { showClearConfirmation = true },
+                enabled = videos.isNotEmpty() && !mutating,
+            ) {
+                Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空在线历史")
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "记录播放历史",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Switch(
+                checked = reportPlayHistory,
+                onCheckedChange = onReportPlayHistoryChange,
+            )
+        }
+        if (loading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        if (!loading && videos.isEmpty()) {
+            BiuEmptyState(
+                icon = Icons.Rounded.History,
+                title = if (query.isBlank()) "暂无在线历史" else "没有匹配的在线历史",
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
+                itemsIndexed(
+                    items = videos,
+                    key = { _, item -> item.historyKey ?: "${item.video.bvid}:${item.savedAtEpochSeconds ?: 0L}" },
+                ) { index, item ->
+                    if (index >= videos.lastIndex - 2) {
+                        LaunchedEffect(videos.size, index) { onLoadMore() }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            LibraryVideoRow(
+                                item = item,
+                                resolving = resolvingBvid == item.video.bvid,
+                                enabled = resolvingBvid == null && !mutating,
+                                onClick = { onPlay(item.video) },
+                            )
+                        }
+                        IconButton(
+                            onClick = { pendingDelete = item },
+                            enabled = item.historyKey != null && !mutating,
+                            modifier = Modifier.padding(end = 4.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.DeleteOutline,
+                                contentDescription = "删除 ${item.video.title}",
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                    MediaDivider(start = 124.dp)
+                }
+                if (loadingMore) {
+                    item(key = "online-history-loading") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
         }
     }
 }

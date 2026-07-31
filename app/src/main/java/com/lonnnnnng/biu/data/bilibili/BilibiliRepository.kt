@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -21,6 +22,7 @@ class BilibiliRepository(
     private val client: OkHttpClient,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000L },
     private val apiBase: HttpUrl = API_BASE.toHttpUrl(),
+    private val csrfProvider: () -> String? = { null },
 ) {
     private val wbiKeyMutex = Mutex()
     private var cachedWbiKeys: CachedWbiKeys? = null
@@ -270,20 +272,129 @@ class BilibiliRepository(
             .mapNotNull(::parseWatchLaterVideo)
     }
 
-    suspend fun onlineHistory(): List<BilibiliLibraryVideo> {
+    suspend fun onlineHistory(cursor: BilibiliOnlineHistoryCursor? = null): BilibiliOnlineHistoryPage {
         val root = request(
             path = "/x/web-interface/history/cursor",
             parameters = mapOf(
-                "max" to 0,
-                "view_at" to 0,
+                "max" to (cursor?.max ?: 0),
+                "view_at" to (cursor?.viewAtEpochSeconds ?: 0),
+                "business" to cursor?.business,
                 "type" to "archive",
-                "ps" to 20,
+                "ps" to HISTORY_PAGE_SIZE,
             ),
         ).requireSuccess()
-        return root.optJSONObject("data")
-            ?.optJSONArray("list")
+        val data = root.optJSONObject("data") ?: JSONObject()
+        val list = data.optJSONArray("list")
+        val videos = list
             .toObjects()
             .mapNotNull(::parseOnlineHistoryVideo)
+        val nextCursor = data.optJSONObject("cursor")?.let { value ->
+            BilibiliOnlineHistoryCursor(
+                max = value.optLong("max", 0L),
+                viewAtEpochSeconds = value.optLong("view_at", 0L),
+                business = value.optString("business"),
+            )
+        }?.takeIf { value ->
+            list?.length()?.let { it > 0 } == true &&
+                value.max > 0L &&
+                value.viewAtEpochSeconds > 0L &&
+                value.business.isNotBlank()
+        }
+        return BilibiliOnlineHistoryPage(
+            videos = videos,
+            nextCursor = nextCursor,
+            hasMore = nextCursor != null,
+        )
+    }
+
+    suspend fun searchOnlineHistory(keyword: String, page: Int = 1): BilibiliOnlineHistorySearchPage {
+        val normalizedKeyword = keyword.trim()
+        require(normalizedKeyword.isNotBlank()) { "在线历史搜索关键字不能为空" }
+        val root = request(
+            path = "/x/web-interface/history/search",
+            parameters = mapOf(
+                "keyword" to normalizedKeyword,
+                "business" to "archive",
+                "pn" to page.coerceAtLeast(1),
+            ),
+        ).requireSuccess()
+        val data = root.optJSONObject("data") ?: JSONObject()
+        val videos = data.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parseOnlineHistoryVideo)
+        val currentPage = data.optJSONObject("page")?.optInt("pn", page) ?: page
+        val hasMore = data.optBoolean("has_more", false)
+        return BilibiliOnlineHistorySearchPage(
+            videos = videos,
+            nextSearchPage = (currentPage + 1).takeIf { hasMore },
+            hasMore = hasMore,
+        )
+    }
+
+    suspend fun deleteOnlineHistory(historyKey: String) {
+        require(historyKey.matches(HISTORY_KEY_PATTERN)) { "在线历史删除键无效" }
+        postForm(
+            path = "/x/v2/history/delete",
+            parameters = mapOf("kid" to historyKey, "csrf" to requireCsrf()),
+        ).requireSuccess()
+    }
+
+    suspend fun clearOnlineHistory() {
+        postForm(
+            path = "/x/v2/history/clear",
+            parameters = mapOf("csrf" to requireCsrf()),
+        ).requireSuccess()
+    }
+
+    suspend fun reportPlayHeartbeat(
+        aid: Long,
+        bvid: String,
+        cid: Long,
+        session: String,
+        startedAtEpochSeconds: Long,
+        playedSeconds: Int,
+        maxPlayedSeconds: Int,
+        durationSeconds: Int?,
+        playType: Int,
+    ) {
+        val signedParameters = mapOf(
+            "w_start_ts" to startedAtEpochSeconds,
+            "w_aid" to aid,
+            "w_dt" to 2,
+            "w_realtime" to playedSeconds,
+            "w_playedtime" to playedSeconds,
+            "w_real_played_time" to playedSeconds,
+            "w_video_duration" to durationSeconds,
+            "w_last_play_progress_time" to maxPlayedSeconds,
+            "web_location" to 1315873,
+        )
+        val keys = currentWbiKeys()
+        val signed = WbiSigner.sign(signedParameters, keys.imgKey, keys.subKey, nowEpochSeconds())
+        val url = buildUrl("/x/click-interface/web/heartbeat", emptyMap()).newBuilder()
+            .encodedQuery(signed.encodedQuery)
+            .build()
+        postForm(
+            url = url,
+            parameters = buildMap {
+                put("aid", aid.toString())
+                put("bvid", bvid)
+                put("cid", cid.toString())
+                put("played_time", playedSeconds.toString())
+                put("realtime", playedSeconds.toString())
+                put("real_played_time", playedSeconds.toString())
+                durationSeconds?.let { put("video_duration", it.toString()) }
+                put("last_play_progress_time", maxPlayedSeconds.toString())
+                put("max_play_progress_time", maxPlayedSeconds.toString())
+                put("start_ts", startedAtEpochSeconds.toString())
+                put("type", "3")
+                put("sub_type", "0")
+                put("dt", "2")
+                put("outer", "0")
+                put("play_type", playType.toString())
+                put("session", session)
+                put("csrf", requireCsrf())
+            },
+        ).requireSuccess()
     }
 
     suspend fun videoDetail(bvid: String): BilibiliVideoDetail {
@@ -312,6 +423,7 @@ class BilibiliRepository(
             author = data.optJSONObject("owner")?.optString("name").orEmpty(),
             coverUrl = cover,
             pages = pages,
+            aid = data.optLongOrNull("aid"),
         )
     }
 
@@ -370,7 +482,12 @@ class BilibiliRepository(
             artworkUrl = page.coverUrl ?: detail.coverUrl.ifBlank { video.coverUrl },
             qualityLabel = stream.qualityLabel,
             pageTitle = pageTitle,
-            source = BilibiliTrackSource(detail.bvid, page.cid, qualityPreference),
+            source = BilibiliTrackSource(
+                bvid = detail.bvid,
+                cid = page.cid,
+                qualityPreference = qualityPreference,
+                aid = detail.aid ?: video.aid,
+            ),
         )
     }
 
@@ -528,7 +645,26 @@ class BilibiliRepository(
 
     private suspend fun execute(url: HttpUrl): JSONObject = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).get().build()
-        client.newCall(request).execute().use { response ->
+        execute(request)
+    }
+
+    private suspend fun postForm(path: String, parameters: Map<String, String>): JSONObject {
+        return postForm(buildUrl(path, emptyMap()), parameters)
+    }
+
+    private suspend fun postForm(url: HttpUrl, parameters: Map<String, String>): JSONObject {
+        val body = FormBody.Builder().apply {
+            parameters.forEach { (key, value) -> add(key, value) }
+        }.build()
+        val request = Request.Builder()
+            .url(url)
+            .post(body)
+            .build()
+        return withContext(Dispatchers.IO) { execute(request) }
+    }
+
+    private fun execute(request: Request): JSONObject {
+        return client.newCall(request).execute().use { response ->
             val payload = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw IOException("Bilibili HTTP ${response.code}")
@@ -536,6 +672,11 @@ class BilibiliRepository(
             runCatching { JSONObject(payload) }
                 .getOrElse { throw IOException("Bilibili response is not JSON", it) }
         }
+    }
+
+    private fun requireCsrf(): String {
+        return csrfProvider()?.takeIf(String::isNotBlank)
+            ?: throw IllegalStateException("登录凭据缺少 CSRF Token，请刷新登录状态后重试")
     }
 
     private fun buildUrl(path: String, parameters: Map<String, Any?>): HttpUrl {
@@ -718,6 +859,9 @@ class BilibiliRepository(
             video = video,
             progressSeconds = item.optIntOrNull("progress"),
             savedAtEpochSeconds = item.optLongOrNull("view_at"),
+            historyKey = history.optString("business")
+                .takeIf(String::isNotBlank)
+                ?.let { business -> "${business}_${history.optLong("oid")}" },
         )
     }
 
@@ -797,9 +941,11 @@ class BilibiliRepository(
         const val CREATOR_VIDEO_PAGE_SIZE = 30
         const val FAVORITE_FOLDER_PAGE_SIZE = 50
         const val FAVORITE_PAGE_SIZE = 20
+        const val HISTORY_PAGE_SIZE = 20
         const val MAX_FAVORITE_FOLDER_PAGES = 100
         const val MAX_FAVORITE_PAGES = 100
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
+        val HISTORY_KEY_PATTERN = Regex("[a-z-]+_[0-9]+")
     }
 }
 

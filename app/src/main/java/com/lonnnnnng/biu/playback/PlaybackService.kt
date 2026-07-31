@@ -20,7 +20,9 @@ import com.lonnnnnng.biu.appContainer
 import com.lonnnnnng.biu.core.model.toMediaItem
 import com.lonnnnnng.biu.core.model.bilibiliSource
 import com.lonnnnnng.biu.core.model.toTrackOrNull
+import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.local.PlaybackQueueRecord
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +46,9 @@ class PlaybackService : MediaSessionService() {
     private var progressPersistenceJob: Job? = null
     private var queuePersistenceJob: Job? = null
     private var playbackPreferencesPersistenceJob: Job? = null
+    private var reportPlayHistoryEnabled = true
+    private var activeHeartbeatSession: ActiveHeartbeatSession? = null
+    private val heartbeatMutex = Mutex()
     private val queuePersistenceGeneration = AtomicLong(0L)
     private val queuePersistenceMutex = Mutex()
     private var restoringPlaybackQueue = false
@@ -83,6 +88,12 @@ class PlaybackService : MediaSessionService() {
                     newMediaId = newPosition.mediaItem?.mediaId.orEmpty(),
                 )
             ) {
+                reportPlaybackHeartbeat(
+                    mediaItem = oldMediaItem,
+                    event = PlaybackHeartbeatEvent.END,
+                    positionMs = oldPosition.positionMs,
+                    durationMs = durationForMediaItem(oldPosition.mediaItemIndex, oldPosition.positionMs),
+                )
                 // long: 自动播完、手动切 P 或替换队列都不会保证进入暂停态，跨媒体项时必须把旧 cid 的最终位置单独落盘。
                 persistProgress(
                     mediaItem = oldMediaItem,
@@ -117,6 +128,12 @@ class PlaybackService : MediaSessionService() {
             if (!refreshInFlight && player?.isPlaying == true && mediaItem != null) {
                 // long: 分 P 队列切换时播放态可能始终为 true，必须在媒体项变化回调中单独登记新 cid 的播放历史。
                 recordStartedIfNeeded(mediaItem)
+                reportPlaybackHeartbeat(
+                    mediaItem = mediaItem,
+                    event = PlaybackHeartbeatEvent.START,
+                    positionMs = player?.currentPosition ?: 0L,
+                    durationMs = player?.duration ?: C.TIME_UNSET,
+                )
             }
         }
 
@@ -125,9 +142,26 @@ class PlaybackService : MediaSessionService() {
                 val mediaItem = player?.currentMediaItem ?: return
                 recordStartedIfNeeded(mediaItem)
                 startProgressPersistence()
+                reportPlaybackHeartbeat(
+                    mediaItem = mediaItem,
+                    event = PlaybackHeartbeatEvent.START,
+                    positionMs = player?.currentPosition ?: 0L,
+                    durationMs = player?.duration ?: C.TIME_UNSET,
+                )
             } else {
                 stopProgressPersistence()
                 persistCurrentProgress()
+                val activePlayer = player
+                if (activePlayer != null && !activePlayer.playWhenReady && activePlayer.playbackState != Player.STATE_ENDED) {
+                    activePlayer.currentMediaItem?.let { mediaItem ->
+                        reportPlaybackHeartbeat(
+                            mediaItem = mediaItem,
+                            event = PlaybackHeartbeatEvent.PAUSE,
+                            positionMs = activePlayer.currentPosition,
+                            durationMs = activePlayer.duration,
+                        )
+                    }
+                }
             }
             persistPlaybackQueueNow()
         }
@@ -139,6 +173,14 @@ class PlaybackService : MediaSessionService() {
                 endEventClock.recordEnded()
                 persistCurrentProgress()
                 persistPlaybackQueueNow()
+                player?.currentMediaItem?.let { mediaItem ->
+                    reportPlaybackHeartbeat(
+                        mediaItem = mediaItem,
+                        event = PlaybackHeartbeatEvent.END,
+                        positionMs = player?.currentPosition ?: 0L,
+                        durationMs = player?.duration ?: C.TIME_UNSET,
+                    )
+                }
             }
         }
 
@@ -178,6 +220,7 @@ class PlaybackService : MediaSessionService() {
             .setCallback(sessionCallback)
             .build()
         restorePlaybackPreferences()
+        observePlaybackPreferences()
         restorePlaybackQueue()
     }
 
@@ -216,6 +259,15 @@ class PlaybackService : MediaSessionService() {
                 // long: 长音频播放中周期落盘，把进程异常退出时最多丢失的进度控制在一个保存周期内。
                 persistCurrentProgress()
                 persistPlaybackQueueNow()
+                val activePlayer = player
+                activePlayer?.currentMediaItem?.let { mediaItem ->
+                    reportPlaybackHeartbeat(
+                        mediaItem = mediaItem,
+                        event = PlaybackHeartbeatEvent.PROGRESS,
+                        positionMs = activePlayer.currentPosition,
+                        durationMs = activePlayer.duration,
+                    )
+                }
             }
         }
     }
@@ -307,6 +359,87 @@ class PlaybackService : MediaSessionService() {
             val activePlayer = player ?: return@launch
             activePlayer.applyPlaybackMode(preferences.mode)
             activePlayer.setPlaybackSpeed(preferences.speed)
+        }
+    }
+
+    private fun observePlaybackPreferences() {
+        serviceScope.launch {
+            appContainer.playbackPreferenceRepository.preferences.collect { preferences ->
+                reportPlayHistoryEnabled = preferences.reportPlayHistory
+                if (!preferences.reportPlayHistory) {
+                    heartbeatMutex.withLock { activeHeartbeatSession = null }
+                }
+            }
+        }
+    }
+
+    private fun reportPlaybackHeartbeat(
+        mediaItem: MediaItem,
+        event: PlaybackHeartbeatEvent,
+        positionMs: Long,
+        durationMs: Long,
+    ) {
+        val source = mediaItem.bilibiliSource()
+        if (!PlaybackHeartbeatPolicy.isReportable(reportPlayHistoryEnabled, source != null)) return
+        source ?: return
+        serviceScope.launch {
+            heartbeatMutex.withLock {
+                // long: 开关关闭会清空会话；锁内再次校验可拦住此前已排队、但尚未开始上报的任务。
+                if (!PlaybackHeartbeatPolicy.isReportable(reportPlayHistoryEnabled, hasBilibiliSource = true)) {
+                    return@withLock
+                }
+                try {
+                    val now = System.currentTimeMillis() / 1000L
+                    var session = activeHeartbeatSession
+                    if (event == PlaybackHeartbeatEvent.START && session?.mediaId != mediaItem.mediaId) {
+                        val aid = source.aid
+                            ?: appContainer.bilibiliRepository.videoDetail(source.bvid).aid
+                            ?: return@withLock
+                        session = ActiveHeartbeatSession(
+                            mediaId = mediaItem.mediaId,
+                            aid = aid,
+                            bvid = source.bvid,
+                            cid = source.cid,
+                            session = UUID.randomUUID().toString().replace("-", ""),
+                            startedAtEpochSeconds = now,
+                        )
+                        activeHeartbeatSession = session
+                    }
+                    session = activeHeartbeatSession
+                    if (session == null || session.mediaId != mediaItem.mediaId) return@withLock
+                    if (!PlaybackHeartbeatPolicy.shouldSend(event, now, session.lastSentAtEpochSeconds)) return@withLock
+                    // long: aid 查询可能挂起；查询期间关闭开关时，不得继续提交本次播放记录。
+                    if (!PlaybackHeartbeatPolicy.isReportable(reportPlayHistoryEnabled, hasBilibiliSource = true)) {
+                        activeHeartbeatSession = null
+                        return@withLock
+                    }
+                    val playedSeconds = (positionMs.coerceAtLeast(0L) / 1_000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val durationSeconds = durationMs
+                        .takeIf { it != C.TIME_UNSET && it > 0L }
+                        ?.div(1_000L)
+                        ?.coerceAtMost(Int.MAX_VALUE.toLong())
+                        ?.toInt()
+                    session.maxPlayedSeconds = maxOf(session.maxPlayedSeconds, playedSeconds)
+                    session.lastSentAtEpochSeconds = now
+                    appContainer.bilibiliRepository.reportPlayHeartbeat(
+                        aid = session.aid,
+                        bvid = session.bvid,
+                        cid = session.cid,
+                        session = session.session,
+                        startedAtEpochSeconds = session.startedAtEpochSeconds,
+                        playedSeconds = playedSeconds,
+                        maxPlayedSeconds = session.maxPlayedSeconds,
+                        durationSeconds = durationSeconds,
+                        playType = event.playType,
+                    )
+                    if (event == PlaybackHeartbeatEvent.END) activeHeartbeatSession = null
+                } catch (error: Throwable) {
+                    // long: 上报失败不能打断音频播放；日志只记录异常类型，不输出请求 URL、Cookie、CSRF 或账号标识。
+                    val code = (error as? BilibiliApiException)?.code?.toString() ?: "none"
+                    Log.w(LOG_TAG, "Playback heartbeat failed: event=${event.name}, code=$code, type=${error::class.java.simpleName}")
+                    if (event == PlaybackHeartbeatEvent.END) activeHeartbeatSession = null
+                }
+            }
         }
     }
 
@@ -406,6 +539,17 @@ class ControllerTrustPolicy(
 }
 
 private data class DashHttpFailure(val host: String, val code: Int)
+
+private data class ActiveHeartbeatSession(
+    val mediaId: String,
+    val aid: Long,
+    val bvid: String,
+    val cid: Long,
+    val session: String,
+    val startedAtEpochSeconds: Long,
+    var maxPlayedSeconds: Int = 0,
+    var lastSentAtEpochSeconds: Long? = null,
+)
 
 private const val LOG_TAG = "BiuPlayback"
 private const val PROGRESS_PERSIST_INTERVAL_MS = 5_000L

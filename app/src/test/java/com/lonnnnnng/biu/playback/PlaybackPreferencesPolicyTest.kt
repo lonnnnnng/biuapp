@@ -6,6 +6,11 @@ import org.junit.Test
 
 class PlaybackPreferencesPolicyTest {
     @Test
+    fun playbackHistoryReportingDefaultsToEnabled() {
+        assertEquals(true, PlaybackPreferences().reportPlayHistory)
+    }
+
+    @Test
     fun playbackModesMapFromMedia3State() {
         assertEquals(PlaybackMode.SEQUENTIAL, PlaybackMode.fromPlayer(Player.REPEAT_MODE_OFF, false))
         assertEquals(PlaybackMode.REPEAT_ALL, PlaybackMode.fromPlayer(Player.REPEAT_MODE_ALL, false))

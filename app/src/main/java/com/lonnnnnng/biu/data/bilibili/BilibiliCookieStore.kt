@@ -15,6 +15,8 @@ class BilibiliCookieStore {
 
     fun sessionVersion(): Int? = loginSessionVersion(cookieHeader())
 
+    fun csrfToken(): String? = csrfToken(cookieHeader())
+
     fun clear(onComplete: (Boolean) -> Unit) {
         CookieManager.getInstance().removeAllCookies(onComplete)
     }
@@ -34,4 +36,14 @@ internal fun loginSessionVersion(cookieHeader: String?): Int? {
         ?.substringAfter('=', "")
         ?.takeIf(String::isNotBlank)
         ?.hashCode()
+}
+
+internal fun csrfToken(cookieHeader: String?): String? {
+    return cookieHeader
+        ?.split(';')
+        ?.asSequence()
+        ?.map(String::trim)
+        ?.firstOrNull { cookie -> cookie.substringBefore('=') == "bili_jct" }
+        ?.substringAfter('=', "")
+        ?.takeIf(String::isNotBlank)
 }

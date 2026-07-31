@@ -25,6 +25,7 @@ data class BilibiliTrackSource(
     val bvid: String,
     val cid: Long,
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
+    val aid: Long? = null,
 )
 
 fun Track.toMediaItem(): MediaItem {
@@ -84,7 +85,8 @@ fun MediaItem.bilibiliSource(): BilibiliTrackSource? {
     val qualityPreference = extras.getString(EXTRA_QUALITY_PREFERENCE)
         ?.let { value -> runCatching { AudioQualityPreference.valueOf(value) }.getOrNull() }
         ?: AudioQualityPreference.HIGHEST
-    return BilibiliTrackSource(bvid, cid, qualityPreference)
+    val aid = extras.getLong(EXTRA_AID, 0L).takeIf { it > 0L }
+    return BilibiliTrackSource(bvid, cid, qualityPreference, aid)
 }
 
 fun MediaItem.toTrackOrNull(): Track? {
@@ -119,6 +121,7 @@ private fun Track.toExtras(): Bundle {
         source?.let { bilibiliSource ->
             putString(EXTRA_BVID, bilibiliSource.bvid)
             putLong(EXTRA_CID, bilibiliSource.cid)
+            bilibiliSource.aid?.takeIf { it > 0L }?.let { putLong(EXTRA_AID, it) }
             putString(EXTRA_QUALITY_PREFERENCE, bilibiliSource.qualityPreference.name)
         }
     }
@@ -126,6 +129,7 @@ private fun Track.toExtras(): Bundle {
 
 private const val EXTRA_BVID = "biu.bilibili.bvid"
 private const val EXTRA_CID = "biu.bilibili.cid"
+private const val EXTRA_AID = "biu.bilibili.aid"
 private const val EXTRA_QUALITY_PREFERENCE = "biu.bilibili.quality_preference"
 private const val EXTRA_RESOURCE_TITLE = "biu.playback.resource_title"
 private const val PAGE_TITLE_SEPARATOR = " · "
