@@ -57,7 +57,9 @@ DASH URL 可能过期。播放失败且响应符合链接失效特征时，解�
 
 在线内容默认使用音频轨。用户在正在播放页切换视频时，`MediaController` 通过仅向同包可信控制器开放的自定义 SessionCommand 请求 `PlaybackService` 重建当前分 P；服务以 `MergingMediaSource` 合并独立视频轨和标准 AAC 音频轨，并保留队列索引、进度、倍速、循环模式及播放/暂停意图。竖屏 Compose 以 `16:9` 小窗承载同一个 `PlayerView`，横屏根据系统方向切换为沉浸全屏，共用覆盖式控制层；视频模式仅作用于当前分 P，切换媒体项或进程重启后恢复产品默认的音频模式。
 
-视频画质来自同一次 `fnval=4048` DASH 响应中的实际视频轨，不展示仅存在于描述字段但账号无权播放的清晰度。同一清晰度优先 AVC，缺失时依次回退 HEVC、AV1；画质切换继续由 MediaSession 服务按 `bvid + cid + qualityId` 重新解析和替换媒体源。MediaItem 只向 UI 暴露画质 ID 与标签，带签名的音视频 URL 不进入展示状态或普通日志。
+视频画质来自同一次 `fnval=4048` DASH 响应中的实际视频轨，不展示仅存在于描述字段但账号无权播放的清晰度。同一清晰度优先 AVC，缺失时依次回退 HEVC、AV1；画质切换继续由 MediaSession 服务按 `bvid + cid + qualityId` 重新解析和替换媒体源。MediaItem 只向 UI 暴露画质 ID 与标签，带签名的音视频 URL 不进入展示状态或普通日志。Redmi Note 8 Pro 的 MTK HEVC 在正常解码和资源切换 flush 时均会使厂商 codec 服务原生崩溃，`c2.android.avc.decoder` 也会在软件颜色转换中崩溃，因此该类设备默认选择最高 720p 的 AVC 厂商硬解轨；用户手动画质选择仍可越过默认上限。
+
+MTK codec 服务死亡后，Media3 可能上报明确的 decoder error，也可能只给出 `ERROR_CODE_UNSPECIFIED`。播放服务保存队列、索引、进度、播放意图、倍速、循环、随机和音量，在 30 秒窗口内最多重建两次 `ExoPlayer`；已有 `MediaSession` 仅通过 `setPlayer` 换绑新 Player，锁屏和现有 Controller 不需要重连。重建位置会限制在已知媒体总时长内，并等待 350ms 让 vendor codec 服务重新拉起后再 `prepare()`，避免损坏实例的 `DEAD_OBJECT` 状态继续污染会话。
 
 播放结束属于一次性业务事件，不能依赖 `message == "Ended"` 这类展示字符串。状态层使用单调递增事件 ID，确保自动下一首不会重复触发或漏触发。
 

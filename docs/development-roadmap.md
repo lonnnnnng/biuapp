@@ -256,7 +256,8 @@
 
 - JVM 测试覆盖画质去重、指定清晰度选流、AVC/HEVC/AV1 回退、Repository 实际候选列表及音频持久化边界。
 - `:app:compileDebugKotlin`、定向 JVM 测试、`:app:lintDebug` 和 `:app:assembleDebug` 已通过。
-- Redmi `wsvwypiz7xwslvl7` 已安装最新 Debug APK；竖屏视频区域实测为 `[0,287][1080,895]`，底部工具栏为 `[0,752][1080,895]`，左右无白边和圆角，画质显示 `720p · HEVC`。
+- Redmi `wsvwypiz7xwslvl7` 已安装最新 Debug APK；竖屏视频区域实测为 `[0,287][1080,895]`，底部工具栏为 `[0,752][1080,895]`，左右无白边和圆角。MTK 真机默认轨已调整为 `720p · AVC`，避开已确认会在正常播放和资源 flush 中原生崩溃的 HEVC 路径。
+- 同一真机已确认 MTK AVC 厂商解码器也可能在 `FillThisBuffer`、颜色转换和 `ComponentDeInit` 中崩溃；播放服务现按 30 秒窗口最多两次重建 Player，并使用 `MediaSession.setPlayer` 保持系统控制连接。安装包含未分类错误恢复的 Debug APK 后，视频从 `5:16` 连续穿过复现点播放至至少 `5:57`，MediaSession 始终为 `PLAYING(3), error=null`；视频播放中切换资源后也未停留在 `ERROR(7)`。
 - 同一真机已核验账号页五个单行 Tab、收藏夹分组默认收起、下载任务迁入账号页、推荐/历史紧凑搜索和统一列表密度；播放页已移除下载列表入口，AndroidRuntime、MediaCodec 和 Media3 错误筛查均为空。
 
 ### M11：用户与关注

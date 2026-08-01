@@ -766,10 +766,16 @@ class BilibiliRepository(
         cid: Long,
         qualityId: Int? = null,
         codecPreference: DashVideoCodecPreference = DashVideoCodecPreference.AVC,
+        defaultMaxQualityId: Int? = null,
     ): DashVideoPlaybackStreams {
         val streams = resolveDashStreams(bvid, cid)
         val availableVideos = DashVideoSelector.selectableStreams(streams.video, codecPreference)
-        val video = DashVideoSelector.select(streams.video, qualityId, codecPreference)
+        val video = DashVideoSelector.selectForPlayback(
+            streams = streams.video,
+            qualityId = qualityId,
+            codecPreference = codecPreference,
+            defaultMaxQualityId = defaultMaxQualityId,
+        )
             ?: throw BilibiliApiException(-404, if (qualityId == null) "没有可播放的视频轨" else "所选画质当前不可用")
         val audio = streams.standard.maxByOrNull(DashAudioStream::bandwidth)
             ?: throw BilibiliApiException(-404, "没有可播放的标准 AAC 音频")

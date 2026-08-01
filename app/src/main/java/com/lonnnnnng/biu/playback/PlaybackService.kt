@@ -1,6 +1,7 @@
 package com.lonnnnnng.biu.playback
 
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -63,7 +64,9 @@ class PlaybackService : MediaSessionService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var refreshInFlight = false
     private var mediaModeSwitchInFlight = false
+    private var codecRecoveryInFlight = false
     private var retryConsumedForCurrentItem = false
+    private val codecRecoveryPolicy = PlaybackCodecRecoveryPolicy()
     private var recordedMediaId: String? = null
     private var progressPersistenceJob: Job? = null
     private var queuePersistenceJob: Job? = null
@@ -75,11 +78,13 @@ class PlaybackService : MediaSessionService() {
     private val queuePersistenceMutex = Mutex()
     private var restoringPlaybackQueue = false
     private lateinit var mediaSourceFactory: DefaultMediaSourceFactory
-    private val videoCodecPreference: DashVideoCodecPreference by lazy {
-        if (defaultAvcDecoderIsMtk()) DashVideoCodecPreference.HEVC else DashVideoCodecPreference.AVC
+    // long: Redmi 的 MTK HEVC 在正常解码和资源 flush 两条路径都已确认会原生崩溃；AVC 硬解配合 Player 自愈是当前真机可持续出画面的路径。
+    private val videoCodecPreference = DashVideoCodecPreference.AVC
+    private val defaultVideoMaxQualityId: Int? by lazy {
+        if (defaultAvcDecoderIsMtk()) MTK_DEFAULT_VIDEO_MAX_QUALITY_ID else null
     }
     private val isMediaReplacementInFlight: Boolean
-        get() = refreshInFlight || mediaModeSwitchInFlight
+        get() = refreshInFlight || mediaModeSwitchInFlight || codecRecoveryInFlight
     private val sessionCallback = object : MediaSession.Callback {
         @UnstableApi
         override fun onConnect(
@@ -178,7 +183,10 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (!isMediaReplacementInFlight) retryConsumedForCurrentItem = false
+            if (!isMediaReplacementInFlight) {
+                retryConsumedForCurrentItem = false
+                codecRecoveryPolicy.resetForExternalMediaItemTransition()
+            }
             val isNewPlaybackRequest =
                 !isMediaReplacementInFlight && reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
             if (isNewPlaybackRequest) recordedMediaId = null
@@ -256,6 +264,8 @@ class PlaybackService : MediaSessionService() {
             }
             if (error.isExpiredDashUrlError()) {
                 refreshCurrentBilibiliTrack(error.failedDashUrl())
+            } else {
+                recoverPlayerFromCodecFailure(error)
             }
         }
     }
@@ -269,20 +279,7 @@ class PlaybackService : MediaSessionService() {
             OkHttpDataSource.Factory(appContainer.bilibiliHttpClient),
         )
         mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-        val renderersFactory = DefaultRenderersFactory(this)
-            .setEnableDecoderFallback(true)
-            // long: Redmi 的 MTK OMX 异步队列在高 profile DASH 轨上会在播放中让 mediaserver 崩溃；同步适配器仍保留 Media3 的解码器回退能力。
-            .forceDisableMediaCodecAsynchronousQueueing()
-            .setMediaCodecSelector(mtkAvcSafeCodecSelector())
-        val exoPlayer = ExoPlayer.Builder(this, renderersFactory)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build()
-            .apply {
-                setAudioAttributes(AudioAttributes.DEFAULT, true)
-                setHandleAudioBecomingNoisy(true)
-                repeatMode = Player.REPEAT_MODE_OFF
-                addListener(playerListener)
-            }
+        val exoPlayer = createExoPlayer()
 
         player = exoPlayer
         mediaSession = MediaSession.Builder(this, exoPlayer)
@@ -291,6 +288,24 @@ class PlaybackService : MediaSessionService() {
         restorePlaybackPreferences()
         observePlaybackPreferences()
         restorePlaybackQueue()
+    }
+
+    @UnstableApi
+    private fun createExoPlayer(): ExoPlayer {
+        val renderersFactory = DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
+            // long: Redmi 的 MTK OMX 异步队列在高 profile DASH 轨上会在播放中让 mediaserver 崩溃；同步适配器仍保留 Media3 的解码器回退能力。
+            .forceDisableMediaCodecAsynchronousQueueing()
+            .setMediaCodecSelector(mtkAvcSafeCodecSelector())
+        return ExoPlayer.Builder(this, renderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+            .apply {
+                setAudioAttributes(AudioAttributes.DEFAULT, true)
+                setHandleAudioBecomingNoisy(true)
+                repeatMode = Player.REPEAT_MODE_OFF
+                addListener(playerListener)
+            }
     }
 
     private fun mtkAvcSafeCodecSelector(): MediaCodecSelector {
@@ -304,8 +319,8 @@ class PlaybackService : MediaSessionService() {
                 mimeType == MimeTypes.VIDEO_H264 &&
                 defaultDecoders.firstOrNull()?.name?.startsWith("OMX.MTK.") == true
             ) {
-                // long: 这台 MTK ROM 的软件 AVC 会在颜色转换线程原生崩溃；只保留厂商解码器，实际播放则优先选择同清晰度 HEVC 轨。
-                defaultDecoders.filterNot { decoder -> decoder.name.startsWith("c2.android.") }
+                // long: c2 软件 AVC 已在真机 ih264d_format_convert 中原生崩溃并黑屏；过滤该 fallback，保留能在重建后继续出画面的 MTK AVC。
+                defaultDecoders.filterNot { decoder -> decoder.name == "c2.android.avc.decoder" }
             } else {
                 defaultDecoders
             }
@@ -313,11 +328,13 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun defaultAvcDecoderIsMtk(): Boolean {
-        return MediaCodecSelector.DEFAULT.getDecoderInfos(
-            MimeTypes.VIDEO_H264,
-            false,
-            false,
-        ).firstOrNull()?.name?.startsWith("OMX.MTK.") == true
+        return runCatching {
+            MediaCodecSelector.DEFAULT.getDecoderInfos(
+                MimeTypes.VIDEO_H264,
+                false,
+                false,
+            ).firstOrNull()?.name?.startsWith("OMX.MTK.") == true
+        }.getOrDefault(false)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -344,6 +361,98 @@ class PlaybackService : MediaSessionService() {
         serviceScope.launch {
             // long: 只有解码器真正进入播放态后才写历史，403、解析失败或未开始播放的点击不会污染记录。
             appContainer.playbackHistoryRepository.recordStarted(mediaItem)
+        }
+    }
+
+    @UnstableApi
+    private fun recoverPlayerFromCodecFailure(error: PlaybackException) {
+        val failedPlayer = player ?: return
+        val mediaId = failedPlayer.currentMediaItem?.mediaId.orEmpty()
+        if (
+            !codecRecoveryPolicy.tryBeginRecovery(
+                mediaId = mediaId,
+                errorCode = error.errorCode,
+                causeTypeNames = error.causeTypeNames(),
+                nowElapsedMs = SystemClock.elapsedRealtime(),
+                isMtkVideoPlayback =
+                    failedPlayer.currentMediaItem?.playbackMediaMode() == PlaybackMediaMode.VIDEO &&
+                        defaultVideoMaxQualityId != null,
+            )
+        ) {
+            return
+        }
+
+        codecRecoveryInFlight = true
+        val snapshot = PlaybackPlayerRecoverySnapshot.capture(failedPlayer)
+        if (snapshot == null) {
+            codecRecoveryInFlight = false
+            codecRecoveryPolicy.finishRecovery()
+            return
+        }
+
+        Log.w(LOG_TAG, "Rebuilding player after codec failure: code=${error.errorCode}")
+        val replacementPlayer = runCatching {
+            createExoPlayer().apply {
+                repeatMode = snapshot.repeatMode
+                shuffleModeEnabled = snapshot.shuffleModeEnabled
+                playbackParameters = snapshot.playbackParameters
+                volume = snapshot.volume
+                setMediaSources(
+                    snapshot.mediaItems.map(::createPlaybackMediaSource),
+                    snapshot.currentIndex,
+                    snapshot.currentPositionMs,
+                )
+                playWhenReady = snapshot.playWhenReady
+            }
+        }.getOrElse { recoveryError ->
+            player = failedPlayer
+            codecRecoveryInFlight = false
+            codecRecoveryPolicy.finishRecovery()
+            Log.e(LOG_TAG, "Player rebuild after codec failure failed", recoveryError)
+            return
+        }
+        val activeSession = mediaSession
+        if (activeSession == null) {
+            replacementPlayer.removeListener(playerListener)
+            replacementPlayer.release()
+            codecRecoveryInFlight = false
+            codecRecoveryPolicy.finishRecovery()
+            return
+        }
+
+        failedPlayer.removeListener(playerListener)
+        val sessionSwapError = runCatching {
+            // long: MediaSession 保持不变，系统锁屏控件与现有 MediaController 无需重连；只替换已被 DEAD_OBJECT 污染的底层 Player。
+            activeSession.setPlayer(replacementPlayer)
+        }.exceptionOrNull()
+        if (sessionSwapError != null) {
+            replacementPlayer.removeListener(playerListener)
+            replacementPlayer.release()
+            failedPlayer.addListener(playerListener)
+            codecRecoveryInFlight = false
+            codecRecoveryPolicy.finishRecovery()
+            Log.e(LOG_TAG, "Player rebuild after codec failure failed", sessionSwapError)
+            return
+        }
+
+        player = replacementPlayer
+        runCatching { failedPlayer.release() }
+            .onFailure { releaseError ->
+                // long: Session 已经切到新 Player 后不能回滚；旧 codec 释放异常只做脱敏记录，避免把控制器重新指回损坏实例。
+                Log.w(LOG_TAG, "Failed player release after codec recovery: type=${releaseError::class.java.simpleName}")
+            }
+        serviceScope.launch {
+            try {
+                // long: MTK OMX 原生进程死亡后需要短暂拉起时间；延迟 prepare 可避免新 Player 立即撞上尚未恢复的 codec 服务。
+                delay(CODEC_SERVICE_RECOVERY_DELAY_MS)
+                if (player === replacementPlayer) {
+                    replacementPlayer.prepare()
+                    Log.i(LOG_TAG, "Player rebuilt after codec failure")
+                }
+            } finally {
+                codecRecoveryInFlight = false
+                codecRecoveryPolicy.finishRecovery()
+            }
         }
     }
 
@@ -520,6 +629,7 @@ class PlaybackService : MediaSessionService() {
                     source.cid,
                     requestedVideoQualityId,
                     videoCodecPreference,
+                    defaultVideoMaxQualityId,
                 )
                 PlaybackStreamMetadata.video(
                     audioUrl = failedUrl?.let(streams.audio::replacementUrl) ?: streams.audio.url,
@@ -835,6 +945,18 @@ private fun PlaybackException.failedDashUrl(): String? {
     return null
 }
 
+private fun Throwable.causeTypeNames(): List<String> {
+    val typeNames = mutableListOf<String>()
+    var current: Throwable? = this
+    var depth = 0
+    while (current != null && depth < MAX_CAUSE_CHAIN_DEPTH) {
+        typeNames += current::class.java.name
+        current = current.cause
+        depth += 1
+    }
+    return typeNames
+}
+
 class ControllerTrustPolicy(
     private val applicationPackage: String,
     private val applicationUid: Int,
@@ -883,6 +1005,41 @@ private data class PlaybackMediaSwitchTarget(
     }
 }
 
+private data class PlaybackPlayerRecoverySnapshot(
+    val mediaItems: List<MediaItem>,
+    val currentIndex: Int,
+    val currentPositionMs: Long,
+    val playWhenReady: Boolean,
+    val repeatMode: Int,
+    val shuffleModeEnabled: Boolean,
+    val playbackParameters: PlaybackParameters,
+    val volume: Float,
+) {
+    companion object {
+        fun capture(player: ExoPlayer): PlaybackPlayerRecoverySnapshot? {
+            if (player.mediaItemCount == 0) return null
+            val items = (0 until player.mediaItemCount).map(player::getMediaItemAt)
+            return PlaybackPlayerRecoverySnapshot(
+                mediaItems = items,
+                currentIndex = player.currentMediaItemIndex.coerceIn(items.indices),
+                currentPositionMs = player.currentPosition
+                    .coerceAtLeast(0L)
+                    .let { positionMs ->
+                        player.duration
+                            .takeIf { durationMs -> durationMs != C.TIME_UNSET && durationMs >= 0L }
+                            ?.let(positionMs::coerceAtMost)
+                            ?: positionMs
+                    },
+                playWhenReady = player.playWhenReady,
+                repeatMode = player.repeatMode,
+                shuffleModeEnabled = player.shuffleModeEnabled,
+                playbackParameters = player.playbackParameters,
+                volume = player.volume,
+            )
+        }
+    }
+}
+
 private data class ActiveHeartbeatSession(
     val mediaId: String,
     val aid: Long,
@@ -898,3 +1055,6 @@ private const val LOG_TAG = "BiuPlayback"
 private const val PROGRESS_PERSIST_INTERVAL_MS = 5_000L
 private const val QUEUE_PERSIST_DEBOUNCE_MS = 1_000L
 private const val PLAYBACK_PREFERENCES_PERSIST_DEBOUNCE_MS = 200L
+private const val CODEC_SERVICE_RECOVERY_DELAY_MS = 350L
+private const val MAX_CAUSE_CHAIN_DEPTH = 32
+private const val MTK_DEFAULT_VIDEO_MAX_QUALITY_ID = 64

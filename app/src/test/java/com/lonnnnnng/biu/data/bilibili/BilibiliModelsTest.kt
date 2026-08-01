@@ -139,6 +139,35 @@ class BilibiliModelsTest {
     }
 
     @Test
+    fun `MTK 默认播放限制到720P但用户手选画质不受影响`() {
+        val candidates = listOf(
+            videoStream("avc-1080", qualityId = 80, codecs = "avc1.640033", bandwidth = 2_700_000),
+            videoStream("avc-720", qualityId = 64, codecs = "avc1.64001f", bandwidth = 1_200_000),
+        )
+
+        assertEquals(
+            "avc-720",
+            DashVideoSelector.selectForPlayback(candidates, defaultMaxQualityId = 64)?.url,
+        )
+        assertEquals(
+            "avc-1080",
+            DashVideoSelector.selectForPlayback(candidates, qualityId = 80, defaultMaxQualityId = 64)?.url,
+        )
+    }
+
+    @Test
+    fun `默认上限没有匹配轨时仍回退到可播放最高画质`() {
+        val candidates = listOf(
+            videoStream("avc-1080", qualityId = 80, codecs = "avc1.640033", bandwidth = 2_700_000),
+        )
+
+        assertEquals(
+            "avc-1080",
+            DashVideoSelector.selectForPlayback(candidates, defaultMaxQualityId = 64)?.url,
+        )
+    }
+
+    @Test
     fun `视频主播放地址失败后切换备用 CDN`() {
         val stream = videoStream(
             url = "https://primary.example/video",

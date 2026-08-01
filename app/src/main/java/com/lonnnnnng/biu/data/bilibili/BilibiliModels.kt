@@ -248,6 +248,22 @@ enum class DashVideoCodecPreference {
 }
 
 object DashVideoSelector {
+    fun selectForPlayback(
+        streams: List<DashVideoStream>,
+        qualityId: Int? = null,
+        codecPreference: DashVideoCodecPreference = DashVideoCodecPreference.AVC,
+        defaultMaxQualityId: Int? = null,
+    ): DashVideoStream? {
+        if (qualityId != null || defaultMaxQualityId == null) {
+            return select(streams, qualityId, codecPreference)
+        }
+        // long: 设备默认上限只约束自动选流；若视频没有上限内轨道，仍回退到真实可播放轨，不能把内容误判为不可用。
+        return select(
+            streams = streams.filter { stream -> stream.qualityId <= defaultMaxQualityId },
+            codecPreference = codecPreference,
+        ) ?: select(streams, codecPreference = codecPreference)
+    }
+
     fun select(
         streams: List<DashVideoStream>,
         qualityId: Int? = null,
