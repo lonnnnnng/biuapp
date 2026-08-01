@@ -12,7 +12,9 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -22,6 +24,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
+import com.lonnnnnng.biu.data.local.AppListDensity
+import com.lonnnnnng.biu.data.local.AppTextScale
 import com.lonnnnnng.biu.data.local.AppThemeMode
 
 private val darkColors = darkColorScheme(
@@ -92,9 +97,72 @@ private val biuShapes = Shapes(
     extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
 )
 
+data class BiuListDensityMetrics(
+    val contentVerticalPadding: Dp,
+    val rowVerticalPadding: Dp,
+    val mediaThumbnailWidth: Dp,
+    val mediaThumbnailHeight: Dp,
+    val mediaRowSpacing: Dp,
+    val localAudioArtworkSize: Dp,
+    val dynamicThumbnailWidth: Dp,
+    val dynamicRowSpacing: Dp,
+)
+
+private val standardListDensityMetrics = BiuListDensityMetrics(
+    contentVerticalPadding = 4.dp,
+    rowVerticalPadding = 4.dp,
+    mediaThumbnailWidth = 88.dp,
+    mediaThumbnailHeight = 52.dp,
+    mediaRowSpacing = 10.dp,
+    localAudioArtworkSize = 48.dp,
+    dynamicThumbnailWidth = 112.dp,
+    dynamicRowSpacing = 8.dp,
+)
+
+val LocalBiuListDensity = staticCompositionLocalOf { standardListDensityMetrics }
+
+private fun AppListDensity.toMetrics(): BiuListDensityMetrics = when (this) {
+    AppListDensity.STANDARD -> standardListDensityMetrics
+    AppListDensity.COMPACT -> BiuListDensityMetrics(
+        contentVerticalPadding = 1.dp,
+        rowVerticalPadding = 2.dp,
+        mediaThumbnailWidth = 76.dp,
+        mediaThumbnailHeight = 45.dp,
+        mediaRowSpacing = 8.dp,
+        localAudioArtworkSize = 44.dp,
+        dynamicThumbnailWidth = 96.dp,
+        dynamicRowSpacing = 6.dp,
+    )
+}
+
+private fun TextStyle.scaledBy(multiplier: Float): TextStyle = copy(
+    fontSize = fontSize * multiplier,
+    lineHeight = lineHeight * multiplier,
+)
+
+private fun Typography.scaledBy(multiplier: Float): Typography = copy(
+    displayLarge = displayLarge.scaledBy(multiplier),
+    displayMedium = displayMedium.scaledBy(multiplier),
+    displaySmall = displaySmall.scaledBy(multiplier),
+    headlineLarge = headlineLarge.scaledBy(multiplier),
+    headlineMedium = headlineMedium.scaledBy(multiplier),
+    headlineSmall = headlineSmall.scaledBy(multiplier),
+    titleLarge = titleLarge.scaledBy(multiplier),
+    titleMedium = titleMedium.scaledBy(multiplier),
+    titleSmall = titleSmall.scaledBy(multiplier),
+    bodyLarge = bodyLarge.scaledBy(multiplier),
+    bodyMedium = bodyMedium.scaledBy(multiplier),
+    bodySmall = bodySmall.scaledBy(multiplier),
+    labelLarge = labelLarge.scaledBy(multiplier),
+    labelMedium = labelMedium.scaledBy(multiplier),
+    labelSmall = labelSmall.scaledBy(multiplier),
+)
+
 @Composable
 fun BiuTheme(
     themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    textScale: AppTextScale = AppTextScale.STANDARD,
+    listDensity: AppListDensity = AppListDensity.STANDARD,
     content: @Composable () -> Unit,
 ) {
     val useDarkTheme = when (themeMode) {
@@ -123,17 +191,21 @@ fun BiuTheme(
             (view.context as? ComponentActivity)?.makeGestureNavigationTransparent()
         }
     }
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = biuTypography,
-        shapes = biuShapes,
-    ) {
-        // long: 根 Surface 延伸到透明系统栏下方，Android 15+ 强制 edge-to-edge 时也不会露出窗口默认底色。
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = colorScheme.background,
-            content = content,
-        )
+    // long: 应用字号只放大 Compose 基准排版，系统无障碍字号仍由 sp 的系统缩放继续生效。
+    val typography = biuTypography.scaledBy(textScale.multiplier)
+    CompositionLocalProvider(LocalBiuListDensity provides listDensity.toMetrics()) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = typography,
+            shapes = biuShapes,
+        ) {
+            // long: 根 Surface 延伸到透明系统栏下方，Android 15+ 强制 edge-to-edge 时也不会露出窗口默认底色。
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = colorScheme.background,
+                content = content,
+            )
+        }
     }
 }
 

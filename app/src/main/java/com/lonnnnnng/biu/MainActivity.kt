@@ -17,7 +17,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val uiState by viewModel.state.collectAsStateWithLifecycle()
-            BiuTheme(themeMode = uiState.themeMode) {
+            BiuTheme(
+                themeMode = uiState.themeMode,
+                textScale = uiState.textScale,
+                listDensity = uiState.listDensity,
+            ) {
                 BiuApp(viewModel)
             }
         }

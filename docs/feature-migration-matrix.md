@@ -19,6 +19,7 @@
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |
 | 歌词 | LRCLIB 手动搜索、时间轴展示与 Room 缓存 | M10 | 已完成；单 P/多 P 使用各自歌曲名称 |
 | 主题 | Material 亮色、暗色、跟随系统 + 系统栏同步 | M10 | 已完成基础三态切换；自定义强调色和字体待后续 |
+| 显示密度与字号 | Preferences DataStore + Compose Typography/CompositionLocal | M13 | 小号、标准、大号应用字号与标准、紧凑媒体列表密度已完成并跨冷启动恢复；网格和自定义字体待后续 |
 | 本地音乐 | MediaStore 查询 + SAF 目录授权（Android 10+） | M4 | 扫描、播放、目录筛选与重启恢复已完成 |
 | 音频下载 | Room 任务 + 前台下载服务 + Range 续传 + MediaStore.Audio | M4 | 标准 AAC 下载、暂停/继续/取消、通知进度与发布已完成 |
 | 视频下载 | Room 视频任务 + 双轨 Range 下载 + Media3 Mp4Muxer + MediaStore.Video | M5 | 当前单 P/当前分 P 下载、暂停恢复、取消、合并与 `Movies/Biu/` 发布已完成 |

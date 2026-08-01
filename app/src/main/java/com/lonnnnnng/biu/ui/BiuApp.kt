@@ -213,6 +213,8 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.CreatorFeedTabState
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
+import com.lonnnnnng.biu.data.local.AppListDensity
+import com.lonnnnnng.biu.data.local.AppTextScale
 import com.lonnnnnng.biu.data.local.AppThemeMode
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
@@ -228,6 +230,7 @@ import com.lonnnnnng.biu.download.DownloadNetworkPreference
 import com.lonnnnnng.biu.download.FavoriteBatchDownloadKind
 import com.lonnnnnng.biu.download.VideoDownloadRequest
 import com.lonnnnnng.biu.download.VideoDownloadStatus
+import com.lonnnnnng.biu.ui.theme.LocalBiuListDensity
 import com.lonnnnnng.biu.playback.PlaybackService
 import com.lonnnnnng.biu.playback.PlaybackMode
 import com.lonnnnnng.biu.playback.PlaybackSessionCommands
@@ -310,6 +313,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showThemeMenu by remember { mutableStateOf(false) }
     var showQualityMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
+    var showDisplaySettings by rememberSaveable { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
     var showCreatorCenter by rememberSaveable { mutableStateOf(false) }
     var favoritePickerVideo by remember { mutableStateOf<BilibiliVideo?>(null) }
@@ -923,6 +927,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     showAccountMenu = true
                 },
                 onDismissAccountMenu = { showAccountMenu = false },
+                onOpenDisplaySettings = {
+                    showAccountMenu = false
+                    showDisplaySettings = true
+                },
                 onLogin = {
                     showAccountMenu = false
                     showLogin = true
@@ -1118,6 +1126,16 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onLogin = { showLogin = true },
         )
     }
+
+    if (showDisplaySettings) {
+        DisplaySettingsSheet(
+            listDensity = uiState.listDensity,
+            textScale = uiState.textScale,
+            onDismiss = { showDisplaySettings = false },
+            onListDensitySelected = viewModel::selectListDensity,
+            onTextScaleSelected = viewModel::selectTextScale,
+        )
+    }
 }
 
 @Composable
@@ -1174,6 +1192,7 @@ private fun BiuTopBar(
     onQualitySelected: (AudioQualityPreference) -> Unit,
     onShowAccountMenu: () -> Unit,
     onDismissAccountMenu: () -> Unit,
+    onOpenDisplaySettings: () -> Unit,
     onLogin: () -> Unit,
     onRefreshAccount: () -> Unit,
     onCheckUpdate: () -> Unit,
@@ -1279,6 +1298,7 @@ private fun BiuTopBar(
                         isAccountLoading = isAccountLoading,
                         isUpdateChecking = isUpdateChecking,
                         onDismiss = onDismissAccountMenu,
+                        onOpenDisplaySettings = onOpenDisplaySettings,
                         onLogin = onLogin,
                         onRefresh = onRefreshAccount,
                         onCheckUpdate = onCheckUpdate,
@@ -1298,6 +1318,7 @@ private fun AccountDropdownMenu(
     isAccountLoading: Boolean,
     isUpdateChecking: Boolean,
     onDismiss: () -> Unit,
+    onOpenDisplaySettings: () -> Unit,
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
     onCheckUpdate: () -> Unit,
@@ -1366,6 +1387,11 @@ private fun AccountDropdownMenu(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
         DropdownMenuItem(
+            text = { Text("界面显示") },
+            leadingIcon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
+            onClick = onOpenDisplaySettings,
+        )
+        DropdownMenuItem(
             text = { Text(if (isAccountLoading) "刷新中" else "刷新") },
             leadingIcon = {
                 if (isAccountLoading) {
@@ -1402,6 +1428,70 @@ private fun AccountDropdownMenu(
                 },
                 onClick = onLogout,
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DisplaySettingsSheet(
+    listDensity: AppListDensity,
+    textScale: AppTextScale,
+    onDismiss: () -> Unit,
+    onListDensitySelected: (AppListDensity) -> Unit,
+    onTextScaleSelected: (AppTextScale) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = Modifier.widthIn(max = 840.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
+    ) {
+        // long: 显示偏好即时写入且可随时关闭，避免额外保存步骤让已经生效的设置与当前界面脱节。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+        ) {
+            BiuSheetHeader(title = "界面显示", onClose = onDismiss)
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("字体大小", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AppTextScale.entries.forEach { scale ->
+                            FilterChip(
+                                selected = textScale == scale,
+                                onClick = { onTextScaleSelected(scale) },
+                                label = { Text(scale.label) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("媒体列表", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AppListDensity.entries.forEach { density ->
+                            FilterChip(
+                                selected = listDensity == density,
+                                onClick = { onListDensitySelected(density) },
+                                label = { Text(density.label) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    Text(
+                        "紧凑模式会缩小媒体封面与列表间距，保留标题、时长和作者信息。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }
@@ -1642,6 +1732,7 @@ private fun DynamicFeedScreen(
         return
     }
     val listState = rememberLazyListState()
+    val listMetrics = LocalBiuListDensity.current
     val shouldLoadMore by remember(listState, state.items.size, state.hasMore) {
         derivedStateOf {
             val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -1676,7 +1767,9 @@ private fun DynamicFeedScreen(
                         onTriple = { onTriple(item) },
                     )
                     HorizontalDivider(
-                        modifier = Modifier.padding(start = 136.dp),
+                        modifier = Modifier.padding(
+                            start = 16.dp + listMetrics.dynamicThumbnailWidth + listMetrics.dynamicRowSpacing,
+                        ),
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
                 }
@@ -1707,6 +1800,7 @@ private fun DynamicFeedItem(
     onTriple: () -> Unit,
 ) {
     val density = LocalDensity.current
+    val listMetrics = LocalBiuListDensity.current
     val authorRowHeight = maxOf(
         18.dp,
         with(density) { MaterialTheme.typography.labelSmall.lineHeight.toDp() } + 1.dp,
@@ -1722,14 +1816,14 @@ private fun DynamicFeedItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = !resolving, onClick = onPlay)
-            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding)
             .height(itemHeight),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(listMetrics.dynamicRowSpacing),
         verticalAlignment = Alignment.Top,
     ) {
         Box(
             modifier = Modifier
-                .size(width = 112.dp, height = itemHeight)
+                .size(width = listMetrics.dynamicThumbnailWidth, height = itemHeight)
                 .clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
@@ -2220,6 +2314,7 @@ private fun LocalAudioList(
     modifier: Modifier = Modifier,
 ) {
     val directoryFilteringSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    val listMetrics = LocalBiuListDensity.current
     Column(modifier) {
         Row(
             modifier = Modifier
@@ -2302,20 +2397,20 @@ private fun LocalAudioList(
             )
             else -> LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 4.dp),
+                contentPadding = PaddingValues(vertical = listMetrics.contentVerticalPadding),
             ) {
                 items(audio, key = LocalAudio::mediaStoreId) { item ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { onPlay(item) }
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                            .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(listMetrics.localAudioArtworkSize)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(MaterialTheme.colorScheme.primaryContainer),
                             contentAlignment = Alignment.Center,
@@ -2362,7 +2457,9 @@ private fun LocalAudioList(
                             )
                         }
                     }
-                    MediaDivider(start = 74.dp)
+                    MediaDivider(
+                        start = 16.dp + listMetrics.localAudioArtworkSize + listMetrics.mediaRowSpacing,
+                    )
                 }
             }
         }
@@ -2796,6 +2893,7 @@ private fun LibraryVideoList(
     onRemove: ((BilibiliLibraryVideo) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
+    val listMetrics = LocalBiuListDensity.current
     var pendingRemove by remember { mutableStateOf<BilibiliLibraryVideo?>(null) }
     pendingRemove?.let { item ->
         AlertDialog(
@@ -2824,7 +2922,7 @@ private fun LibraryVideoList(
     }
     LazyColumn(
         modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(vertical = 4.dp),
+        contentPadding = PaddingValues(vertical = listMetrics.contentVerticalPadding),
     ) {
         itemsIndexed(
             items = videos,
@@ -2856,7 +2954,9 @@ private fun LibraryVideoList(
                     }
                 }
             }
-            MediaDivider(start = 114.dp)
+            MediaDivider(
+                start = 16.dp + listMetrics.mediaThumbnailWidth + listMetrics.mediaRowSpacing,
+            )
         }
         if (loadingMore) {
             item(key = "favorite-loading") {
@@ -2892,6 +2992,7 @@ private fun OnlineHistoryList(
     var pendingDelete by remember { mutableStateOf<BilibiliLibraryVideo?>(null) }
     var showClearConfirmation by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
+    val listMetrics = LocalBiuListDensity.current
 
     pendingDelete?.let { item ->
         AlertDialog(
@@ -2985,7 +3086,7 @@ private fun OnlineHistoryList(
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(vertical = 4.dp),
+                contentPadding = PaddingValues(vertical = listMetrics.contentVerticalPadding),
             ) {
                 itemsIndexed(
                     items = videos,
@@ -3015,7 +3116,9 @@ private fun OnlineHistoryList(
                             )
                         }
                     }
-                    MediaDivider(start = 114.dp)
+                    MediaDivider(
+                        start = 16.dp + listMetrics.mediaThumbnailWidth + listMetrics.mediaRowSpacing,
+                    )
                 }
                 if (loadingMore) {
                     item(key = "online-history-loading") {
@@ -3041,19 +3144,23 @@ private fun LibraryVideoRow(
 ) {
     val video = item.video
     val progressLabel = formatProgressSeconds(item.progressSeconds ?: 0, video.durationSeconds)
+    val listMetrics = LocalBiuListDensity.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
     ) {
         AsyncImage(
             model = video.coverUrl,
             contentDescription = video.title,
             modifier = Modifier
-                .size(width = 88.dp, height = 52.dp)
+                .size(
+                    width = listMetrics.mediaThumbnailWidth,
+                    height = listMetrics.mediaThumbnailHeight,
+                )
                 .clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentScale = ContentScale.Crop,
@@ -3095,6 +3202,7 @@ private fun LocalHistoryList(
     modifier: Modifier = Modifier,
 ) {
     var showClearConfirmation by remember { mutableStateOf(false) }
+    val listMetrics = LocalBiuListDensity.current
     if (showClearConfirmation) {
         AlertDialog(
             onDismissRequest = { showClearConfirmation = false },
@@ -3135,22 +3243,25 @@ private fun LocalHistoryList(
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 4.dp),
+                contentPadding = PaddingValues(vertical = listMetrics.contentVerticalPadding),
             ) {
                 items(history, key = PlaybackHistoryEntity::mediaId) { item ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(enabled = resolvingBvid == null) { onPlay(item) }
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                            .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
                     ) {
                         AsyncImage(
                             model = item.artworkUrl,
                             contentDescription = item.title,
                             modifier = Modifier
-                                .size(width = 88.dp, height = 52.dp)
+                                .size(
+                                    width = listMetrics.mediaThumbnailWidth,
+                                    height = listMetrics.mediaThumbnailHeight,
+                                )
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                             contentScale = ContentScale.Crop,
@@ -3181,7 +3292,9 @@ private fun LocalHistoryList(
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                         }
                     }
-                    MediaDivider(start = 114.dp)
+                    MediaDivider(
+                        start = 16.dp + listMetrics.mediaThumbnailWidth + listMetrics.mediaRowSpacing,
+                    )
                 }
             }
         }
@@ -3248,6 +3361,7 @@ private fun VideoList(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    val listMetrics = LocalBiuListDensity.current
     val shouldLoadMore by remember(listState, videos.size, hasMore) {
         derivedStateOf {
             val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -3261,7 +3375,7 @@ private fun VideoList(
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         state = listState,
-        contentPadding = PaddingValues(vertical = 4.dp),
+        contentPadding = PaddingValues(vertical = listMetrics.contentVerticalPadding),
     ) {
         items(videos, key = BilibiliVideo::bvid) { video ->
             VideoRow(
@@ -3271,7 +3385,9 @@ private fun VideoList(
                 onClick = { onPlay(video) },
                 onAddFavorite = { onAddFavorite(video) },
             )
-            MediaDivider(start = 114.dp)
+            MediaDivider(
+                start = 16.dp + listMetrics.mediaThumbnailWidth + listMetrics.mediaRowSpacing,
+            )
         }
         if (loadingMore) {
             item(key = "recommendation-loading-more") {
@@ -3296,17 +3412,21 @@ internal fun VideoRow(
     onClick: () -> Unit,
     onAddFavorite: () -> Unit,
 ) {
+    val listMetrics = LocalBiuListDensity.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
     ) {
         Box(
             modifier = Modifier
-                .size(width = 88.dp, height = 52.dp)
+                .size(
+                    width = listMetrics.mediaThumbnailWidth,
+                    height = listMetrics.mediaThumbnailHeight,
+                )
                 .clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {

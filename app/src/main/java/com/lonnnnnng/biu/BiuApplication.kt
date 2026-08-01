@@ -10,6 +10,7 @@ import com.lonnnnnng.biu.data.local.BiuDatabase
 import com.lonnnnnng.biu.data.local.BiuDatabaseMigrations
 import com.lonnnnnng.biu.data.local.AudioDownloadRepository
 import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
+import com.lonnnnnng.biu.data.local.DisplayPreferenceRepository
 import com.lonnnnnng.biu.data.local.LocalAudioDirectoryRepository
 import com.lonnnnnng.biu.data.local.LocalAudioRepository
 import com.lonnnnnng.biu.data.local.LyricsCacheRepository
@@ -83,6 +84,7 @@ class AppContainer(context: Context) {
     val downloadNetworkPreferenceRepository = DownloadNetworkPreferenceRepository(context)
     val playbackPreferenceRepository = PlaybackPreferenceRepository(context)
     val themePreferenceRepository = ThemePreferenceRepository(context)
+    val displayPreferenceRepository = DisplayPreferenceRepository(context)
     val localAudioDirectoryRepository = LocalAudioDirectoryRepository(context)
     val localAudioRepository = LocalAudioRepository(context)
     val audioDownloadRecovery: Deferred<Unit> = applicationScope.async {

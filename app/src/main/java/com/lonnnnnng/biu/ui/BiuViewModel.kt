@@ -25,6 +25,8 @@ import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.AppThemeMode
+import com.lonnnnnng.biu.data.local.AppListDensity
+import com.lonnnnnng.biu.data.local.AppTextScale
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
@@ -185,6 +187,8 @@ data class BiuUiState(
     val lyrics: LyricsUiState = LyricsUiState(),
     val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    val listDensity: AppListDensity = AppListDensity.STANDARD,
+    val textScale: AppTextScale = AppTextScale.STANDARD,
     val reportPlayHistory: Boolean = true,
     val isFeedLoading: Boolean = true,
     val isFeedLoadingMore: Boolean = false,
@@ -307,6 +311,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.themePreferenceRepository.mode.collect { mode ->
                 mutableState.update { it.copy(themeMode = mode) }
+            }
+        }
+        viewModelScope.launch {
+            container.displayPreferenceRepository.preferences.collect { preferences ->
+                mutableState.update {
+                    it.copy(
+                        listDensity = preferences.listDensity,
+                        textScale = preferences.textScale,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -1296,6 +1310,50 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             current.copy(
                                 themeMode = previousMode,
                                 message = error.userMessage("保存主题设置失败"),
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
+    fun selectListDensity(density: AppListDensity) {
+        val previousDensity = state.value.listDensity
+        if (previousDensity == density) return
+        mutableState.update { it.copy(listDensity = density) }
+        viewModelScope.launch {
+            runCatching { container.displayPreferenceRepository.saveListDensity(density) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        // long: 连续切换显示密度时，早先失败的写入不能撤销用户刚做出的新选择。
+                        if (current.listDensity != density) {
+                            current
+                        } else {
+                            current.copy(
+                                listDensity = previousDensity,
+                                message = error.userMessage("保存列表密度失败"),
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
+    fun selectTextScale(scale: AppTextScale) {
+        val previousScale = state.value.textScale
+        if (previousScale == scale) return
+        mutableState.update { it.copy(textScale = scale) }
+        viewModelScope.launch {
+            runCatching { container.displayPreferenceRepository.saveTextScale(scale) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        // long: 字号与密度独立保存；只在当前选择仍是失败目标时回滚，避免覆盖后续选择。
+                        if (current.textScale != scale) {
+                            current
+                        } else {
+                            current.copy(
+                                textScale = previousScale,
+                                message = error.userMessage("保存字体大小失败"),
                             )
                         }
                     }
