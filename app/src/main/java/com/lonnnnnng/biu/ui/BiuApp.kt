@@ -21,7 +21,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -48,6 +47,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -202,6 +206,7 @@ import com.lonnnnnng.biu.core.model.bilibiliSource
 import com.lonnnnnng.biu.core.model.playbackMediaMode
 import com.lonnnnnng.biu.core.model.playbackStreamMetadata
 import com.lonnnnnng.biu.core.model.toMediaItem
+import com.lonnnnnng.biu.core.model.toTrackOrNull
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
@@ -216,6 +221,7 @@ import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.AppListDensity
 import com.lonnnnnng.biu.data.local.AppTextScale
 import com.lonnnnnng.biu.data.local.AppThemeMode
+import com.lonnnnnng.biu.data.local.AppVideoLayout
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
@@ -240,6 +246,7 @@ import com.lonnnnnng.biu.update.AppUpdateInstaller
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -258,6 +265,7 @@ private data class PlaybackSnapshot(
     val artist: String = "选择内容开始播放",
     val quality: String = "",
     val pageTitle: String? = null,
+    val publishedAtEpochSeconds: Long? = null,
     val artworkUrl: String? = null,
     val isPlaying: Boolean = false,
     val playbackMode: PlaybackMode = PlaybackMode.SEQUENTIAL,
@@ -562,6 +570,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     artist = activeController.mediaMetadata.artist?.toString() ?: "选择内容开始播放",
                     quality = activeController.mediaMetadata.description?.toString().orEmpty(),
                     pageTitle = activeController.mediaMetadata.subtitle?.toString()?.takeIf(String::isNotBlank),
+                    publishedAtEpochSeconds = activeController.currentMediaItem
+                        ?.toTrackOrNull()
+                        ?.publishedAtEpochSeconds,
                     artworkUrl = activeController.mediaMetadata.artworkUri?.toString(),
                     isPlaying = activeController.isPlaying,
                     playbackMode = PlaybackMode.fromPlayer(
@@ -984,6 +995,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     hasMore = uiState.recommendationHasMore,
                     searchLoading = uiState.isSearchLoading,
                     resolvingBvid = uiState.resolvingBvid,
+                    videoLayout = uiState.videoLayout,
                     onFeedChange = viewModel::loadRecommendations,
                     onCreatorFeedChange = viewModel::selectCreatorFeed,
                     onRefresh = { viewModel.loadRecommendations() },
@@ -1131,9 +1143,11 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         DisplaySettingsSheet(
             listDensity = uiState.listDensity,
             textScale = uiState.textScale,
+            videoLayout = uiState.videoLayout,
             onDismiss = { showDisplaySettings = false },
             onListDensitySelected = viewModel::selectListDensity,
             onTextScaleSelected = viewModel::selectTextScale,
+            onVideoLayoutSelected = viewModel::selectVideoLayout,
         )
     }
 }
@@ -1437,9 +1451,11 @@ private fun AccountDropdownMenu(
 private fun DisplaySettingsSheet(
     listDensity: AppListDensity,
     textScale: AppTextScale,
+    videoLayout: AppVideoLayout,
     onDismiss: () -> Unit,
     onListDensitySelected: (AppListDensity) -> Unit,
     onTextScaleSelected: (AppTextScale) -> Unit,
+    onVideoLayoutSelected: (AppVideoLayout) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -1487,6 +1503,24 @@ private fun DisplaySettingsSheet(
                     }
                     Text(
                         "紧凑模式会缩小媒体封面与列表间距，保留标题、时长和作者信息。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("推荐视频布局", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AppVideoLayout.entries.forEach { layout ->
+                            FilterChip(
+                                selected = videoLayout == layout,
+                                onClick = { onVideoLayoutSelected(layout) },
+                                label = { Text(layout.label) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    Text(
+                        "网格仅用于推荐和搜索结果，保留播放、收藏与继续加载。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1597,6 +1631,7 @@ private fun RecommendationScreen(
     hasMore: Boolean,
     searchLoading: Boolean,
     resolvingBvid: String?,
+    videoLayout: AppVideoLayout,
     onFeedChange: (RecommendFeed) -> Unit,
     onCreatorFeedChange: (Long) -> Unit,
     onRefresh: () -> Unit,
@@ -1695,6 +1730,7 @@ private fun RecommendationScreen(
                 VideoList(
                     videos = activeVideos,
                     resolvingBvid = resolvingBvid,
+                    videoLayout = videoLayout,
                     onPlay = onPlay,
                     onAddFavorite = onAddFavorite,
                     onLoadMore = if (showingSearchResults) null else onLoadMore,
@@ -3353,12 +3389,48 @@ internal fun BiuEmptyState(
 private fun VideoList(
     videos: List<BilibiliVideo>,
     resolvingBvid: String?,
+    videoLayout: AppVideoLayout,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
     onLoadMore: (() -> Unit)?,
     hasMore: Boolean,
     loadingMore: Boolean,
     modifier: Modifier = Modifier,
+) {
+    when (videoLayout) {
+        AppVideoLayout.LIST -> VideoRowList(
+            videos = videos,
+            resolvingBvid = resolvingBvid,
+            onPlay = onPlay,
+            onAddFavorite = onAddFavorite,
+            onLoadMore = onLoadMore,
+            hasMore = hasMore,
+            loadingMore = loadingMore,
+            modifier = modifier,
+        )
+        AppVideoLayout.GRID -> VideoGrid(
+            videos = videos,
+            resolvingBvid = resolvingBvid,
+            onPlay = onPlay,
+            onAddFavorite = onAddFavorite,
+            onLoadMore = onLoadMore,
+            hasMore = hasMore,
+            loadingMore = loadingMore,
+            modifier = modifier,
+        )
+    }
+}
+
+@Composable
+private fun VideoRowList(
+    videos: List<BilibiliVideo>,
+    resolvingBvid: String?,
+    onPlay: (BilibiliVideo) -> Unit,
+    onAddFavorite: (BilibiliVideo) -> Unit,
+    onLoadMore: (() -> Unit)?,
+    hasMore: Boolean,
+    loadingMore: Boolean,
+    modifier: Modifier,
 ) {
     val listState = rememberLazyListState()
     val listMetrics = LocalBiuListDensity.current
@@ -3398,6 +3470,158 @@ private fun VideoList(
                     contentAlignment = Alignment.Center,
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoGrid(
+    videos: List<BilibiliVideo>,
+    resolvingBvid: String?,
+    onPlay: (BilibiliVideo) -> Unit,
+    onAddFavorite: (BilibiliVideo) -> Unit,
+    onLoadMore: (() -> Unit)?,
+    hasMore: Boolean,
+    loadingMore: Boolean,
+    modifier: Modifier,
+) {
+    val gridState = rememberLazyGridState()
+    val listMetrics = LocalBiuListDensity.current
+    val shouldLoadMore by remember(gridState, videos.size, hasMore) {
+        derivedStateOf {
+            val lastVisibleIndex = gridState.layoutInfo.visibleItemsInfo
+                .lastOrNull { item -> item.index < videos.size }
+                ?.index ?: -1
+            hasMore && videos.isNotEmpty() && lastVisibleIndex >= videos.lastIndex - 3
+        }
+    }
+    // long: 续页指示器也会成为 Grid item；只计算真实视频索引，避免它触发重复的推荐翻页请求。
+    LaunchedEffect(shouldLoadMore, videos.size, hasMore) {
+        if (shouldLoadMore && !loadingMore) onLoadMore?.invoke()
+    }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = modifier.fillMaxWidth(),
+        state = gridState,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = listMetrics.contentVerticalPadding),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
+    ) {
+        gridItems(items = videos, key = BilibiliVideo::bvid) { video ->
+            VideoGridCard(
+                video = video,
+                resolving = resolvingBvid == video.bvid,
+                enabled = resolvingBvid == null,
+                onClick = { onPlay(video) },
+                onAddFavorite = { onAddFavorite(video) },
+            )
+        }
+        if (loadingMore) {
+            item(
+                key = "recommendation-grid-loading-more",
+                span = { GridItemSpan(maxLineSpan) },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoGridCard(
+    video: BilibiliVideo,
+    resolving: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    onAddFavorite: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            AsyncImage(
+                model = video.coverUrl,
+                contentDescription = video.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            video.durationSeconds?.let { duration ->
+                Text(
+                    formatDuration(duration),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        Text(
+            video.title,
+            minLines = 2,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            formatPublishedAt(video.publishedAtEpochSeconds),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            video.author.ifBlank { "未知 UP 主" },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onAddFavorite, enabled = enabled) {
+                Icon(
+                    Icons.Rounded.FavoriteBorder,
+                    contentDescription = "收藏 ${video.title}",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            if (resolving) {
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            } else {
+                IconButton(onClick = onClick, enabled = enabled) {
+                    Icon(
+                        Icons.Rounded.PlayArrow,
+                        contentDescription = "播放 ${video.title}",
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
         }
@@ -4473,6 +4697,8 @@ private fun NowPlayingScreen(
                 onPlaybackSpeedChange = onPlaybackSpeedChange,
                 onSwitchToAudio = switchToAudio,
                 onVideoQualityChange = onVideoQualityChange,
+                videoDownloadEnabled = snapshot.videoDownloadRequest != null,
+                onVideoDownload = onVideoDownload,
                 onShowQueue = { showQueue = true },
                 onEnterFullscreen = enterFullscreen,
                 modifier = Modifier
@@ -4492,7 +4718,6 @@ private fun NowPlayingScreen(
                 onPlaybackModeChange = onPlaybackModeChange,
                 onPlaybackSpeedChange = onPlaybackSpeedChange,
                 onDownload = onDownload,
-                onVideoDownload = onVideoDownload,
                 onShowQueue = { showQueue = true },
                 isLandscape = isLandscape,
                 modifier = Modifier
@@ -4587,6 +4812,8 @@ private fun EmbeddedVideoPlayback(
     onPlaybackSpeedChange: (Float) -> Unit,
     onSwitchToAudio: () -> Unit,
     onVideoQualityChange: (Int) -> Unit,
+    videoDownloadEnabled: Boolean,
+    onVideoDownload: () -> Unit,
     onShowQueue: () -> Unit,
     onEnterFullscreen: () -> Unit,
     modifier: Modifier = Modifier,
@@ -4595,7 +4822,7 @@ private fun EmbeddedVideoPlayback(
         modifier = modifier.padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // long: 竖屏视频直接贴齐屏幕左右边缘，取消外边距和圆角；标题作者仍保留正文边距，避免文字贴边影响阅读。
+        // long: 竖屏视频直接贴齐屏幕左右边缘，取消外边距和圆角；视频标题和来源信息仍保留正文边距，避免文字贴边影响阅读。
         VideoPlaybackSurface(
             snapshot = snapshot,
             player = player,
@@ -4621,20 +4848,47 @@ private fun EmbeddedVideoPlayback(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyMedium,
         )
-        Text(
-            text = snapshot.artist,
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+                .padding(start = 16.dp, end = 8.dp, top = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = snapshot.artist,
+                modifier = Modifier.widthIn(max = 132.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "发布时间 · ${formatPublishedDateTime(snapshot.publishedAtEpochSeconds)}",
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            IconButton(
+                onClick = onVideoDownload,
+                enabled = videoDownloadEnabled,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    Icons.Rounded.Movie,
+                    contentDescription = "下载当前视频",
+                    tint = if (videoDownloadEnabled) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -4658,7 +4912,9 @@ private fun VideoPlaybackSurface(
 ) {
     var controlsVisible by remember(snapshot.mediaId, fullscreen) { mutableStateOf(true) }
     var isDragging by remember(snapshot.mediaId) { mutableStateOf(false) }
+    var isSwipeSeeking by remember(snapshot.mediaId) { mutableStateOf(false) }
     var dragFraction by remember(snapshot.mediaId) { mutableFloatStateOf(0f) }
+    var swipeStartPositionMs by remember(snapshot.mediaId) { mutableLongStateOf(0L) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showQualityMenu by remember { mutableStateOf(false) }
     val progress = PlaybackProgressPolicy.normalize(
@@ -4667,8 +4923,9 @@ private fun VideoPlaybackSurface(
         bufferedPositionMs = snapshot.bufferedPositionMs,
         isSeekable = snapshot.isSeekable,
     )
-    val sliderValue = if (isDragging) dragFraction else progress.fraction
-    val displayedPositionMs = if (isDragging) {
+    val isProgressAdjusting = isDragging || isSwipeSeeking
+    val sliderValue = if (isProgressAdjusting) dragFraction else progress.fraction
+    val displayedPositionMs = if (isProgressAdjusting) {
         PlaybackProgressPolicy.seekPositionMs(dragFraction, progress.durationMs)
     } else {
         progress.positionMs
@@ -4676,13 +4933,13 @@ private fun VideoPlaybackSurface(
     LaunchedEffect(
         controlsVisible,
         snapshot.isPlaying,
-        isDragging,
+        isProgressAdjusting,
         showSpeedMenu,
         showQualityMenu,
         snapshot.mediaId,
         fullscreen,
     ) {
-        if (controlsVisible && snapshot.isPlaying && !isDragging && !showSpeedMenu && !showQualityMenu) {
+        if (controlsVisible && snapshot.isPlaying && !isProgressAdjusting && !showSpeedMenu && !showQualityMenu) {
             delay(VIDEO_CONTROLS_HIDE_DELAY_MS)
             controlsVisible = false
         }
@@ -4690,10 +4947,7 @@ private fun VideoPlaybackSurface(
 
     BoxWithConstraints(
         modifier = modifier
-            .background(Color.Black)
-            .pointerInput(snapshot.mediaId, controlsVisible, fullscreen) {
-                detectTapGestures { controlsVisible = !controlsVisible }
-            },
+            .background(Color.Black),
     ) {
         if (player == null) {
             CircularProgressIndicator(
@@ -4704,6 +4958,44 @@ private fun VideoPlaybackSurface(
             )
         } else {
             NowPlayingVideo(player = player, modifier = Modifier.fillMaxSize())
+        }
+
+        VideoPlaybackGestureLayer(
+            swipeSeekEnabled = controllerReady && progress.isSeekable,
+            onTap = { controlsVisible = !controlsVisible },
+            onSwipeSeekStart = {
+                controlsVisible = true
+                isSwipeSeeking = true
+                dragFraction = progress.fraction
+                swipeStartPositionMs = progress.positionMs
+            },
+            onSwipeSeekDrag = { dragDistancePx, surfaceWidthPx ->
+                VideoSwipeSeekPolicy.targetPositionMs(
+                    startPositionMs = swipeStartPositionMs,
+                    durationMs = progress.durationMs,
+                    isSeekable = progress.isSeekable,
+                    dragDistancePx = dragDistancePx,
+                    surfaceWidthPx = surfaceWidthPx,
+                )?.let { targetPositionMs ->
+                    dragFraction = targetPositionMs.toFloat() / progress.durationMs.toFloat()
+                }
+            },
+            onSwipeSeekFinished = {
+                if (isSwipeSeeking) {
+                    onSeek(PlaybackProgressPolicy.seekPositionMs(dragFraction, progress.durationMs))
+                    isSwipeSeeking = false
+                }
+            },
+            onSwipeSeekCancelled = { isSwipeSeeking = false },
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        if (isSwipeSeeking) {
+            VideoSwipeSeekPreview(
+                startPositionMs = swipeStartPositionMs,
+                targetPositionMs = displayedPositionMs,
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
 
         if (controlsVisible) {
@@ -5077,7 +5369,7 @@ private fun VideoQualityMenuButton(
             contentPadding = if (compact) PaddingValues(horizontal = 4.dp) else PaddingValues(horizontal = 12.dp),
         ) {
             Text(
-                snapshot.quality.ifBlank { "画质" },
+                VideoQualityLabelPolicy.resolutionLabel(snapshot.quality),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelSmall,
@@ -5090,7 +5382,7 @@ private fun VideoQualityMenuButton(
         ) {
             snapshot.videoQualities.forEach { quality ->
                 DropdownMenuItem(
-                    text = { Text(quality.label) },
+                    text = { Text(VideoQualityLabelPolicy.resolutionLabel(quality.label)) },
                     onClick = {
                         onExpandedChange(false)
                         onVideoQualityChange(quality.qualityId)
@@ -5119,7 +5411,6 @@ private fun NowPlayingDetails(
     onPlaybackModeChange: (PlaybackMode) -> Unit,
     onPlaybackSpeedChange: (Float) -> Unit,
     onDownload: () -> Unit,
-    onVideoDownload: () -> Unit,
     onShowQueue: () -> Unit,
     isLandscape: Boolean,
     modifier: Modifier = Modifier,
@@ -5151,9 +5442,7 @@ private fun NowPlayingDetails(
             onPlaybackModeChange = onPlaybackModeChange,
             onPlaybackSpeedChange = onPlaybackSpeedChange,
             downloadEnabled = snapshot.downloadRequest != null,
-            videoDownloadEnabled = snapshot.videoDownloadRequest != null,
             onDownload = onDownload,
-            onVideoDownload = onVideoDownload,
             onShowQueue = onShowQueue,
             onValueChange = { value ->
                 isDragging = true
@@ -5231,6 +5520,94 @@ private fun NowPlayingVideo(player: Player, modifier: Modifier = Modifier) {
             view.player = null
         },
     )
+}
+
+@Composable
+private fun VideoPlaybackGestureLayer(
+    swipeSeekEnabled: Boolean,
+    onTap: () -> Unit,
+    onSwipeSeekStart: () -> Unit,
+    onSwipeSeekDrag: (dragDistancePx: Float, surfaceWidthPx: Float) -> Unit,
+    onSwipeSeekFinished: () -> Unit,
+    onSwipeSeekCancelled: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.pointerInput(swipeSeekEnabled) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val startPosition = down.position
+                var swipeStarted = false
+                var isPressed = true
+                try {
+                    do {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        isPressed = change.pressed
+                        val dragDistanceX = change.position.x - startPosition.x
+                        val dragDistanceY = change.position.y - startPosition.y
+                        val movementExceedsSlop = abs(dragDistanceX) > viewConfiguration.touchSlop ||
+                            abs(dragDistanceY) > viewConfiguration.touchSlop
+                        if (
+                            !swipeStarted &&
+                            swipeSeekEnabled &&
+                            abs(dragDistanceX) > viewConfiguration.touchSlop &&
+                            abs(dragDistanceX) > abs(dragDistanceY)
+                        ) {
+                            swipeStarted = true
+                            onSwipeSeekStart()
+                        }
+                        if (swipeStarted) {
+                            // long: 手势层位于 PlayerView 之上、控件之下，先消费水平滑动以免原生播放器抢走事件，按钮仍保留正常点击。
+                            onSwipeSeekDrag(dragDistanceX, size.width.toFloat())
+                            change.consume()
+                        }
+                        if (!change.pressed) {
+                            if (swipeStarted) {
+                                swipeStarted = false
+                                onSwipeSeekFinished()
+                            } else if (!movementExceedsSlop) {
+                                onTap()
+                            }
+                        }
+                    } while (isPressed)
+                } finally {
+                    if (swipeStarted) onSwipeSeekCancelled()
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun VideoSwipeSeekPreview(
+    startPositionMs: Long,
+    targetPositionMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val offsetMs = targetPositionMs - startPositionMs
+    val direction = when {
+        offsetMs > 0L -> "快进"
+        offsetMs < 0L -> "快退"
+        else -> "定位"
+    }
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = Color.Black.copy(alpha = 0.78f),
+        contentColor = Color.White,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(direction, style = MaterialTheme.typography.labelMedium)
+            Text(
+                formatDurationMs(targetPositionMs),
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+    }
 }
 
 @Composable
@@ -5451,9 +5828,7 @@ private fun NowPlayingControls(
     onPlaybackModeChange: (PlaybackMode) -> Unit,
     onPlaybackSpeedChange: (Float) -> Unit,
     downloadEnabled: Boolean,
-    videoDownloadEnabled: Boolean,
     onDownload: () -> Unit,
-    onVideoDownload: () -> Unit,
     onShowQueue: () -> Unit,
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: (Float) -> Unit,
@@ -5489,17 +5864,6 @@ private fun NowPlayingControls(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
             )
-            IconButton(onClick = onVideoDownload, enabled = videoDownloadEnabled) {
-                Icon(
-                    Icons.Rounded.Movie,
-                    contentDescription = "下载当前视频",
-                    tint = if (videoDownloadEnabled) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
             IconButton(onClick = onDownload, enabled = downloadEnabled) {
                 Icon(
                     Icons.Rounded.Download,

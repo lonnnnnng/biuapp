@@ -109,6 +109,7 @@ data class BilibiliVideoDetail(
     val coverUrl: String,
     val pages: List<BilibiliVideoPage>,
     val aid: Long? = null,
+    val publishedAtEpochSeconds: Long? = null,
 )
 
 data class BilibiliAccount(

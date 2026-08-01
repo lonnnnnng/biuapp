@@ -13,6 +13,7 @@ data class Track(
     val artworkUrl: String? = null,
     val qualityLabel: String? = null,
     val pageTitle: String? = null,
+    val publishedAtEpochSeconds: Long? = null,
     val source: BilibiliTrackSource? = null,
 )
 
@@ -166,6 +167,9 @@ fun MediaItem.toTrackOrNull(): Track? {
         qualityLabel = streamMetadata?.audioQualityLabel
             ?: mediaMetadata.description?.toString()?.takeIf(String::isNotBlank),
         pageTitle = pageTitle,
+        publishedAtEpochSeconds = mediaMetadata.extras
+            ?.getLong(EXTRA_PUBLISHED_AT_EPOCH_SECONDS, 0L)
+            ?.takeIf { it > 0L },
         source = bilibiliSource(),
     )
 }
@@ -177,6 +181,9 @@ private fun Track.toExtras(): Bundle {
         putString(EXTRA_PLAYBACK_MEDIA_MODE, PlaybackMediaMode.AUDIO.name)
         putString(EXTRA_AUDIO_STREAM_URL, streamUrl)
         qualityLabel?.takeIf(String::isNotBlank)?.let { putString(EXTRA_AUDIO_QUALITY_LABEL, it) }
+        publishedAtEpochSeconds?.takeIf { it > 0L }?.let {
+            putLong(EXTRA_PUBLISHED_AT_EPOCH_SECONDS, it)
+        }
         source?.let { bilibiliSource ->
             putString(EXTRA_BVID, bilibiliSource.bvid)
             putLong(EXTRA_CID, bilibiliSource.cid)
@@ -240,6 +247,7 @@ private const val EXTRA_PLAYBACK_MEDIA_MODE = "biu.playback.media_mode"
 private const val EXTRA_AUDIO_STREAM_URL = "biu.playback.audio_stream_url"
 private const val EXTRA_VIDEO_STREAM_URL = "biu.playback.video_stream_url"
 private const val EXTRA_AUDIO_QUALITY_LABEL = "biu.playback.audio_quality_label"
+private const val EXTRA_PUBLISHED_AT_EPOCH_SECONDS = "biu.bilibili.published_at_epoch_seconds"
 private const val EXTRA_VIDEO_QUALITY_LABEL = "biu.playback.video_quality_label"
 private const val EXTRA_SELECTED_VIDEO_QUALITY_ID = "biu.playback.selected_video_quality_id"
 private const val EXTRA_AVAILABLE_VIDEO_QUALITY_IDS = "biu.playback.available_video_quality_ids"

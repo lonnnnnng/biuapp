@@ -45,4 +45,72 @@ class PlaybackProgressPolicyTest {
         assertEquals(120_000L, PlaybackProgressPolicy.seekPositionMs(2f, 120_000L))
         assertEquals(0L, PlaybackProgressPolicy.seekPositionMs(0.5f, 0L))
     }
+
+    @Test
+    fun `视频横滑按画面宽度快进和快退`() {
+        assertEquals(
+            90_000L,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = 60_000L,
+                durationMs = 120_000L,
+                isSeekable = true,
+                dragDistancePx = 90f,
+                surfaceWidthPx = 360f,
+            ),
+        )
+        assertEquals(
+            30_000L,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = 60_000L,
+                durationMs = 120_000L,
+                isSeekable = true,
+                dragDistancePx = -90f,
+                surfaceWidthPx = 360f,
+            ),
+        )
+    }
+
+    @Test
+    fun `视频横滑定位限制在媒体边界并拒绝不可定位媒体`() {
+        assertEquals(
+            120_000L,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = 100_000L,
+                durationMs = 120_000L,
+                isSeekable = true,
+                dragDistancePx = 720f,
+                surfaceWidthPx = 360f,
+            ),
+        )
+        assertEquals(
+            0L,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = 20_000L,
+                durationMs = 120_000L,
+                isSeekable = true,
+                dragDistancePx = -720f,
+                surfaceWidthPx = 360f,
+            ),
+        )
+        assertEquals(
+            null,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = 20_000L,
+                durationMs = 0L,
+                isSeekable = true,
+                dragDistancePx = 90f,
+                surfaceWidthPx = 360f,
+            ),
+        )
+        assertEquals(
+            null,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = 20_000L,
+                durationMs = 120_000L,
+                isSeekable = false,
+                dragDistancePx = 90f,
+                surfaceWidthPx = 360f,
+            ),
+        )
+    }
 }

@@ -37,4 +37,21 @@ class DisplayPreferencesPolicyTest {
     fun invalidTextScaleFallsBackToStandard() {
         assertEquals(AppTextScale.STANDARD, AppTextScale.fromStoredValue("UNSUPPORTED"))
     }
+
+    @Test
+    fun videoLayoutDefaultsToList() {
+        assertEquals(AppVideoLayout.LIST, AppVideoLayout.fromStoredValue(null))
+    }
+
+    @Test
+    fun videoLayoutRestoresEverySupportedValue() {
+        AppVideoLayout.entries.forEach { layout ->
+            assertEquals(layout, AppVideoLayout.fromStoredValue(layout.name))
+        }
+    }
+
+    @Test
+    fun invalidVideoLayoutFallsBackToList() {
+        assertEquals(AppVideoLayout.LIST, AppVideoLayout.fromStoredValue("UNSUPPORTED"))
+    }
 }

@@ -36,9 +36,23 @@ enum class AppTextScale(val label: String, val multiplier: Float) {
     }
 }
 
+enum class AppVideoLayout(val label: String) {
+    LIST("列表"),
+    GRID("网格"),
+    ;
+
+    companion object {
+        fun fromStoredValue(value: String?): AppVideoLayout {
+            // long: 网格是可选浏览方式，旧版与异常持久化值保持原有列表体验，避免推荐页布局意外变化。
+            return entries.firstOrNull { layout -> layout.name == value } ?: LIST
+        }
+    }
+}
+
 data class AppDisplayPreferences(
     val listDensity: AppListDensity,
     val textScale: AppTextScale,
+    val videoLayout: AppVideoLayout,
 )
 
 class DisplayPreferenceRepository(context: Context) {
@@ -48,6 +62,7 @@ class DisplayPreferenceRepository(context: Context) {
         AppDisplayPreferences(
             listDensity = AppListDensity.fromStoredValue(values[KEY_LIST_DENSITY]),
             textScale = AppTextScale.fromStoredValue(values[KEY_TEXT_SCALE]),
+            videoLayout = AppVideoLayout.fromStoredValue(values[KEY_VIDEO_LAYOUT]),
         )
     }
 
@@ -59,8 +74,13 @@ class DisplayPreferenceRepository(context: Context) {
         dataStore.edit { values -> values[KEY_TEXT_SCALE] = scale.name }
     }
 
+    suspend fun saveVideoLayout(layout: AppVideoLayout) {
+        dataStore.edit { values -> values[KEY_VIDEO_LAYOUT] = layout.name }
+    }
+
     private companion object {
         val KEY_LIST_DENSITY = stringPreferencesKey("list_density")
         val KEY_TEXT_SCALE = stringPreferencesKey("text_scale")
+        val KEY_VIDEO_LAYOUT = stringPreferencesKey("video_layout")
     }
 }

@@ -27,6 +27,7 @@ import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.AppThemeMode
 import com.lonnnnnng.biu.data.local.AppListDensity
 import com.lonnnnnng.biu.data.local.AppTextScale
+import com.lonnnnnng.biu.data.local.AppVideoLayout
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
@@ -189,6 +190,7 @@ data class BiuUiState(
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val listDensity: AppListDensity = AppListDensity.STANDARD,
     val textScale: AppTextScale = AppTextScale.STANDARD,
+    val videoLayout: AppVideoLayout = AppVideoLayout.LIST,
     val reportPlayHistory: Boolean = true,
     val isFeedLoading: Boolean = true,
     val isFeedLoadingMore: Boolean = false,
@@ -319,6 +321,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         listDensity = preferences.listDensity,
                         textScale = preferences.textScale,
+                        videoLayout = preferences.videoLayout,
                     )
                 }
             }
@@ -1354,6 +1357,28 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             current.copy(
                                 textScale = previousScale,
                                 message = error.userMessage("保存字体大小失败"),
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
+    fun selectVideoLayout(layout: AppVideoLayout) {
+        val previousLayout = state.value.videoLayout
+        if (previousLayout == layout) return
+        mutableState.update { it.copy(videoLayout = layout) }
+        viewModelScope.launch {
+            runCatching { container.displayPreferenceRepository.saveVideoLayout(layout) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        // long: 推荐布局可快速来回切换，旧请求失败时只能回滚仍停留在失败目标的当前选择。
+                        if (current.videoLayout != layout) {
+                            current
+                        } else {
+                            current.copy(
+                                videoLayout = previousLayout,
+                                message = error.userMessage("保存推荐布局失败"),
                             )
                         }
                     }

@@ -643,6 +643,7 @@ class BilibiliRepository(
             coverUrl = cover,
             pages = pages,
             aid = data.optLongOrNull("aid"),
+            publishedAtEpochSeconds = data.optLongOrNull("pubdate") ?: data.optLongOrNull("ctime"),
         )
     }
 
@@ -701,6 +702,7 @@ class BilibiliRepository(
             artworkUrl = page.coverUrl ?: detail.coverUrl.ifBlank { video.coverUrl },
             qualityLabel = stream.qualityLabel,
             pageTitle = pageTitle,
+            publishedAtEpochSeconds = video.publishedAtEpochSeconds ?: detail.publishedAtEpochSeconds,
             source = BilibiliTrackSource(
                 bvid = detail.bvid,
                 cid = page.cid,
