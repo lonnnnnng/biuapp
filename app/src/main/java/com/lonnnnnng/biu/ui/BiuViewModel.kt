@@ -12,6 +12,7 @@ import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliOnlineHistoryCursor
@@ -114,6 +115,29 @@ data class LyricsUiState(
     val searchErrorMessage: String? = null,
 )
 
+enum class CreatorCenterTab(val label: String) {
+    SEARCH("用户搜索"),
+    FOLLOWING("我的关注"),
+}
+
+data class CreatorCenterUiState(
+    val tab: CreatorCenterTab = CreatorCenterTab.FOLLOWING,
+    val searchKeyword: String = "",
+    val searchResults: List<BilibiliCreator> = emptyList(),
+    val searchNextPage: Int? = null,
+    val followingCreators: List<BilibiliCreator> = emptyList(),
+    val followingNextPage: Int? = null,
+    val selectedCreator: BilibiliCreator? = null,
+    val relation: BilibiliCreatorRelation = BilibiliCreatorRelation.UNKNOWN,
+    val videos: List<BilibiliVideo> = emptyList(),
+    val videosNextPage: Int? = null,
+    val isListLoading: Boolean = false,
+    val isListLoadingMore: Boolean = false,
+    val isProfileLoading: Boolean = false,
+    val isVideosLoadingMore: Boolean = false,
+    val isRelationMutating: Boolean = false,
+)
+
 data class BiuUiState(
     val section: MainSection = MainSection.RECOMMEND,
     val feed: RecommendFeed = RecommendFeed.MUSIC,
@@ -121,6 +145,7 @@ data class BiuUiState(
     val homeFeedMode: HomeFeedMode = HomeFeedMode.FALLBACK,
     val followedCreators: List<BilibiliCreator> = emptyList(),
     val selectedCreators: List<BilibiliCreator> = emptyList(),
+    val creatorCenter: CreatorCenterUiState = CreatorCenterUiState(),
     val searchResults: List<BilibiliVideo> = emptyList(),
     val submittedKeyword: String = "",
     val account: BilibiliAccount = BilibiliAccount(false, "", ""),
@@ -181,6 +206,9 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var onlineHistoryJob: Job? = null
     private var localAudioJob: Job? = null
     private var localAudioDirectoryInitializationJob: Job? = null
+    private var creatorListJob: Job? = null
+    private var creatorProfileJob: Job? = null
+    private var creatorRelationJob: Job? = null
     private var lyricsLoadJob: Job? = null
     private var lyricsSearchJob: Job? = null
     private var lyricsSaveJob: Job? = null
@@ -461,6 +489,378 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun selectCreatorCenterTab(tab: CreatorCenterTab) {
+        if (state.value.creatorCenter.tab != tab) creatorListJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    tab = tab,
+                    isListLoading = false,
+                    isListLoadingMore = false,
+                ),
+            )
+        }
+        if (tab == CreatorCenterTab.FOLLOWING && state.value.creatorCenter.followingCreators.isEmpty()) {
+            loadCreatorCenterFollowing(reset = true)
+        }
+    }
+
+    fun searchCreators(keyword: String, loadMore: Boolean = false) {
+        val normalizedKeyword = if (loadMore) state.value.creatorCenter.searchKeyword else keyword.trim()
+        if (normalizedKeyword.isBlank()) {
+            mutableState.update { it.copy(message = "请输入 UP 主名称") }
+            return
+        }
+        val nextPage = if (loadMore) state.value.creatorCenter.searchNextPage else 1
+        if (nextPage == null || state.value.creatorCenter.isListLoading || state.value.creatorCenter.isListLoadingMore) return
+        if (!loadMore) creatorListJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    tab = CreatorCenterTab.SEARCH,
+                    searchKeyword = normalizedKeyword,
+                    searchResults = if (loadMore) current.creatorCenter.searchResults else emptyList(),
+                    searchNextPage = if (loadMore) current.creatorCenter.searchNextPage else null,
+                    isListLoading = !loadMore,
+                    isListLoadingMore = loadMore,
+                ),
+                message = null,
+            )
+        }
+        creatorListJob = viewModelScope.launch {
+            try {
+                val page = repository.searchCreators(normalizedKeyword, nextPage)
+                mutableState.update { current ->
+                    if (current.creatorCenter.searchKeyword != normalizedKeyword) return@update current
+                    val creators = if (loadMore) {
+                        (current.creatorCenter.searchResults + page.creators).distinctBy(BilibiliCreator::mid)
+                    } else {
+                        page.creators
+                    }
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            searchResults = creators,
+                            searchNextPage = (page.page + 1).takeIf { page.hasMore },
+                            isListLoading = false,
+                            isListLoadingMore = false,
+                        ),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            isListLoading = false,
+                            isListLoadingMore = false,
+                        ),
+                        message = error.userMessage("UP 主搜索失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearCreatorSearch() {
+        creatorListJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    searchKeyword = "",
+                    searchResults = emptyList(),
+                    searchNextPage = null,
+                    isListLoading = false,
+                    isListLoadingMore = false,
+                ),
+            )
+        }
+    }
+
+    fun loadCreatorCenterFollowing(reset: Boolean = false) {
+        val account = state.value.account
+        if (!account.isLoggedIn || account.mid <= 0L) {
+            mutableState.update { current ->
+                current.copy(
+                    creatorCenter = current.creatorCenter.copy(
+                        followingCreators = emptyList(),
+                        followingNextPage = null,
+                        isListLoading = false,
+                        isListLoadingMore = false,
+                    ),
+                )
+            }
+            return
+        }
+        val nextPage = if (reset) 1 else state.value.creatorCenter.followingNextPage ?: return
+        if (state.value.creatorCenter.isListLoading || state.value.creatorCenter.isListLoadingMore) return
+        if (reset) creatorListJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    tab = CreatorCenterTab.FOLLOWING,
+                    followingCreators = if (reset) emptyList() else current.creatorCenter.followingCreators,
+                    followingNextPage = if (reset) null else current.creatorCenter.followingNextPage,
+                    isListLoading = reset,
+                    isListLoadingMore = !reset,
+                ),
+                message = null,
+            )
+        }
+        creatorListJob = viewModelScope.launch {
+            try {
+                val page = repository.followingCreatorsPage(account.mid, nextPage)
+                mutableState.update { current ->
+                    val creators = if (reset) {
+                        page.creators
+                    } else {
+                        (current.creatorCenter.followingCreators + page.creators).distinctBy(BilibiliCreator::mid)
+                    }
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            followingCreators = creators,
+                            followingNextPage = (page.page + 1).takeIf { page.hasMore },
+                            isListLoading = false,
+                            isListLoadingMore = false,
+                        ),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            isListLoading = false,
+                            isListLoadingMore = false,
+                        ),
+                        message = error.userMessage("关注列表加载失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun openCreatorProfile(creator: BilibiliCreator) {
+        creatorProfileJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    selectedCreator = creator,
+                    relation = BilibiliCreatorRelation.UNKNOWN,
+                    videos = emptyList(),
+                    videosNextPage = null,
+                    isProfileLoading = true,
+                    isVideosLoadingMore = false,
+                    isRelationMutating = false,
+                ),
+                message = null,
+            )
+        }
+        creatorProfileJob = viewModelScope.launch {
+            try {
+                // long: 资料、投稿与关系互不依赖，并行读取可明显缩短进入空间后的首屏等待时间。
+                val profileDeferred = async { runCatching { repository.creatorProfile(creator.mid) } }
+                val videosDeferred = async { runCatching { repository.creatorVideoPage(creator, page = 1) } }
+                val relationDeferred = async {
+                    if (state.value.account.isLoggedIn) runCatching { repository.creatorRelation(creator.mid) }
+                    else Result.success(BilibiliCreatorRelation.NONE)
+                }
+                val profileResult = profileDeferred.await()
+                val videosResult = videosDeferred.await()
+                val relationResult = relationDeferred.await()
+                listOf(profileResult.exceptionOrNull(), videosResult.exceptionOrNull(), relationResult.exceptionOrNull())
+                    .filterIsInstance<CancellationException>()
+                    .firstOrNull()
+                    ?.let { throw it }
+                val page = videosResult.getOrNull()
+                val loadedProfile = profileResult.getOrNull()?.copy(
+                    followerCount = creator.followerCount,
+                    videoCount = page?.total ?: creator.videoCount,
+                ) ?: creator.copy(videoCount = page?.total ?: creator.videoCount)
+                mutableState.update { current ->
+                    if (current.creatorCenter.selectedCreator?.mid != creator.mid) return@update current
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            selectedCreator = loadedProfile,
+                            relation = relationResult.getOrDefault(BilibiliCreatorRelation.UNKNOWN),
+                            videos = page?.videos.orEmpty(),
+                            videosNextPage = page?.let { result -> (result.page + 1).takeIf { result.hasMore } },
+                            isProfileLoading = false,
+                        ),
+                        message = when {
+                            profileResult.isFailure && videosResult.isFailure -> "UP 主空间加载失败"
+                            state.value.account.isLoggedIn && relationResult.isFailure -> "关注状态读取失败，请点击按钮重试"
+                            else -> current.message
+                        },
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(isProfileLoading = false),
+                        message = error.userMessage("UP 主空间加载失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeCreatorProfile() {
+        creatorProfileJob?.cancel()
+        creatorRelationJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    selectedCreator = null,
+                    relation = BilibiliCreatorRelation.UNKNOWN,
+                    videos = emptyList(),
+                    videosNextPage = null,
+                    isProfileLoading = false,
+                    isVideosLoadingMore = false,
+                    isRelationMutating = false,
+                ),
+            )
+        }
+    }
+
+    fun loadMoreCreatorVideos() {
+        val center = state.value.creatorCenter
+        val creator = center.selectedCreator ?: return
+        val nextPage = center.videosNextPage ?: return
+        if (center.isProfileLoading || center.isVideosLoadingMore) return
+        mutableState.update { current ->
+            current.copy(creatorCenter = current.creatorCenter.copy(isVideosLoadingMore = true), message = null)
+        }
+        creatorProfileJob = viewModelScope.launch {
+            try {
+                val page = repository.creatorVideoPage(creator, nextPage)
+                mutableState.update { current ->
+                    if (current.creatorCenter.selectedCreator?.mid != creator.mid) return@update current
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            videos = (current.creatorCenter.videos + page.videos).distinctBy(BilibiliVideo::bvid),
+                            videosNextPage = (page.page + 1).takeIf { page.hasMore },
+                            isVideosLoadingMore = false,
+                        ),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    current.copy(
+                        creatorCenter = current.creatorCenter.copy(isVideosLoadingMore = false),
+                        message = error.userMessage("更多投稿加载失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun toggleCreatorRelation() {
+        val current = state.value
+        val creator = current.creatorCenter.selectedCreator ?: return
+        if (!current.account.isLoggedIn) {
+            mutableState.update { it.copy(message = "登录后才能关注 UP 主") }
+            return
+        }
+        if (current.creatorCenter.relation == BilibiliCreatorRelation.BLOCKED || current.creatorCenter.isRelationMutating) return
+        if (current.creatorCenter.relation == BilibiliCreatorRelation.UNKNOWN) {
+            mutableState.update { state ->
+                state.copy(creatorCenter = state.creatorCenter.copy(isRelationMutating = true), message = null)
+            }
+            creatorRelationJob = viewModelScope.launch {
+                try {
+                    val relation = repository.creatorRelation(creator.mid)
+                    mutableState.update { state ->
+                        state.copy(
+                            creatorCenter = state.creatorCenter.copy(
+                                relation = relation,
+                                isRelationMutating = false,
+                            ),
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    mutableState.update { state ->
+                        state.copy(
+                            creatorCenter = state.creatorCenter.copy(isRelationMutating = false),
+                            message = error.userMessage("关注状态读取失败"),
+                        )
+                    }
+                }
+            }
+            return
+        }
+        val following = !current.creatorCenter.relation.isFollowing
+        mutableState.update { state ->
+            state.copy(creatorCenter = state.creatorCenter.copy(isRelationMutating = true), message = null)
+        }
+        creatorRelationJob = viewModelScope.launch {
+            try {
+                repository.modifyCreatorRelation(creator.mid, following)
+                val confirmedRelation = runCatching { repository.creatorRelation(creator.mid) }.getOrNull()
+                // long: 关系查询可能短暂读到写前缓存，写接口成功时以用户刚执行的动作收敛按钮状态。
+                val relation = when {
+                    following && confirmedRelation?.isFollowing != true -> BilibiliCreatorRelation.FOLLOWING
+                    !following && confirmedRelation?.isFollowing == true -> BilibiliCreatorRelation.NONE
+                    else -> confirmedRelation ?: if (following) BilibiliCreatorRelation.FOLLOWING else BilibiliCreatorRelation.NONE
+                }
+                val selectionSyncError = if (!following) {
+                    // long: 取关后首页不能继续保留已经失效的 UP 范围，远端成功后立即同步清理 Room 中对应 UID。
+                    try {
+                        container.creatorSelectionRepository.replaceAll(
+                            state.value.selectedCreators.filterNot { selected -> selected.mid == creator.mid },
+                        )
+                        null
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        error
+                    }
+                } else null
+                mutableState.update { state ->
+                    val centerCreators = if (following) {
+                        (listOf(creator) + state.creatorCenter.followingCreators).distinctBy(BilibiliCreator::mid)
+                    } else {
+                        state.creatorCenter.followingCreators.filterNot { followed -> followed.mid == creator.mid }
+                    }
+                    val configCreators = if (following) {
+                        (state.followedCreators + creator).distinctBy(BilibiliCreator::mid)
+                    } else {
+                        state.followedCreators.filterNot { followed -> followed.mid == creator.mid }
+                    }
+                    state.copy(
+                        followedCreators = configCreators,
+                        creatorCenter = state.creatorCenter.copy(
+                            followingCreators = centerCreators,
+                            relation = relation,
+                            isRelationMutating = false,
+                        ),
+                        message = when {
+                            following -> "已关注 ${creator.name}"
+                            selectionSyncError != null -> selectionSyncError.userMessage("已取消关注，但首页范围同步失败")
+                            else -> "已取消关注 ${creator.name}"
+                        },
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { state ->
+                    state.copy(
+                        creatorCenter = state.creatorCenter.copy(isRelationMutating = false),
+                        message = error.userMessage(if (following) "关注失败" else "取消关注失败"),
+                    )
+                }
+            }
+        }
+    }
+
     fun search(keyword: String) {
         val normalized = keyword.trim()
         if (normalized.isEmpty()) {
@@ -657,9 +1057,23 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     mutableState.update { it.copy(account = account, isAccountLoading = false) }
                     if (account.isLoggedIn) {
                         loadLibrary(AccountLibrarySection.FAVORITES)
+                        state.value.creatorCenter.selectedCreator?.let(::openCreatorProfile)
                     } else {
                         clearOnlineLibrary()
-                        mutableState.update { it.copy(followedCreators = emptyList(), isCreatorConfigLoading = false) }
+                        mutableState.update { current ->
+                            current.copy(
+                                followedCreators = emptyList(),
+                                creatorCenter = current.creatorCenter.copy(
+                                    followingCreators = emptyList(),
+                                    followingNextPage = null,
+                                    relation = BilibiliCreatorRelation.NONE,
+                                    isListLoading = false,
+                                    isListLoadingMore = false,
+                                    isRelationMutating = false,
+                                ),
+                                isCreatorConfigLoading = false,
+                            )
+                        }
                     }
                 }
                 .onFailure { error ->

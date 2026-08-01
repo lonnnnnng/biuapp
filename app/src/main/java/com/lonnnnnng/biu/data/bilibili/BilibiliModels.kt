@@ -23,7 +23,43 @@ data class BilibiliCreator(
     val mid: Long,
     val name: String,
     val faceUrl: String,
+    val signature: String = "",
+    val followerCount: Long? = null,
+    val videoCount: Int? = null,
+    val officialTitle: String = "",
 )
+
+data class BilibiliCreatorPage(
+    val creators: List<BilibiliCreator>,
+    val page: Int,
+    val hasMore: Boolean,
+    val total: Int? = null,
+)
+
+data class BilibiliCreatorVideoPage(
+    val videos: List<BilibiliVideo>,
+    val page: Int,
+    val hasMore: Boolean,
+    val total: Int? = null,
+)
+
+enum class BilibiliCreatorRelation(val attribute: Int) {
+    NONE(0),
+    FOLLOWING(2),
+    MUTUAL(6),
+    BLOCKED(128),
+    UNKNOWN(-1),
+    ;
+
+    val isFollowing: Boolean
+        get() = this == FOLLOWING || this == MUTUAL
+
+    companion object {
+        fun fromAttribute(attribute: Int): BilibiliCreatorRelation {
+            return entries.firstOrNull { relation -> relation.attribute == attribute } ?: UNKNOWN
+        }
+    }
+}
 
 data class BilibiliVideoPage(
     val cid: Long,

@@ -6,6 +6,8 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -140,6 +142,179 @@ class BilibiliCreatorRepositoryTest {
         assertEquals("1700000000", request.requestUrl?.queryParameter("wts"))
         check(!request.requestUrl?.queryParameter("w_rid").isNullOrBlank())
     }
+
+    @Test
+    fun `按名称分页搜索UP主并解析资料`() = runBlocking {
+        server.enqueue(wbiKeyResponse())
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "numPages": 3,
+                    "numResults": 42,
+                    "result": [
+                      {
+                        "mid": 1001,
+                        "uname": "<em class=\"keyword\">音乐</em>UP",
+                        "upic": "//i0.hdslb.com/up.jpg",
+                        "usign": "每天更新",
+                        "fans": 12345,
+                        "videos": 88,
+                        "official_verify": {"desc": "音乐UP主"}
+                      }
+                    ]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            nowEpochSeconds = { 1_700_000_000L },
+            apiBase = server.url("/"),
+        )
+
+        val result = repository.searchCreators(" 音乐 ", page = 2)
+
+        assertEquals(2, result.page)
+        assertEquals(42, result.total)
+        assertTrue(result.hasMore)
+        assertEquals("音乐UP", result.creators.single().name)
+        assertEquals(12_345L, result.creators.single().followerCount)
+        assertEquals(88, result.creators.single().videoCount)
+        server.takeRequest()
+        val request = server.takeRequest()
+        assertEquals("/x/web-interface/wbi/search/type", request.requestUrl?.encodedPath)
+        assertEquals("bili_user", request.requestUrl?.queryParameter("search_type"))
+        assertEquals("音乐", request.requestUrl?.queryParameter("keyword"))
+        assertEquals("2", request.requestUrl?.queryParameter("page"))
+    }
+
+    @Test
+    fun `读取UP主空间资料和投稿总数`() = runBlocking {
+        server.enqueue(wbiKeyResponse())
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "mid": 1001,
+                    "name": "空间UP",
+                    "face": "//i0.hdslb.com/space.jpg",
+                    "sign": "空间签名",
+                    "official": {"title": "音乐创作者"}
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "page": {"count": 31},
+                    "list": {
+                      "vlist": [
+                        {"aid": 42, "bvid": "BV1SPACE", "title": "投稿", "pic": "", "length": "01:00", "created": 1700003000}
+                      ]
+                    }
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            nowEpochSeconds = { 1_700_000_000L },
+            apiBase = server.url("/"),
+        )
+
+        val profile = repository.creatorProfile(1001L)
+        val videos = repository.creatorVideoPage(profile, page = 1)
+
+        assertEquals("空间UP", profile.name)
+        assertEquals("空间签名", profile.signature)
+        assertEquals("音乐创作者", profile.officialTitle)
+        assertEquals(31, videos.total)
+        assertTrue(videos.hasMore)
+        assertEquals("空间UP", videos.videos.single().author)
+        server.takeRequest()
+        assertEquals("/x/space/wbi/acc/info", server.takeRequest().requestUrl?.encodedPath)
+        assertEquals("/x/space/wbi/arc/search", server.takeRequest().requestUrl?.encodedPath)
+    }
+
+    @Test
+    fun `读取关注关系并映射互相关注`() = runBlocking {
+        server.enqueue(jsonResponse("""{"code":0,"data":{"mid":1001,"attribute":6}}"""))
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val relation = repository.creatorRelation(1001L)
+
+        assertEquals(BilibiliCreatorRelation.MUTUAL, relation)
+        assertTrue(relation.isFollowing)
+        val request = server.takeRequest()
+        assertEquals("/x/relation", request.requestUrl?.encodedPath)
+        assertEquals("1001", request.requestUrl?.queryParameter("fid"))
+    }
+
+    @Test
+    fun `提交取消关注时携带CSRF和来源`() = runBlocking {
+        server.enqueue(jsonResponse("""{"code":0,"message":"0"}"""))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            apiBase = server.url("/"),
+            csrfProvider = { "csrf-token" },
+        )
+
+        repository.modifyCreatorRelation(mid = 1001L, following = false)
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/x/relation/modify", request.requestUrl?.encodedPath)
+        assertEquals("fid=1001&act=2&re_src=11&csrf=csrf-token", request.body.readUtf8())
+    }
+
+    @Test
+    fun `未知关注属性保持未知状态`() = runBlocking {
+        server.enqueue(jsonResponse("""{"code":0,"data":{"attribute":99}}"""))
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val relation = repository.creatorRelation(1001L)
+
+        assertEquals(BilibiliCreatorRelation.UNKNOWN, relation)
+        assertFalse(relation.isFollowing)
+    }
+
+    @Test(expected = BilibiliApiException::class)
+    fun `关注接口业务失败时抛出统一异常`() = runBlocking {
+        server.enqueue(jsonResponse("""{"code":-101,"message":"账号未登录"}"""))
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            apiBase = server.url("/"),
+            csrfProvider = { "csrf-token" },
+        )
+
+        repository.modifyCreatorRelation(mid = 1001L, following = true)
+    }
+
+    private fun wbiKeyResponse(): MockResponse = jsonResponse(
+        """
+        {
+          "code": 0,
+          "data": {
+            "wbi_img": {
+              "img_url": "https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz123456.png",
+              "sub_url": "https://i0.hdslb.com/bfs/wbi/123456abcdefghijklmnopqrstuvwxyz.png"
+            }
+          }
+        }
+        """.trimIndent(),
+    )
 
     private fun jsonResponse(body: String) = MockResponse()
         .setResponseCode(200)

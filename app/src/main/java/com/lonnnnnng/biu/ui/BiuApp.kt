@@ -87,6 +87,7 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PersonSearch
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Repeat
@@ -303,6 +304,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showQualityMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
+    var showCreatorCenter by rememberSaveable { mutableStateOf(false) }
     var favoritePickerVideo by remember { mutableStateOf<BilibiliVideo?>(null) }
     // long: 视频全屏期间横竖屏切换会重建 Activity；保存页面开关，避免重建后意外退回首页而中断控制链路。
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
@@ -838,6 +840,33 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         return
     }
 
+    if (showCreatorCenter) {
+        CreatorCenterScreen(
+            state = uiState.creatorCenter,
+            accountLoggedIn = uiState.account.isLoggedIn,
+            resolvingBvid = uiState.resolvingBvid,
+            onBack = {
+                viewModel.closeCreatorProfile()
+                showCreatorCenter = false
+            },
+            onTabSelected = viewModel::selectCreatorCenterTab,
+            onSearch = viewModel::searchCreators,
+            onClearSearch = viewModel::clearCreatorSearch,
+            onLoadMoreSearch = { viewModel.searchCreators("", loadMore = true) },
+            onLoadFollowing = viewModel::loadCreatorCenterFollowing,
+            onOpenCreator = viewModel::openCreatorProfile,
+            onCloseCreator = viewModel::closeCreatorProfile,
+            onToggleRelation = viewModel::toggleCreatorRelation,
+            onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
+            onPlay = viewModel::play,
+            onAddFavorite = { video ->
+                if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
+            },
+            onLogin = { showLogin = true },
+        )
+        return
+    }
+
     Scaffold(
         topBar = {
             BiuTopBar(
@@ -934,6 +963,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onOpenCreatorConfig = {
                         showCreatorConfig = true
                         viewModel.loadFollowingCreators()
+                    },
+                    onOpenCreatorCenter = {
+                        showCreatorCenter = true
+                        viewModel.selectCreatorCenterTab(
+                            if (uiState.account.isLoggedIn) CreatorCenterTab.FOLLOWING else CreatorCenterTab.SEARCH,
+                        )
                     },
                     onPlay = viewModel::play,
                     onAddFavorite = { video ->
@@ -1391,6 +1426,7 @@ private fun RecommendationScreen(
     onSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
     onOpenCreatorConfig: () -> Unit,
+    onOpenCreatorCenter: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
@@ -1468,6 +1504,9 @@ private fun RecommendationScreen(
                 }
                 IconButton(onClick = onOpenCreatorConfig) {
                     Icon(Icons.Rounded.Tune, contentDescription = "设置首页内容范围")
+                }
+                IconButton(onClick = onOpenCreatorCenter) {
+                    Icon(Icons.Rounded.PersonSearch, contentDescription = "UP 主搜索和关注")
                 }
                 IconButton(onClick = onRefresh, enabled = !loading) {
                     Icon(Icons.Rounded.Refresh, contentDescription = "刷新推荐")
@@ -1566,7 +1605,7 @@ private fun FeedSelector(
 }
 
 @Composable
-private fun CompactSearchField(
+internal fun CompactSearchField(
     value: String,
     onValueChange: (String) -> Unit,
     onSearch: () -> Unit,
@@ -2789,7 +2828,7 @@ private fun LocalHistoryList(
 }
 
 @Composable
-private fun BiuEmptyState(
+internal fun BiuEmptyState(
     icon: ImageVector,
     title: String,
     message: String? = null,
@@ -2862,7 +2901,7 @@ private fun VideoList(
 }
 
 @Composable
-private fun VideoRow(
+internal fun VideoRow(
     video: BilibiliVideo,
     resolving: Boolean,
     enabled: Boolean,
@@ -2960,7 +2999,7 @@ private fun PlayAffordance(contentDescription: String) {
 }
 
 @Composable
-private fun MediaDivider(start: androidx.compose.ui.unit.Dp = 140.dp) {
+internal fun MediaDivider(start: androidx.compose.ui.unit.Dp = 140.dp) {
     HorizontalDivider(
         modifier = Modifier.padding(start = start, end = 16.dp),
         color = MaterialTheme.colorScheme.outlineVariant,
