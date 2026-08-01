@@ -13,6 +13,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
+import com.lonnnnnng.biu.data.bilibili.BilibiliDynamicItem
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliOnlineHistoryCursor
@@ -66,6 +67,7 @@ import kotlinx.coroutines.sync.withPermit
 
 enum class MainSection(val label: String) {
     RECOMMEND("推荐"),
+    DYNAMIC("动态"),
     ACCOUNT("账号"),
 }
 
@@ -138,6 +140,15 @@ data class CreatorCenterUiState(
     val isRelationMutating: Boolean = false,
 )
 
+data class DynamicFeedUiState(
+    val items: List<BilibiliDynamicItem> = emptyList(),
+    val nextOffset: String? = null,
+    val hasMore: Boolean = false,
+    val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val mutatingIds: Set<String> = emptySet(),
+)
+
 data class BiuUiState(
     val section: MainSection = MainSection.RECOMMEND,
     val feed: RecommendFeed = RecommendFeed.MUSIC,
@@ -146,6 +157,7 @@ data class BiuUiState(
     val followedCreators: List<BilibiliCreator> = emptyList(),
     val selectedCreators: List<BilibiliCreator> = emptyList(),
     val creatorCenter: CreatorCenterUiState = CreatorCenterUiState(),
+    val dynamicFeed: DynamicFeedUiState = DynamicFeedUiState(),
     val searchResults: List<BilibiliVideo> = emptyList(),
     val submittedKeyword: String = "",
     val account: BilibiliAccount = BilibiliAccount(false, "", ""),
@@ -209,6 +221,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var creatorListJob: Job? = null
     private var creatorProfileJob: Job? = null
     private var creatorRelationJob: Job? = null
+    private var dynamicFeedJob: Job? = null
     private var lyricsLoadJob: Job? = null
     private var lyricsSearchJob: Job? = null
     private var lyricsSaveJob: Job? = null
@@ -308,6 +321,174 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSection(section: MainSection) {
         mutableState.update { it.copy(section = section) }
+        if (
+            section == MainSection.DYNAMIC &&
+            state.value.account.isLoggedIn &&
+            state.value.dynamicFeed.items.isEmpty() &&
+            !state.value.dynamicFeed.isLoading
+        ) {
+            loadDynamicFeed(reset = true)
+        }
+    }
+
+    fun loadDynamicFeed(reset: Boolean = true) {
+        val current = state.value
+        if (!current.account.isLoggedIn) {
+            mutableState.update { it.copy(dynamicFeed = DynamicFeedUiState()) }
+            return
+        }
+        val feed = current.dynamicFeed
+        if (feed.isLoading || feed.isLoadingMore) return
+        val offset = if (reset) null else feed.nextOffset ?: return
+        if (reset) dynamicFeedJob?.cancel()
+        mutableState.update { state ->
+            state.copy(
+                dynamicFeed = state.dynamicFeed.copy(
+                    items = if (reset) emptyList() else state.dynamicFeed.items,
+                    nextOffset = if (reset) null else state.dynamicFeed.nextOffset,
+                    hasMore = if (reset) false else state.dynamicFeed.hasMore,
+                    isLoading = reset,
+                    isLoadingMore = !reset,
+                ),
+                message = null,
+            )
+        }
+        dynamicFeedJob = viewModelScope.launch {
+            try {
+                val page = repository.dynamicFeed(offset)
+                mutableState.update { state ->
+                    val items = if (reset) {
+                        page.items
+                    } else {
+                        (state.dynamicFeed.items + page.items).distinctBy(BilibiliDynamicItem::id)
+                    }
+                    state.copy(
+                        dynamicFeed = state.dynamicFeed.copy(
+                            items = items,
+                            nextOffset = page.nextOffset,
+                            hasMore = page.hasMore && page.nextOffset != null,
+                            isLoading = false,
+                            isLoadingMore = false,
+                        ),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { state ->
+                    state.copy(
+                        dynamicFeed = state.dynamicFeed.copy(isLoading = false, isLoadingMore = false),
+                        message = DynamicInteractionPolicy.errorMessage(error, "动态加载失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun loadMoreDynamicFeed() {
+        loadDynamicFeed(reset = false)
+    }
+
+    fun toggleDynamicLike(item: BilibiliDynamicItem) {
+        val current = state.value
+        if (!current.account.isLoggedIn) {
+            mutableState.update { it.copy(message = "登录后才能点赞动态") }
+            return
+        }
+        val latest = current.dynamicFeed.items.firstOrNull { dynamic -> dynamic.id == item.id } ?: return
+        if (latest.isLikeForbidden || latest.id in current.dynamicFeed.mutatingIds) return
+        val mutation = DynamicInteractionPolicy.beginLikeMutation(latest)
+        mutableState.update { state ->
+            state.copy(
+                dynamicFeed = state.dynamicFeed.copy(
+                    items = state.dynamicFeed.items.replaceDynamic(mutation.optimistic),
+                    mutatingIds = state.dynamicFeed.mutatingIds + latest.id,
+                ),
+                message = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                repository.updateDynamicLike(latest.id, mutation.optimistic.isLiked)
+                mutableState.update { state ->
+                    state.copy(
+                        dynamicFeed = state.dynamicFeed.copy(
+                            mutatingIds = state.dynamicFeed.mutatingIds - latest.id,
+                        ),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { state ->
+                    val visibleItem = state.dynamicFeed.items.firstOrNull { dynamic -> dynamic.id == latest.id }
+                    // long: 刷新动态可能先于失败响应完成；只回滚仍处于本次乐观快照的卡片，避免旧请求覆盖更新后的服务端状态。
+                    val items = if (visibleItem == mutation.optimistic) {
+                        state.dynamicFeed.items.replaceDynamic(mutation.rollback())
+                    } else {
+                        state.dynamicFeed.items
+                    }
+                    state.copy(
+                        dynamicFeed = state.dynamicFeed.copy(
+                            items = items,
+                            mutatingIds = state.dynamicFeed.mutatingIds - latest.id,
+                        ),
+                        message = DynamicInteractionPolicy.errorMessage(error, "动态点赞失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun tripleDynamic(item: BilibiliDynamicItem) {
+        val current = state.value
+        if (!current.account.isLoggedIn) {
+            mutableState.update { it.copy(message = "登录后才能一键三连") }
+            return
+        }
+        val latest = current.dynamicFeed.items.firstOrNull { dynamic -> dynamic.id == item.id } ?: return
+        if (latest.id in current.dynamicFeed.mutatingIds) return
+        mutableState.update { state ->
+            state.copy(
+                dynamicFeed = state.dynamicFeed.copy(
+                    mutatingIds = state.dynamicFeed.mutatingIds + latest.id,
+                ),
+                message = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val result = repository.tripleLike(latest.video.bvid)
+                mutableState.update { state ->
+                    val visibleItem = state.dynamicFeed.items.firstOrNull { dynamic -> dynamic.id == latest.id }
+                    state.copy(
+                        dynamicFeed = state.dynamicFeed.copy(
+                            items = visibleItem?.let { currentItem ->
+                                state.dynamicFeed.items.replaceDynamic(
+                                    DynamicInteractionPolicy.applyTriple(currentItem, result),
+                                )
+                            } ?: state.dynamicFeed.items,
+                            mutatingIds = state.dynamicFeed.mutatingIds - latest.id,
+                        ),
+                        message = buildString {
+                            append("三连完成")
+                            if (result.coined && result.coinCount > 0) append(" · ${result.coinCount} 枚硬币")
+                        },
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { state ->
+                    state.copy(
+                        dynamicFeed = state.dynamicFeed.copy(
+                            mutatingIds = state.dynamicFeed.mutatingIds - latest.id,
+                        ),
+                        message = DynamicInteractionPolicy.errorMessage(error, "一键三连失败"),
+                    )
+                }
+            }
+        }
     }
 
     fun prepareLyrics(source: BilibiliTrackSource?, mediaId: String) {
@@ -1057,6 +1238,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     mutableState.update { it.copy(account = account, isAccountLoading = false) }
                     if (account.isLoggedIn) {
                         loadLibrary(AccountLibrarySection.FAVORITES)
+                        if (state.value.section == MainSection.DYNAMIC) loadDynamicFeed(reset = true)
                         state.value.creatorCenter.selectedCreator?.let(::openCreatorProfile)
                     } else {
                         clearOnlineLibrary()
@@ -1071,6 +1253,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                                     isListLoadingMore = false,
                                     isRelationMutating = false,
                                 ),
+                                dynamicFeed = DynamicFeedUiState(),
                                 isCreatorConfigLoading = false,
                             )
                         }
@@ -2239,6 +2422,10 @@ private fun List<BilibiliFavoriteFolder>.updateFolderCount(
             existing
         }
     }
+}
+
+private fun List<BilibiliDynamicItem>.replaceDynamic(item: BilibiliDynamicItem): List<BilibiliDynamicItem> {
+    return map { current -> if (current.id == item.id) item else current }
 }
 
 private data class OnlineHistoryLoadResult(

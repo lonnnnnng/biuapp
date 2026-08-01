@@ -71,6 +71,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DynamicFeed
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Favorite
@@ -98,7 +99,9 @@ import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -201,6 +204,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolderType
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
+import com.lonnnnnng.biu.data.bilibili.BilibiliDynamicItem
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
@@ -306,6 +310,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showCreatorConfig by remember { mutableStateOf(false) }
     var showCreatorCenter by rememberSaveable { mutableStateOf(false) }
     var favoritePickerVideo by remember { mutableStateOf<BilibiliVideo?>(null) }
+    var tripleConfirmation by remember { mutableStateOf<BilibiliDynamicItem?>(null) }
     // long: 视频全屏期间横竖屏切换会重建 Activity；保存页面开关，避免重建后意外退回首页而中断控制链路。
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
     var downloadTaskKind by remember { mutableStateOf(DownloadTaskKind.AUDIO) }
@@ -778,6 +783,28 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
+    tripleConfirmation?.let { dynamic ->
+        AlertDialog(
+            onDismissRequest = { tripleConfirmation = null },
+            icon = { Icon(Icons.Rounded.Bolt, contentDescription = null) },
+            title = { Text("确认一键三连？") },
+            text = {
+                Text("将为《${dynamic.video.title}》点赞、投币并收藏到默认收藏夹。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        tripleConfirmation = null
+                        viewModel.tripleDynamic(dynamic)
+                    },
+                ) { Text("确认三连") }
+            },
+            dismissButton = {
+                TextButton(onClick = { tripleConfirmation = null }) { Text("取消") }
+            },
+        )
+    }
+
     if (showNowPlaying && playback.mediaId.isNotBlank()) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
@@ -879,6 +906,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 accountMenuExpanded = showAccountMenu,
                 isAccountLoading = uiState.isAccountLoading,
                 isUpdateChecking = uiState.isUpdateChecking,
+                isSectionRefreshing = uiState.dynamicFeed.isLoading || uiState.dynamicFeed.isLoadingMore,
+                onRefreshSection = if (uiState.section == MainSection.DYNAMIC) {
+                    { viewModel.loadDynamicFeed(reset = true) }
+                } else {
+                    null
+                },
                 onShowThemeMenu = {
                     showQualityMenu = false
                     showAccountMenu = false
@@ -974,6 +1007,18 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onAddFavorite = { video ->
                         if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
                     },
+                    modifier = pageModifier,
+                )
+                MainSection.DYNAMIC -> DynamicFeedScreen(
+                    state = uiState.dynamicFeed,
+                    accountLoggedIn = uiState.account.isLoggedIn,
+                    resolvingBvid = uiState.resolvingBvid,
+                    onLogin = { showLogin = true },
+                    onRefresh = { viewModel.loadDynamicFeed(reset = true) },
+                    onLoadMore = viewModel::loadMoreDynamicFeed,
+                    onPlay = viewModel::play,
+                    onLike = viewModel::toggleDynamicLike,
+                    onTriple = { dynamic -> tripleConfirmation = dynamic },
                     modifier = pageModifier,
                 )
                 MainSection.ACCOUNT -> AccountScreen(
@@ -1111,6 +1156,8 @@ private fun BiuTopBar(
     accountMenuExpanded: Boolean,
     isAccountLoading: Boolean,
     isUpdateChecking: Boolean,
+    isSectionRefreshing: Boolean,
+    onRefreshSection: (() -> Unit)?,
     onShowThemeMenu: () -> Unit,
     onDismissThemeMenu: () -> Unit,
     onThemeSelected: (AppThemeMode) -> Unit,
@@ -1129,6 +1176,15 @@ private fun BiuTopBar(
             Text(section.label, style = MaterialTheme.typography.titleLarge)
         },
         actions = {
+            onRefreshSection?.let { refresh ->
+                IconButton(onClick = refresh, enabled = !isSectionRefreshing) {
+                    if (isSectionRefreshing) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "刷新动态")
+                    }
+                }
+            }
             Box {
                 IconButton(onClick = onShowThemeMenu) {
                     Icon(
@@ -1407,6 +1463,7 @@ private fun BiuNavigationRail(
 
 private fun MainSection.icon(): ImageVector = when (this) {
     MainSection.RECOMMEND -> Icons.Rounded.Album
+    MainSection.DYNAMIC -> Icons.Rounded.DynamicFeed
     MainSection.ACCOUNT -> Icons.Rounded.AccountCircle
 }
 
@@ -1528,6 +1585,202 @@ private fun RecommendationScreen(
             )
         } else {
             VideoList(activeVideos, resolvingBvid, onPlay, onAddFavorite, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun DynamicFeedScreen(
+    state: DynamicFeedUiState,
+    accountLoggedIn: Boolean,
+    resolvingBvid: String?,
+    onLogin: () -> Unit,
+    onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
+    onPlay: (BilibiliVideo) -> Unit,
+    onLike: (BilibiliDynamicItem) -> Unit,
+    onTriple: (BilibiliDynamicItem) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (!accountLoggedIn) {
+        BiuEmptyState(
+            icon = Icons.Rounded.DynamicFeed,
+            title = "登录后查看关注动态",
+            actionLabel = "登录",
+            onAction = onLogin,
+            modifier = modifier,
+        )
+        return
+    }
+    Column(modifier = modifier.fillMaxSize()) {
+        if (state.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (!state.isLoading && state.items.isEmpty()) {
+            BiuEmptyState(
+                icon = Icons.Rounded.DynamicFeed,
+                title = "暂时没有视频动态",
+                actionLabel = "重新加载",
+                onAction = onRefresh,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                itemsIndexed(state.items, key = { _, item -> item.id }) { index, item ->
+                    if (state.hasMore && index >= state.items.lastIndex - 2) {
+                        LaunchedEffect(state.items.size, index) { onLoadMore() }
+                    }
+                    DynamicFeedItem(
+                        item = item,
+                        resolving = resolvingBvid == item.video.bvid,
+                        mutating = item.id in state.mutatingIds,
+                        onPlay = { onPlay(item.video) },
+                        onLike = { onLike(item) },
+                        onTriple = { onTriple(item) },
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 56.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+                if (state.isLoadingMore) {
+                    item(key = "dynamic-loading-more") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DynamicFeedItem(
+    item: BilibiliDynamicItem,
+    resolving: Boolean,
+    mutating: Boolean,
+    onPlay: () -> Unit,
+    onLike: () -> Unit,
+    onTriple: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AsyncImage(
+                model = item.authorFaceUrl,
+                contentDescription = item.video.author,
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentScale = ContentScale.Crop,
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(
+                    item.video.author.ifBlank { "未知 UP 主" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    formatPublishedAt(item.publishedAtEpochSeconds),
+                    maxLines = 1,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = !resolving, onClick = onPlay),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 112.dp, height = 64.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                AsyncImage(
+                    model = item.video.coverUrl,
+                    contentDescription = item.video.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+                item.video.durationSeconds?.let { duration ->
+                    Text(
+                        formatDuration(duration),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(3.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Color.Black.copy(alpha = 0.72f))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    item.video.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (item.description.isNotBlank()) {
+                    Text(
+                        item.description,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (resolving) {
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = "播放 ${item.video.title}")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onLike,
+                enabled = !mutating && !item.isLikeForbidden,
+            ) {
+                if (mutating) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        Icons.Rounded.ThumbUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                        tint = if (item.isLiked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(5.dp))
+                Text(item.likeCount.toString(), style = MaterialTheme.typography.labelMedium)
+            }
+            TextButton(onClick = onTriple, enabled = !mutating) {
+                Icon(Icons.Rounded.Bolt, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("三连", style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }

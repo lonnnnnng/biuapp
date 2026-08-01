@@ -43,6 +43,31 @@ data class BilibiliCreatorVideoPage(
     val total: Int? = null,
 )
 
+data class BilibiliDynamicItem(
+    val id: String,
+    val video: BilibiliVideo,
+    val authorMid: Long,
+    val authorFaceUrl: String,
+    val description: String,
+    val publishedAtEpochSeconds: Long?,
+    val likeCount: Long,
+    val isLiked: Boolean,
+    val isLikeForbidden: Boolean,
+)
+
+data class BilibiliDynamicPage(
+    val items: List<BilibiliDynamicItem>,
+    val nextOffset: String?,
+    val hasMore: Boolean,
+)
+
+data class BilibiliTripleResult(
+    val liked: Boolean,
+    val coined: Boolean,
+    val favorited: Boolean,
+    val coinCount: Int,
+)
+
 enum class BilibiliCreatorRelation(val attribute: Int) {
     NONE(0),
     FOLLOWING(2),

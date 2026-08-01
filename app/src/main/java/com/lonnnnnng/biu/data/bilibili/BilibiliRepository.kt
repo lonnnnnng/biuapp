@@ -10,11 +10,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -177,6 +179,55 @@ class BilibiliRepository(
             useWbi = true,
         ).requireSuccess().optJSONObject("data") ?: throw BilibiliApiException(-1, "UP 主资料为空")
         return parseCreatorProfile(data) ?: throw BilibiliApiException(-1, "UP 主资料无效")
+    }
+
+    suspend fun dynamicFeed(offset: String? = null): BilibiliDynamicPage {
+        val data = request(
+            path = "/x/polymer/web-dynamic/v1/feed/all",
+            parameters = buildMap {
+                put("type", "video")
+                put("platform", "web")
+                put("web_location", "333.1365")
+                put("features", DYNAMIC_FEATURES)
+                offset?.takeIf(String::isNotBlank)?.let { put("offset", it) }
+            },
+        ).requireSuccess().optJSONObject("data") ?: JSONObject()
+        val hasMore = data.optBoolean("has_more", false)
+        return BilibiliDynamicPage(
+            items = data.optJSONArray("items").toObjects().mapNotNull(::parseDynamicItem),
+            // long: 动态接口可能返回失效或非视频项，翻页只能信任服务端游标，不能用过滤后的卡片数量判断。
+            nextOffset = data.optString("offset").takeIf { hasMore && it.isNotBlank() },
+            hasMore = hasMore,
+        )
+    }
+
+    suspend fun updateDynamicLike(dynamicId: String, liked: Boolean) {
+        require(dynamicId.isNotBlank()) { "动态 id 无效" }
+        // long: 新版动态点赞只接受 JSON 正文，CSRF 仍位于 URL；沿用表单会返回参数错误 4100001。
+        postJson(
+            path = "/x/dynamic/feed/dyn/thumb",
+            queryParameters = mapOf("csrf" to requireCsrf()),
+            payload = JSONObject()
+                .put("dyn_id_str", dynamicId)
+                .put("up", if (liked) 1 else 2),
+        ).requireSuccess()
+    }
+
+    suspend fun tripleLike(bvid: String): BilibiliTripleResult {
+        require(bvid.isNotBlank()) { "视频 bvid 无效" }
+        val data = postForm(
+            path = "/x/web-interface/archive/like/triple",
+            parameters = mapOf(
+                "bvid" to bvid,
+                "csrf" to requireCsrf(),
+            ),
+        ).requireSuccess().optJSONObject("data") ?: JSONObject()
+        return BilibiliTripleResult(
+            liked = data.optBoolean("like", false),
+            coined = data.optBoolean("coin", false),
+            favorited = data.optBoolean("fav", false),
+            coinCount = data.optInt("multiply", 0).coerceAtLeast(0),
+        )
     }
 
     suspend fun creatorRelation(mid: Long): BilibiliCreatorRelation {
@@ -848,6 +899,18 @@ class BilibiliRepository(
         return withContext(Dispatchers.IO) { execute(request) }
     }
 
+    private suspend fun postJson(
+        path: String,
+        queryParameters: Map<String, Any?>,
+        payload: JSONObject,
+    ): JSONObject {
+        val request = Request.Builder()
+            .url(buildUrl(path, queryParameters))
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        return withContext(Dispatchers.IO) { execute(request) }
+    }
+
     private fun execute(request: Request): JSONObject {
         return client.newCall(request).execute().use { response ->
             val payload = response.body?.string().orEmpty()
@@ -1003,6 +1066,40 @@ class BilibiliRepository(
             durationSeconds = parseDuration(item.optString("length")) ?: item.optIntOrNull("duration"),
             playCount = item.optLongOrNull("play"),
             publishedAtEpochSeconds = item.optLongOrNull("created") ?: item.optLongOrNull("pubdate"),
+        )
+    }
+
+    internal fun parseDynamicItem(item: JSONObject): BilibiliDynamicItem? {
+        if (!item.optBoolean("visible", true)) return null
+        val dynamicId = item.optString("id_str").takeIf(String::isNotBlank) ?: return null
+        val modules = item.optJSONObject("modules") ?: return null
+        val author = modules.optJSONObject("module_author") ?: return null
+        val dynamic = modules.optJSONObject("module_dynamic") ?: return null
+        val archive = dynamic.optJSONObject("major")?.optJSONObject("archive") ?: return null
+        val bvid = archive.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        val authorName = BilibiliText.plainTitle(author.optString("name"))
+        val publishedAt = author.optLongOrNull("pub_ts")
+        val like = modules.optJSONObject("module_stat")?.optJSONObject("like")
+        val video = BilibiliVideo(
+            bvid = bvid,
+            aid = archive.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(archive.optString("title")),
+            author = authorName,
+            coverUrl = BilibiliText.httpsUrl(archive.optString("cover")),
+            durationSeconds = parseDuration(archive.optString("duration_text")),
+            playCount = null,
+            publishedAtEpochSeconds = publishedAt,
+        )
+        return BilibiliDynamicItem(
+            id = dynamicId,
+            video = video,
+            authorMid = author.optLong("mid", 0L),
+            authorFaceUrl = BilibiliText.httpsUrl(author.optString("face")),
+            description = BilibiliText.plainTitle(dynamic.optJSONObject("desc")?.optString("text").orEmpty()),
+            publishedAtEpochSeconds = publishedAt,
+            likeCount = like?.optLong("count", 0L)?.coerceAtLeast(0L) ?: 0L,
+            isLiked = like?.optBoolean("status", false) == true,
+            isLikeForbidden = like?.optBoolean("forbidden", false) == true,
         )
     }
 
@@ -1184,6 +1281,8 @@ class BilibiliRepository(
         const val HISTORY_PAGE_SIZE = 20
         const val MAX_FAVORITE_FOLDER_PAGES = 100
         const val MAX_FAVORITE_PAGES = 100
+        const val DYNAMIC_FEATURES = "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,decorationCard,onlyfansAssetsV2,forwardListHidden,ugcDelete"
+        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         val WBI_CACHE_SECONDS = TimeUnit.HOURS.toSeconds(6)
         val HISTORY_KEY_PATTERN = Regex("[a-z-]+_[0-9]+")
     }
