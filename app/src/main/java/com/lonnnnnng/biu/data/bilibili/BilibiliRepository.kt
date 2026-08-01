@@ -35,6 +35,7 @@ class BilibiliRepository(
             RecommendFeed.COMPREHENSIVE -> comprehensivePopularRecommendations(normalizedPage)
             RecommendFeed.WEEKLY -> weeklyPopularRecommendations(normalizedPage)
             RecommendFeed.RANKING -> rankingRecommendations(normalizedPage)
+            RecommendFeed.PRECIOUS -> preciousRecommendations(normalizedPage)
         }
     }
 
@@ -870,6 +871,24 @@ class BilibiliRepository(
         if (fromIndex >= videos.size) return BilibiliRecommendationPage(emptyList(), page, hasMore = false)
         val toIndex = (fromIndex + RECOMMENDATION_PAGE_SIZE).coerceAtMost(videos.size)
         // long: 全站排行接口固定返回 Top 100，分批展示只发生在客户端，避免向 B 站发送并不存在的 pn/rid 参数。
+        return BilibiliRecommendationPage(
+            videos = videos.subList(fromIndex, toIndex),
+            page = page,
+            hasMore = toIndex < videos.size,
+        )
+    }
+
+    private suspend fun preciousRecommendations(page: Int): BilibiliRecommendationPage {
+        val videos = request(path = "/x/web-interface/popular/precious")
+            .requireSuccess()
+            .optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parsePublicVideo)
+        val fromIndex = (page - 1) * RECOMMENDATION_PAGE_SIZE
+        if (fromIndex >= videos.size) return BilibiliRecommendationPage(emptyList(), page, hasMore = false)
+        val toIndex = (fromIndex + RECOMMENDATION_PAGE_SIZE).coerceAtMost(videos.size)
+        // long: 入站必刷接口返回固定精选列表，不接受页码；客户端分批展示可避免发送无效参数并保留触底续载体验。
         return BilibiliRecommendationPage(
             videos = videos.subList(fromIndex, toIndex),
             page = page,

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,14 +28,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,63 +76,66 @@ internal fun CreatorCenterScreen(
     onAddFavorite: (BilibiliVideo) -> Unit,
     onLogin: () -> Unit,
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     BackHandler {
         if (state.selectedCreator != null) onCloseCreator() else onBack()
     }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        state.selectedCreator?.name ?: "UP 主",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = { if (state.selectedCreator != null) onCloseCreator() else onBack() }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-    ) { padding ->
-        Box(
+    ModalBottomSheet(
+        onDismissRequest = onBack,
+        sheetState = sheetState,
+        modifier = Modifier.widthIn(max = 840.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
+    ) {
+        // long: UP 主搜索、关注列表和空间详情共用同一个全高弹层，层级切换只改变标题与返回动作，避免跳出首页视觉体系。
+        Column(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentAlignment = Alignment.TopCenter,
+                .fillMaxWidth()
+                .fillMaxHeight(),
         ) {
-            if (state.selectedCreator == null) {
-                CreatorDirectory(
-                    state = state,
-                    accountLoggedIn = accountLoggedIn,
-                    onTabSelected = onTabSelected,
-                    onSearch = onSearch,
-                    onClearSearch = onClearSearch,
-                    onLoadMoreSearch = onLoadMoreSearch,
-                    onLoadFollowing = onLoadFollowing,
-                    onOpenCreator = onOpenCreator,
-                    onLogin = onLogin,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 840.dp),
-                )
-            } else {
-                CreatorProfile(
-                    state = state,
-                    accountLoggedIn = accountLoggedIn,
-                    resolvingBvid = resolvingBvid,
-                    onToggleRelation = onToggleRelation,
-                    onLoadMoreVideos = onLoadMoreVideos,
-                    onPlay = onPlay,
-                    onAddFavorite = onAddFavorite,
-                    onLogin = onLogin,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .widthIn(max = 840.dp),
-                )
+            BiuSheetHeader(
+                title = state.selectedCreator?.name ?: "UP 主",
+                onClose = onBack,
+                navigationIcon = if (state.selectedCreator == null) null else Icons.AutoMirrored.Rounded.ArrowBack,
+                navigationContentDescription = "返回 UP 主列表",
+                onNavigation = onCloseCreator,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                if (state.selectedCreator == null) {
+                    CreatorDirectory(
+                        state = state,
+                        accountLoggedIn = accountLoggedIn,
+                        onTabSelected = onTabSelected,
+                        onSearch = onSearch,
+                        onClearSearch = onClearSearch,
+                        onLoadMoreSearch = onLoadMoreSearch,
+                        onLoadFollowing = onLoadFollowing,
+                        onOpenCreator = onOpenCreator,
+                        onLogin = onLogin,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .widthIn(max = 840.dp),
+                    )
+                } else {
+                    CreatorProfile(
+                        state = state,
+                        accountLoggedIn = accountLoggedIn,
+                        resolvingBvid = resolvingBvid,
+                        onToggleRelation = onToggleRelation,
+                        onLoadMoreVideos = onLoadMoreVideos,
+                        onPlay = onPlay,
+                        onAddFavorite = onAddFavorite,
+                        onLogin = onLogin,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .widthIn(max = 840.dp),
+                    )
+                }
             }
         }
     }
@@ -154,12 +157,6 @@ private fun CreatorDirectory(
     var searchKeyword by remember(state.searchKeyword) { mutableStateOf(state.searchKeyword) }
     var followingKeyword by remember { mutableStateOf("") }
     Column(modifier = modifier) {
-        // long: 用户搜索走远端分页，关注关键词只筛选已加载页，两个入口分开表达，避免把局部结果误当成全局搜索。
-        CreatorCenterTabs(
-            selected = state.tab,
-            onSelected = onTabSelected,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
         val keyword = if (state.tab == CreatorCenterTab.SEARCH) searchKeyword else followingKeyword
         CompactSearchField(
             value = keyword,
@@ -187,6 +184,11 @@ private fun CreatorDirectory(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        // long: 搜索框保持首要输入位置，用户搜索与我的关注作为同层内容 Tab 放在其下方，并与推荐、账号页共用下划线选中样式。
+        CreatorCenterTabs(
+            selected = state.tab,
+            onSelected = onTabSelected,
         )
         if (state.isListLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         when (state.tab) {
@@ -297,37 +299,48 @@ private fun CreatorCenterTabs(
     onSelected: (CreatorCenterTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(36.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
+            .height(48.dp),
     ) {
-        Row(modifier = Modifier.padding(2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            CreatorCenterTab.entries.forEach { tab ->
-                val isSelected = tab == selected
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer)
-                        .semantics {
-                            role = Role.Tab
-                            this.selected = isSelected
-                        }
-                        .clickable { onSelected(tab) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        tab.label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        CreatorCenterTab.entries.forEach { tab ->
+            val isSelected = tab == selected
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .semantics {
+                        role = Role.Tab
+                        this.selected = isSelected
+                    }
+                    .clickable { onSelected(tab) },
+            ) {
+                Text(
+                    tab.label,
+                    modifier = Modifier.align(Alignment.Center),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                if (isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(MaterialTheme.colorScheme.primary),
                     )
                 }
             }
         }
     }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
 @Composable

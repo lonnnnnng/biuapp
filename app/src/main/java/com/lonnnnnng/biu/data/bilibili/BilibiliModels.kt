@@ -7,6 +7,7 @@ enum class RecommendFeed(val label: String) {
     COMPREHENSIVE("综合热门"),
     WEEKLY("每周必看"),
     RANKING("全站排行"),
+    PRECIOUS("入站必刷"),
 }
 
 data class BilibiliVideo(

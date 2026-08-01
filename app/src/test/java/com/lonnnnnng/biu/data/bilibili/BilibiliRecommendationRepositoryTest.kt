@@ -136,6 +136,24 @@ class BilibiliRecommendationRepositoryTest {
         assertNull(request.requestUrl?.queryParameter("rid"))
     }
 
+    @Test
+    fun `入站必刷固定列表只在客户端分批展示`() = runBlocking {
+        val videos = (1..23).joinToString(",") { index ->
+            """{"aid":$index,"bvid":"BVP$index","title":"必刷$index","pic":"","duration":60,"owner":{"name":"UP$index"},"stat":{"view":$index}}"""
+        }
+        server.enqueue(jsonResponse("""{"code":0,"data":{"list":[$videos]}}"""))
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val result = repository.recommendations(RecommendFeed.PRECIOUS, page = 2)
+
+        assertEquals((21..23).map { "BVP$it" }, result.videos.map(BilibiliVideo::bvid))
+        assertFalse(result.hasMore)
+        val request = server.takeRequest()
+        assertEquals("/x/web-interface/popular/precious", request.requestUrl?.encodedPath)
+        assertNull(request.requestUrl?.queryParameter("pn"))
+        assertNull(request.requestUrl?.queryParameter("ps"))
+    }
+
     private fun jsonResponse(body: String): MockResponse {
         return MockResponse()
             .setHeader("Content-Type", "application/json")

@@ -135,6 +135,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -159,6 +160,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.semantics.Role
@@ -208,7 +210,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliDynamicItem
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
-import com.lonnnnnng.biu.data.bilibili.HomeFeedMode
+import com.lonnnnnng.biu.data.bilibili.CreatorFeedTabState
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.AppThemeMode
@@ -868,31 +870,15 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         return
     }
 
-    if (showCreatorCenter) {
-        CreatorCenterScreen(
-            state = uiState.creatorCenter,
-            accountLoggedIn = uiState.account.isLoggedIn,
-            resolvingBvid = uiState.resolvingBvid,
-            onBack = {
-                viewModel.closeCreatorProfile()
-                showCreatorCenter = false
-            },
-            onTabSelected = viewModel::selectCreatorCenterTab,
-            onSearch = viewModel::searchCreators,
-            onClearSearch = viewModel::clearCreatorSearch,
-            onLoadMoreSearch = { viewModel.searchCreators("", loadMore = true) },
-            onLoadFollowing = viewModel::loadCreatorCenterFollowing,
-            onOpenCreator = viewModel::openCreatorProfile,
-            onCloseCreator = viewModel::closeCreatorProfile,
-            onToggleRelation = viewModel::toggleCreatorRelation,
-            onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
-            onPlay = viewModel::play,
-            onAddFavorite = { video ->
-                if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
-            },
-            onLogin = { showLogin = true },
+    val openCreatorConfig: () -> Unit = {
+        showCreatorConfig = true
+        viewModel.loadFollowingCreators()
+    }
+    val openCreatorCenter: () -> Unit = {
+        showCreatorCenter = true
+        viewModel.selectCreatorCenterTab(
+            if (uiState.account.isLoggedIn) CreatorCenterTab.FOLLOWING else CreatorCenterTab.SEARCH,
         )
-        return
     }
 
     Scaffold(
@@ -907,12 +893,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 accountMenuExpanded = showAccountMenu,
                 isAccountLoading = uiState.isAccountLoading,
                 isUpdateChecking = uiState.isUpdateChecking,
-                isSectionRefreshing = uiState.dynamicFeed.isLoading || uiState.dynamicFeed.isLoadingMore,
-                onRefreshSection = if (uiState.section == MainSection.DYNAMIC) {
-                    { viewModel.loadDynamicFeed(reset = true) }
-                } else {
-                    null
-                },
+                isDynamicLoading = uiState.dynamicFeed.isLoading,
+                onOpenCreatorConfig = openCreatorConfig,
+                onOpenCreatorCenter = openCreatorCenter,
+                onRefreshDynamic = { viewModel.loadDynamicFeed(reset = true) },
                 onShowThemeMenu = {
                     showQualityMenu = false
                     showAccountMenu = false
@@ -985,28 +969,19 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     searchResults = uiState.searchResults,
                     submittedKeyword = uiState.submittedKeyword,
                     feed = uiState.feed,
-                    homeFeedMode = uiState.homeFeedMode,
-                    selectedCreatorCount = uiState.selectedCreators.size,
+                    creatorFeedTabs = uiState.creatorFeedTabs,
+                    selectedCreatorFeedMid = uiState.selectedCreatorFeedMid,
                     loading = uiState.isFeedLoading,
                     loadingMore = uiState.isFeedLoadingMore,
                     hasMore = uiState.recommendationHasMore,
                     searchLoading = uiState.isSearchLoading,
                     resolvingBvid = uiState.resolvingBvid,
                     onFeedChange = viewModel::loadRecommendations,
+                    onCreatorFeedChange = viewModel::selectCreatorFeed,
                     onRefresh = { viewModel.loadRecommendations() },
                     onLoadMore = viewModel::loadMoreRecommendations,
                     onSearch = viewModel::search,
                     onClearSearch = viewModel::clearSearch,
-                    onOpenCreatorConfig = {
-                        showCreatorConfig = true
-                        viewModel.loadFollowingCreators()
-                    },
-                    onOpenCreatorCenter = {
-                        showCreatorCenter = true
-                        viewModel.selectCreatorCenterTab(
-                            if (uiState.account.isLoggedIn) CreatorCenterTab.FOLLOWING else CreatorCenterTab.SEARCH,
-                        )
-                    },
                     onPlay = viewModel::play,
                     onAddFavorite = { video ->
                         if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
@@ -1116,6 +1091,33 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             }
         }
     }
+
+    if (showCreatorCenter) {
+        // long: UP 主搜索与首页范围都覆盖在推荐页之上，关闭后保留列表位置和筛选状态，不打断首页浏览上下文。
+        CreatorCenterScreen(
+            state = uiState.creatorCenter,
+            accountLoggedIn = uiState.account.isLoggedIn,
+            resolvingBvid = uiState.resolvingBvid,
+            onBack = {
+                viewModel.closeCreatorProfile()
+                showCreatorCenter = false
+            },
+            onTabSelected = viewModel::selectCreatorCenterTab,
+            onSearch = viewModel::searchCreators,
+            onClearSearch = viewModel::clearCreatorSearch,
+            onLoadMoreSearch = { viewModel.searchCreators("", loadMore = true) },
+            onLoadFollowing = viewModel::loadCreatorCenterFollowing,
+            onOpenCreator = viewModel::openCreatorProfile,
+            onCloseCreator = viewModel::closeCreatorProfile,
+            onToggleRelation = viewModel::toggleCreatorRelation,
+            onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
+            onPlay = viewModel::play,
+            onAddFavorite = { video ->
+                if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
+            },
+            onLogin = { showLogin = true },
+        )
+    }
 }
 
 @Composable
@@ -1160,8 +1162,10 @@ private fun BiuTopBar(
     accountMenuExpanded: Boolean,
     isAccountLoading: Boolean,
     isUpdateChecking: Boolean,
-    isSectionRefreshing: Boolean,
-    onRefreshSection: (() -> Unit)?,
+    isDynamicLoading: Boolean,
+    onOpenCreatorConfig: () -> Unit,
+    onOpenCreatorCenter: () -> Unit,
+    onRefreshDynamic: () -> Unit,
     onShowThemeMenu: () -> Unit,
     onDismissThemeMenu: () -> Unit,
     onThemeSelected: (AppThemeMode) -> Unit,
@@ -1180,89 +1184,107 @@ private fun BiuTopBar(
             Text(section.label, style = MaterialTheme.typography.titleLarge)
         },
         actions = {
-            onRefreshSection?.let { refresh ->
-                IconButton(onClick = refresh, enabled = !isSectionRefreshing) {
-                    if (isSectionRefreshing) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            if (section == MainSection.RECOMMEND) {
+                IconButton(onClick = onOpenCreatorConfig) {
+                    Icon(Icons.Rounded.Tune, contentDescription = "设置首页内容范围")
+                }
+                IconButton(onClick = onOpenCreatorCenter) {
+                    Icon(Icons.Rounded.PersonSearch, contentDescription = "UP 主搜索和关注")
+                }
+            }
+            if (section == MainSection.DYNAMIC) {
+                IconButton(
+                    onClick = onRefreshDynamic,
+                    enabled = account.isLoggedIn && !isDynamicLoading,
+                ) {
+                    if (isDynamicLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .size(20.dp)
+                                .semantics { contentDescription = "正在刷新动态" },
+                            strokeWidth = 2.dp,
+                        )
                     } else {
                         Icon(Icons.Rounded.Refresh, contentDescription = "刷新动态")
                     }
                 }
             }
-            Box {
-                IconButton(onClick = onShowThemeMenu) {
-                    Icon(
-                        imageVector = when (themeMode) {
-                            AppThemeMode.SYSTEM -> Icons.Rounded.BrightnessAuto
-                            AppThemeMode.LIGHT -> Icons.Rounded.LightMode
-                            AppThemeMode.DARK -> Icons.Rounded.DarkMode
-                        },
-                        contentDescription = "主题：${themeMode.label}",
-                    )
-                }
-                DropdownMenu(
-                    expanded = themeMenuExpanded,
-                    onDismissRequest = onDismissThemeMenu,
-                ) {
-                    AppThemeMode.entries.forEach { mode ->
-                        DropdownMenuItem(
-                            text = { Text(mode.label) },
-                            leadingIcon = {
-                                if (themeMode == mode) {
-                                    Icon(Icons.Rounded.Check, contentDescription = "已选择")
-                                } else {
-                                    Spacer(Modifier.size(24.dp))
-                                }
+            if (section == MainSection.ACCOUNT) {
+                Box {
+                    IconButton(onClick = onShowThemeMenu) {
+                        Icon(
+                            imageVector = when (themeMode) {
+                                AppThemeMode.SYSTEM -> Icons.Rounded.BrightnessAuto
+                                AppThemeMode.LIGHT -> Icons.Rounded.LightMode
+                                AppThemeMode.DARK -> Icons.Rounded.DarkMode
                             },
-                            onClick = { onThemeSelected(mode) },
+                            contentDescription = "主题：${themeMode.label}",
                         )
                     }
-                }
-            }
-            Box {
-                IconButton(onClick = onShowQualityMenu) {
-                    Icon(
-                        Icons.Rounded.HighQuality,
-                        contentDescription = "播放音质：${qualityPreference.label}",
-                    )
-                }
-                DropdownMenu(
-                    expanded = qualityMenuExpanded,
-                    onDismissRequest = onDismissQualityMenu,
-                ) {
-                    AudioQualityPreference.entries.forEach { preference ->
-                        DropdownMenuItem(
-                            text = { Text(preference.label) },
-                            leadingIcon = {
-                                if (qualityPreference == preference) {
-                                    Icon(Icons.Rounded.Check, contentDescription = "已选择")
-                                } else {
-                                    Spacer(Modifier.size(24.dp))
-                                }
-                            },
-                            onClick = { onQualitySelected(preference) },
-                        )
+                    DropdownMenu(
+                        expanded = themeMenuExpanded,
+                        onDismissRequest = onDismissThemeMenu,
+                    ) {
+                        AppThemeMode.entries.forEach { mode ->
+                            DropdownMenuItem(
+                                text = { Text(mode.label) },
+                                leadingIcon = {
+                                    if (themeMode == mode) {
+                                        Icon(Icons.Rounded.Check, contentDescription = "已选择")
+                                    } else {
+                                        Spacer(Modifier.size(24.dp))
+                                    }
+                                },
+                                onClick = { onThemeSelected(mode) },
+                            )
+                        }
                     }
                 }
-            }
-            Box {
-                IconButton(onClick = onShowAccountMenu) {
-                    Icon(
-                        Icons.Rounded.AccountCircle,
-                        contentDescription = if (accountMenuExpanded) "关闭账号菜单" else "打开账号菜单",
+                Box {
+                    IconButton(onClick = onShowQualityMenu) {
+                        Icon(
+                            Icons.Rounded.HighQuality,
+                            contentDescription = "播放音质：${qualityPreference.label}",
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = qualityMenuExpanded,
+                        onDismissRequest = onDismissQualityMenu,
+                    ) {
+                        AudioQualityPreference.entries.forEach { preference ->
+                            DropdownMenuItem(
+                                text = { Text(preference.label) },
+                                leadingIcon = {
+                                    if (qualityPreference == preference) {
+                                        Icon(Icons.Rounded.Check, contentDescription = "已选择")
+                                    } else {
+                                        Spacer(Modifier.size(24.dp))
+                                    }
+                                },
+                                onClick = { onQualitySelected(preference) },
+                            )
+                        }
+                    }
+                }
+                Box {
+                    IconButton(onClick = onShowAccountMenu) {
+                        Icon(
+                            Icons.Rounded.AccountCircle,
+                            contentDescription = if (accountMenuExpanded) "关闭账号菜单" else "打开账号菜单",
+                        )
+                    }
+                    AccountDropdownMenu(
+                        account = account,
+                        expanded = accountMenuExpanded,
+                        isAccountLoading = isAccountLoading,
+                        isUpdateChecking = isUpdateChecking,
+                        onDismiss = onDismissAccountMenu,
+                        onLogin = onLogin,
+                        onRefresh = onRefreshAccount,
+                        onCheckUpdate = onCheckUpdate,
+                        onLogout = onLogout,
                     )
                 }
-                AccountDropdownMenu(
-                    account = account,
-                    expanded = accountMenuExpanded,
-                    isAccountLoading = isAccountLoading,
-                    isUpdateChecking = isUpdateChecking,
-                    onDismiss = onDismissAccountMenu,
-                    onLogin = onLogin,
-                    onRefresh = onRefreshAccount,
-                    onCheckUpdate = onCheckUpdate,
-                    onLogout = onLogout,
-                )
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -1472,25 +1494,25 @@ private fun MainSection.icon(): ImageVector = when (this) {
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun RecommendationScreen(
     videos: List<BilibiliVideo>,
     searchResults: List<BilibiliVideo>,
     submittedKeyword: String,
     feed: RecommendFeed,
-    homeFeedMode: HomeFeedMode,
-    selectedCreatorCount: Int,
+    creatorFeedTabs: List<CreatorFeedTabState>,
+    selectedCreatorFeedMid: Long?,
     loading: Boolean,
     loadingMore: Boolean,
     hasMore: Boolean,
     searchLoading: Boolean,
     resolvingBvid: String?,
     onFeedChange: (RecommendFeed) -> Unit,
+    onCreatorFeedChange: (Long) -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
-    onOpenCreatorConfig: () -> Unit,
-    onOpenCreatorCenter: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
@@ -1548,64 +1570,55 @@ private fun RecommendationScreen(
                 ) { Text("返回推荐") }
             }
         } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (homeFeedMode == HomeFeedMode.FALLBACK) {
-                    FeedSelector(
-                        selected = feed,
-                        onSelected = onFeedChange,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 16.dp, top = 2.dp, bottom = 2.dp),
-                    )
-                } else {
-                    SingleFeedLabel(
-                        label = "我的关注",
-                        supportingText = "已选 $selectedCreatorCount 位 UP",
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 16.dp, top = 2.dp, bottom = 2.dp),
-                    )
-                }
-                IconButton(onClick = onOpenCreatorConfig) {
-                    Icon(Icons.Rounded.Tune, contentDescription = "设置首页内容范围")
-                }
-                IconButton(onClick = onOpenCreatorCenter) {
-                    Icon(Icons.Rounded.PersonSearch, contentDescription = "UP 主搜索和关注")
-                }
-                IconButton(onClick = onRefresh, enabled = !loading) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "刷新推荐")
-                }
-                Spacer(Modifier.width(8.dp))
-            }
+            RecommendationTabs(
+                selectedFeed = feed,
+                creatorTabs = creatorFeedTabs,
+                selectedCreatorMid = selectedCreatorFeedMid,
+                onFeedSelected = onFeedChange,
+                onCreatorSelected = onCreatorFeedChange,
+            )
         }
-        val activeLoading = if (showingSearchResults) searchLoading else loading
-        val activeVideos = if (showingSearchResults) searchResults else videos
-        if (activeLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        if (!activeLoading && activeVideos.isEmpty()) {
-            BiuEmptyState(
-                icon = if (showingSearchResults) Icons.Rounded.Search else Icons.Rounded.LibraryMusic,
-                title = if (showingSearchResults) "没有找到结果" else "暂时没有推荐",
-                message = if (showingSearchResults) "换一个关键词再试试" else null,
-                actionLabel = if (showingSearchResults) null else "重新加载",
-                onAction = if (showingSearchResults) null else onRefresh,
-                modifier = Modifier.weight(1f),
-            )
-        } else {
-            VideoList(
-                videos = activeVideos,
-                resolvingBvid = resolvingBvid,
-                onPlay = onPlay,
-                onAddFavorite = onAddFavorite,
-                onLoadMore = if (showingSearchResults) null else onLoadMore,
-                hasMore = !showingSearchResults && hasMore,
-                loadingMore = !showingSearchResults && loadingMore,
-                modifier = Modifier.weight(1f),
-            )
+        val selectedCreatorTab = creatorFeedTabs.firstOrNull { tab -> tab.creator.mid == selectedCreatorFeedMid }
+        val recommendationVideos = selectedCreatorTab?.videos ?: videos
+        val recommendationLoading = selectedCreatorTab?.isLoading ?: loading
+        val recommendationLoadingMore = selectedCreatorTab?.isLoadingMore ?: loadingMore
+        val recommendationHasMore = selectedCreatorTab?.hasMore ?: hasMore
+        val activeLoading = if (showingSearchResults) searchLoading else recommendationLoading
+        val activeVideos = if (showingSearchResults) searchResults else recommendationVideos
+        PullToRefreshBox(
+            isRefreshing = activeLoading,
+            onRefresh = {
+                if (showingSearchResults) onSearch(submittedKeyword) else onRefresh()
+            },
+            modifier = Modifier.weight(1f),
+        ) {
+            if (!activeLoading && activeVideos.isEmpty()) {
+                BiuEmptyState(
+                    icon = if (showingSearchResults) Icons.Rounded.Search else Icons.Rounded.LibraryMusic,
+                    title = if (showingSearchResults) "没有找到结果" else "暂时没有推荐",
+                    message = if (showingSearchResults) "换一个关键词再试试" else null,
+                    actionLabel = if (showingSearchResults) null else "重新加载",
+                    onAction = if (showingSearchResults) null else onRefresh,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                VideoList(
+                    videos = activeVideos,
+                    resolvingBvid = resolvingBvid,
+                    onPlay = onPlay,
+                    onAddFavorite = onAddFavorite,
+                    onLoadMore = if (showingSearchResults) null else onLoadMore,
+                    hasMore = !showingSearchResults && recommendationHasMore,
+                    loadingMore = !showingSearchResults && recommendationLoadingMore,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
     }
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun DynamicFeedScreen(
     state: DynamicFeedUiState,
     accountLoggedIn: Boolean,
@@ -1628,22 +1641,32 @@ private fun DynamicFeedScreen(
         )
         return
     }
-    Column(modifier = modifier.fillMaxSize()) {
-        if (state.isLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(listState, state.items.size, state.hasMore) {
+        derivedStateOf {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            state.hasMore && state.items.isNotEmpty() && lastVisibleIndex >= state.items.lastIndex - 2
+        }
+    }
+    LaunchedEffect(shouldLoadMore, state.items.size, state.hasMore) {
+        if (shouldLoadMore && !state.isLoadingMore) onLoadMore()
+    }
+    PullToRefreshBox(
+        isRefreshing = state.isLoading,
+        onRefresh = onRefresh,
+        modifier = modifier.fillMaxSize(),
+    ) {
         if (!state.isLoading && state.items.isEmpty()) {
             BiuEmptyState(
                 icon = Icons.Rounded.DynamicFeed,
                 title = "暂时没有视频动态",
                 actionLabel = "重新加载",
                 onAction = onRefresh,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxSize(),
             )
         } else {
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                itemsIndexed(state.items, key = { _, item -> item.id }) { index, item ->
-                    if (state.hasMore && index >= state.items.lastIndex - 2) {
-                        LaunchedEffect(state.items.size, index) { onLoadMore() }
-                    }
+            LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
+                items(state.items, key = BilibiliDynamicItem::id) { item ->
                     DynamicFeedItem(
                         item = item,
                         resolving = resolvingBvid == item.video.bvid,
@@ -1653,7 +1676,7 @@ private fun DynamicFeedScreen(
                         onTriple = { onTriple(item) },
                     )
                     HorizontalDivider(
-                        modifier = Modifier.padding(start = 52.dp),
+                        modifier = Modifier.padding(start = 136.dp),
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
                 }
@@ -1683,198 +1706,252 @@ private fun DynamicFeedItem(
     onLike: () -> Unit,
     onTriple: () -> Unit,
 ) {
-    Column(
+    val density = LocalDensity.current
+    val authorRowHeight = maxOf(
+        18.dp,
+        with(density) { MaterialTheme.typography.labelSmall.lineHeight.toDp() } + 1.dp,
+    )
+    val titleHeight = with(density) { MaterialTheme.typography.bodySmall.lineHeight.toDp() } * 2 + 1.dp
+    val actionRowHeight = maxOf(
+        24.dp,
+        with(density) { MaterialTheme.typography.labelSmall.lineHeight.toDp() } + 1.dp,
+    )
+    val itemHeight = authorRowHeight + titleHeight + actionRowHeight
+    // long: 四行高度按当前字体行高计算并预留像素舍入余量，确保标题真正获得两行，而不是在高密度屏幕上退化成单行省略。
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .clickable(enabled = !resolving, onClick = onPlay)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .height(itemHeight),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            modifier = Modifier
+                .size(width = 112.dp, height = itemHeight)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
             AsyncImage(
-                model = item.authorFaceUrl,
-                contentDescription = item.video.author,
-                modifier = Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                model = item.video.coverUrl,
+                contentDescription = item.video.title,
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
+            item.video.durationSeconds?.let { duration ->
+                Text(
+                    formatDuration(duration),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(3.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            if (resolving) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(20.dp),
+                    strokeWidth = 2.dp,
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+        ) {
+            Row(
+                modifier = Modifier.height(authorRowHeight),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                AsyncImage(
+                    model = item.authorFaceUrl,
+                    contentDescription = item.video.author,
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentScale = ContentScale.Crop,
+                )
+                Text(
+                    item.video.author.ifBlank { "未知 UP 主" },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text(
+                    formatPublishedDateTime(item.publishedAtEpochSeconds),
+                    maxLines = 1,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
-                item.video.author.ifBlank { "未知 UP 主" },
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
+                item.video.title,
+                modifier = Modifier.height(titleHeight),
+                maxLines = 2,
+                softWrap = true,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
             )
-            Text(
-                formatPublishedAt(item.publishedAtEpochSeconds),
-                maxLines = 1,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(enabled = !resolving, onClick = onPlay),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(width = 96.dp, height = 54.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .fillMaxWidth()
+                    .height(actionRowHeight),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsyncImage(
-                    model = item.video.coverUrl,
-                    contentDescription = item.video.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
+                DynamicAction(
+                    icon = Icons.Rounded.ThumbUp,
+                    label = item.likeCount.toString(),
+                    contentDescription = if (item.isLiked) "取消点赞" else "点赞",
+                    enabled = !mutating && !item.isLikeForbidden,
+                    loading = mutating,
+                    selected = item.isLiked,
+                    onClick = onLike,
                 )
-                item.video.durationSeconds?.let { duration ->
-                    Text(
-                        formatDuration(duration),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(3.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(Color.Black.copy(alpha = 0.72f))
-                            .padding(horizontal = 4.dp, vertical = 1.dp),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    item.video.title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
+                DynamicAction(
+                    icon = Icons.Rounded.Bolt,
+                    label = "三连",
+                    contentDescription = "一键三连",
+                    enabled = !mutating,
+                    onClick = onTriple,
                 )
-                if (item.description.isNotBlank()) {
-                    Text(
-                        item.description,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (resolving) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(
-                    Icons.Rounded.PlayArrow,
-                    contentDescription = "播放 ${item.video.title}",
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(
-                onClick = onLike,
-                enabled = !mutating && !item.isLikeForbidden,
-            ) {
-                if (mutating) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        Icons.Rounded.ThumbUp,
-                        contentDescription = null,
-                        modifier = Modifier.size(17.dp),
-                        tint = if (item.isLiked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.width(5.dp))
-                Text(item.likeCount.toString(), style = MaterialTheme.typography.labelMedium)
-            }
-            TextButton(onClick = onTriple, enabled = !mutating) {
-                Icon(Icons.Rounded.Bolt, contentDescription = null, modifier = Modifier.size(17.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("三连", style = MaterialTheme.typography.labelMedium)
             }
         }
     }
 }
 
 @Composable
-private fun SingleFeedLabel(
+private fun DynamicAction(
+    icon: ImageVector,
     label: String,
-    supportingText: String,
-    modifier: Modifier = Modifier,
+    contentDescription: String,
+    enabled: Boolean,
+    loading: Boolean = false,
+    selected: Boolean = false,
+    onClick: () -> Unit,
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    val contentColor = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        selected -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier
+            .height(24.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .semantics {
+                role = Role.Button
+                this.contentDescription = contentDescription
+            }
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                strokeWidth = 2.dp,
+                color = contentColor,
+            )
+        } else {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(15.dp), tint = contentColor)
+        }
+        Spacer(Modifier.width(4.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = contentColor)
+    }
+}
+
+@Composable
+private fun RecommendationTabs(
+    selectedFeed: RecommendFeed,
+    creatorTabs: List<CreatorFeedTabState>,
+    selectedCreatorMid: Long?,
+    onFeedSelected: (RecommendFeed) -> Unit,
+    onCreatorSelected: (Long) -> Unit,
+) {
+    // long: 推荐分类与账号音乐库保持同一套 Tab 层级；UP 数量不固定时允许横向滚动，避免压缩长名称。
+    if (creatorTabs.isEmpty()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(36.dp)
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .height(48.dp),
         ) {
-            Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-            Text(supportingText, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
-private fun FeedSelector(
-    selected: RecommendFeed,
-    onSelected: (RecommendFeed) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(36.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Row(modifier = Modifier.padding(2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             RecommendFeed.entries.forEach { option ->
-                val isSelected = selected == option
-                Box(
+                RecommendationTab(
+                    label = option.label,
+                    selected = selectedFeed == option,
+                    onClick = { onFeedSelected(option) },
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(
-                            if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                        )
-                        .semantics {
-                            role = Role.Tab
-                            this.selected = isSelected
-                        }
-                        .clickable { onSelected(option) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        option.label,
-                        modifier = Modifier.padding(horizontal = 2.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.onPrimaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
+                        .fillMaxHeight(),
+                )
             }
+        }
+    } else {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            creatorTabs.forEach { tab ->
+                RecommendationTab(
+                    label = tab.creator.name.ifBlank { "UID ${tab.creator.mid}" },
+                    selected = selectedCreatorMid == tab.creator.mid,
+                    onClick = { onCreatorSelected(tab.creator.mid) },
+                    modifier = Modifier
+                        .widthIn(min = 88.dp, max = 160.dp)
+                        .fillMaxHeight(),
+                )
+            }
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+private fun RecommendationTab(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .semantics {
+                role = Role.Tab
+                this.selected = selected
+            }
+            .clickable(onClick = onClick),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 10.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (selected) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
         }
     }
 }
@@ -1883,7 +1960,7 @@ private fun FeedSelector(
 internal fun CompactSearchField(
     value: String,
     onValueChange: (String) -> Unit,
-    onSearch: () -> Unit,
+    onSearch: (() -> Unit)?,
     onClear: () -> Unit,
     placeholder: String,
     loading: Boolean = false,
@@ -1903,7 +1980,7 @@ internal fun CompactSearchField(
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+            keyboardActions = KeyboardActions(onSearch = { onSearch?.invoke() }),
             decorationBox = { innerTextField ->
                 Row(
                     modifier = Modifier
@@ -1911,15 +1988,24 @@ internal fun CompactSearchField(
                         .padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(
-                        onClick = onSearch,
-                        enabled = value.isNotBlank() && !loading,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        if (loading) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                    if (onSearch == null) {
+                        Box(
+                            modifier = Modifier.size(40.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Rounded.Search, contentDescription = null)
+                        }
+                    } else {
+                        IconButton(
+                            onClick = onSearch,
+                            enabled = value.isNotBlank() && !loading,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            if (loading) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                            }
                         }
                     }
                     Box(
@@ -3308,6 +3394,42 @@ internal fun MediaDivider(start: androidx.compose.ui.unit.Dp = 140.dp) {
     )
 }
 
+@Composable
+internal fun BiuSheetHeader(
+    title: String,
+    onClose: () -> Unit,
+    navigationIcon: ImageVector? = null,
+    navigationContentDescription: String? = null,
+    onNavigation: (() -> Unit)? = null,
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .padding(start = if (navigationIcon == null) 16.dp else 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (navigationIcon != null && onNavigation != null) {
+                IconButton(onClick = onNavigation) {
+                    Icon(navigationIcon, contentDescription = navigationContentDescription)
+                }
+            }
+            Text(
+                title,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            IconButton(onClick = onClose) {
+                Icon(Icons.Rounded.Close, contentDescription = "关闭$title")
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreatorSelectionSheet(
@@ -3337,6 +3459,7 @@ private fun CreatorSelectionSheet(
         sheetState = sheetState,
         modifier = Modifier.widthIn(max = 840.dp),
         containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
     ) {
         // long: 内容范围包含可滚动的长关注列表，弹层直接占满可用高度，并把保存动作留在滚动区之外持续可见。
         Column(
@@ -3344,24 +3467,7 @@ private fun CreatorSelectionSheet(
                 .fillMaxWidth()
                 .fillMaxHeight(),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("首页内容范围", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        "从关注列表选择 UP，作品按发布时间倒排",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, contentDescription = "关闭首页内容范围设置")
-                }
-            }
+            BiuSheetHeader(title = "首页内容范围", onClose = onDismiss)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3377,23 +3483,16 @@ private fun CreatorSelectionSheet(
                     )
                 } else {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        OutlinedTextField(
+                        CompactSearchField(
                             value = keyword,
                             onValueChange = { keyword = it },
+                            onSearch = null,
+                            onClear = { keyword = "" },
+                            placeholder = "按 UP 名称筛选",
+                            loading = loading,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                            singleLine = true,
-                            placeholder = { Text("按 UP 名称搜索") },
-                            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                            trailingIcon = {
-                                if (keyword.isNotEmpty()) {
-                                    IconButton(onClick = { keyword = "" }) {
-                                        Icon(Icons.Rounded.Close, contentDescription = "清空 UP 搜索")
-                                    }
-                                }
-                            },
-                            shape = RoundedCornerShape(8.dp),
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
                         )
                         if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         if (!loading && creators.isEmpty()) {
@@ -3436,7 +3535,7 @@ private fun CreatorSelectionSheet(
                                                     selectedMids + creator.mid
                                                 }
                                             }
-                                            .padding(horizontal = 16.dp, vertical = 7.dp),
+                                            .padding(horizontal = 16.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     ) {
@@ -3444,8 +3543,8 @@ private fun CreatorSelectionSheet(
                                             model = creator.faceUrl,
                                             contentDescription = creator.name,
                                             modifier = Modifier
-                                                .size(42.dp)
-                                                .clip(RoundedCornerShape(21.dp))
+                                                .size(40.dp)
+                                                .clip(RoundedCornerShape(20.dp))
                                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                                             contentScale = ContentScale.Crop,
                                         )
@@ -3466,13 +3565,17 @@ private fun CreatorSelectionSheet(
                                             )
                                         }
                                         Surface(
-                                            modifier = Modifier.size(28.dp),
-                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier.size(24.dp),
+                                            shape = RoundedCornerShape(12.dp),
                                             color = if (selected) {
                                                 MaterialTheme.colorScheme.primary
                                             } else {
-                                                MaterialTheme.colorScheme.surfaceContainerHighest
+                                                Color.Transparent
                                             },
+                                            border = if (selected) null else BorderStroke(
+                                                1.dp,
+                                                MaterialTheme.colorScheme.outline,
+                                            ),
                                             contentColor = if (selected) {
                                                 MaterialTheme.colorScheme.onPrimary
                                             } else {
@@ -3484,35 +3587,53 @@ private fun CreatorSelectionSheet(
                                                     Icon(
                                                         Icons.Rounded.Check,
                                                         contentDescription = "已选择 ${creator.name}",
-                                                        modifier = Modifier.size(18.dp),
+                                                        modifier = Modifier.size(16.dp),
                                                     )
                                                 }
                                             }
                                         }
                                     }
-                                    MediaDivider(start = 70.dp)
+                                    MediaDivider(start = 68.dp)
                                 }
                             }
                         }
                     }
                 }
             }
-            Button(
-                onClick = { onSave(creators.filter { creator -> creator.mid in selectedMids }) },
-                enabled = accountLoggedIn && !loading && !saving,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Text(
-                    when {
-                        !accountLoggedIn -> "登录后保存"
-                        saving -> "正在保存"
-                        selectedMids.isEmpty() -> "恢复默认热门"
-                        else -> "保存 ${selectedMids.size} 位 UP"
-                    },
-                )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        if (selectedMids.isEmpty()) "使用默认热门" else "已选 ${selectedMids.size} 位 UP",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = { onSave(creators.filter { creator -> creator.mid in selectedMids }) },
+                        enabled = accountLoggedIn && !loading && !saving,
+                        modifier = Modifier
+                            .height(40.dp)
+                            .widthIn(min = 112.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text(
+                            when {
+                                !accountLoggedIn -> "登录后保存"
+                                saving -> "保存中"
+                                selectedMids.isEmpty() -> "恢复默认"
+                                else -> "保存"
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -5933,8 +6054,12 @@ private fun formatDuration(totalSeconds: Int): String {
 }
 
 private fun formatPublishedAt(epochSeconds: Long?): String {
+    return "发布时间 · ${formatPublishedDateTime(epochSeconds)}"
+}
+
+private fun formatPublishedDateTime(epochSeconds: Long?): String {
     val instant = epochSeconds?.takeIf { it > 0L }?.let(Instant::ofEpochSecond)
-    return instant?.let { "发布时间 · ${PUBLISHED_AT_FORMATTER.format(it)}" } ?: "发布时间 · 未知"
+    return instant?.let(PUBLISHED_AT_FORMATTER::format) ?: "未知"
 }
 
 private fun displayResourceTitle(title: String, pageTitle: String?): String {

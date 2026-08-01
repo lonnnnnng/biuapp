@@ -1,21 +1,44 @@
 package com.lonnnnnng.biu.data.bilibili
 
-enum class HomeFeedMode {
-    FALLBACK,
-    MY_FOLLOWS,
+data class CreatorFeedTabState(
+    val creator: BilibiliCreator,
+    val videos: List<BilibiliVideo> = emptyList(),
+    val nextPage: Int? = 1,
+    val hasLoaded: Boolean = false,
+    val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+) {
+    val hasMore: Boolean
+        get() = nextPage != null
 }
 
 object CreatorFeedPolicy {
-    // long: 未选择关注 UP 时继续保留原音乐内容，只有保存了明确范围后才切换首页来源。
-    fun modeFor(selectedCreators: List<BilibiliCreator>): HomeFeedMode {
-        return if (selectedCreators.isEmpty()) HomeFeedMode.FALLBACK else HomeFeedMode.MY_FOLLOWS
+    // long: 保存范围后每位 UP 都是独立 Tab；配置增删只移除失效缓存，未变化的 UP 保留已加载内容和游标。
+    fun reconcileTabs(
+        existing: List<CreatorFeedTabState>,
+        selectedCreators: List<BilibiliCreator>,
+    ): List<CreatorFeedTabState> {
+        val existingByMid = existing.associateBy { tab -> tab.creator.mid }
+        return selectedCreators.distinctBy(BilibiliCreator::mid).map { creator ->
+            existingByMid[creator.mid]
+                ?.copy(creator = creator, isLoading = false, isLoadingMore = false)
+                ?: CreatorFeedTabState(creator = creator)
+        }
     }
 
-    // long: 每位 UP 的接口结果各自有序，但首页需要全局时间线；先统一排序再去重可保留同 BV 号的最新记录。
-    fun merge(creatorFeeds: List<List<BilibiliVideo>>): List<BilibiliVideo> {
-        return creatorFeeds
-            .flatten()
-            .sortedByDescending { video -> video.publishedAtEpochSeconds ?: Long.MIN_VALUE }
-            .distinctBy(BilibiliVideo::bvid)
+    // long: 每个 UP 的续页只推进自己的游标，并在追加时按 BV 号去重，避免一个 Tab 的接口结果污染其他 Tab。
+    fun applyPage(
+        current: CreatorFeedTabState,
+        page: BilibiliCreatorVideoPage,
+        append: Boolean,
+    ): CreatorFeedTabState {
+        val videos = if (append) current.videos + page.videos else page.videos
+        return current.copy(
+            videos = videos.distinctBy(BilibiliVideo::bvid),
+            nextPage = if (page.hasMore) page.page + 1 else null,
+            hasLoaded = true,
+            isLoading = false,
+            isLoadingMore = false,
+        )
     }
 }

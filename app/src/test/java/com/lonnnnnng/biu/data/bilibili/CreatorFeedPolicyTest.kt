@@ -5,33 +5,50 @@ import org.junit.Test
 
 class CreatorFeedPolicyTest {
     @Test
-    fun `空配置使用B站热门内容作为首页来源`() {
-        assertEquals(HomeFeedMode.FALLBACK, CreatorFeedPolicy.modeFor(emptyList()))
+    fun `配置增删只清理失效UP并保留未变Tab缓存`() {
+        val retainedCreator = BilibiliCreator(mid = 1001L, name = "保留UP", faceUrl = "")
+        val removedCreator = BilibiliCreator(mid = 1002L, name = "移除UP", faceUrl = "")
+        val addedCreator = BilibiliCreator(mid = 1003L, name = "新增UP", faceUrl = "")
+        val existing = listOf(
+            CreatorFeedTabState(
+                creator = retainedCreator,
+                videos = listOf(video("BV-KEEP", 300L)),
+                nextPage = 3,
+                hasLoaded = true,
+            ),
+            CreatorFeedTabState(creator = removedCreator, hasLoaded = true),
+        )
+
+        val tabs = CreatorFeedPolicy.reconcileTabs(existing, listOf(retainedCreator, addedCreator))
+
+        assertEquals(listOf(1001L, 1003L), tabs.map { it.creator.mid })
+        assertEquals(listOf("BV-KEEP"), tabs.first().videos.map(BilibiliVideo::bvid))
+        assertEquals(3, tabs.first().nextPage)
+        assertEquals(1, tabs.last().nextPage)
+        assertEquals(false, tabs.last().hasLoaded)
     }
 
     @Test
-    fun `选中任意关注UP后首页切换为我的关注`() {
-        val selected = listOf(BilibiliCreator(mid = 1001L, name = "测试UP", faceUrl = ""))
-
-        assertEquals(HomeFeedMode.MY_FOLLOWS, CreatorFeedPolicy.modeFor(selected))
-    }
-
-    @Test
-    fun `多个UP投稿按发布时间倒排并按BV号去重`() {
-        val firstCreator = listOf(
-            video("BV-OLD", 100L),
-            video("BV-SHARED", 200L),
+    fun `续页只推进当前UP并按BV号去重`() {
+        val creator = BilibiliCreator(mid = 1001L, name = "测试UP", faceUrl = "")
+        val current = CreatorFeedTabState(
+            creator = creator,
+            videos = listOf(video("BV-OLD", 100L), video("BV-SHARED", 200L)),
+            nextPage = 2,
+            hasLoaded = true,
+            isLoadingMore = true,
         )
-        val secondCreator = listOf(
-            video("BV-NEW", 300L),
-            video("BV-SHARED", 150L),
-            video("BV-UNKNOWN", null),
+        val page = BilibiliCreatorVideoPage(
+            videos = listOf(video("BV-SHARED", 200L), video("BV-NEW", 300L)),
+            page = 2,
+            hasMore = false,
         )
 
-        val merged = CreatorFeedPolicy.merge(listOf(firstCreator, secondCreator))
+        val updated = CreatorFeedPolicy.applyPage(current, page, append = true)
 
-        assertEquals(listOf("BV-NEW", "BV-SHARED", "BV-OLD", "BV-UNKNOWN"), merged.map(BilibiliVideo::bvid))
-        assertEquals(200L, merged.first { it.bvid == "BV-SHARED" }.publishedAtEpochSeconds)
+        assertEquals(listOf("BV-OLD", "BV-SHARED", "BV-NEW"), updated.videos.map(BilibiliVideo::bvid))
+        assertEquals(null, updated.nextPage)
+        assertEquals(false, updated.isLoadingMore)
     }
 
     private fun video(bvid: String, publishedAt: Long?) = BilibiliVideo(
