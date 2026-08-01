@@ -138,6 +138,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -987,10 +988,13 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     homeFeedMode = uiState.homeFeedMode,
                     selectedCreatorCount = uiState.selectedCreators.size,
                     loading = uiState.isFeedLoading,
+                    loadingMore = uiState.isFeedLoadingMore,
+                    hasMore = uiState.recommendationHasMore,
                     searchLoading = uiState.isSearchLoading,
                     resolvingBvid = uiState.resolvingBvid,
                     onFeedChange = viewModel::loadRecommendations,
                     onRefresh = { viewModel.loadRecommendations() },
+                    onLoadMore = viewModel::loadMoreRecommendations,
                     onSearch = viewModel::search,
                     onClearSearch = viewModel::clearSearch,
                     onOpenCreatorConfig = {
@@ -1476,10 +1480,13 @@ private fun RecommendationScreen(
     homeFeedMode: HomeFeedMode,
     selectedCreatorCount: Int,
     loading: Boolean,
+    loadingMore: Boolean,
+    hasMore: Boolean,
     searchLoading: Boolean,
     resolvingBvid: String?,
     onFeedChange: (RecommendFeed) -> Unit,
     onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
     onSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
     onOpenCreatorConfig: () -> Unit,
@@ -1584,7 +1591,16 @@ private fun RecommendationScreen(
                 modifier = Modifier.weight(1f),
             )
         } else {
-            VideoList(activeVideos, resolvingBvid, onPlay, onAddFavorite, Modifier.weight(1f))
+            VideoList(
+                videos = activeVideos,
+                resolvingBvid = resolvingBvid,
+                onPlay = onPlay,
+                onAddFavorite = onAddFavorite,
+                onLoadMore = if (showingSearchResults) null else onLoadMore,
+                hasMore = !showingSearchResults && hasMore,
+                loadingMore = !showingSearchResults && loadingMore,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -1637,7 +1653,7 @@ private fun DynamicFeedScreen(
                         onTriple = { onTriple(item) },
                     )
                     HorizontalDivider(
-                        modifier = Modifier.padding(start = 56.dp),
+                        modifier = Modifier.padding(start = 52.dp),
                         color = MaterialTheme.colorScheme.outlineVariant,
                     )
                 }
@@ -1646,10 +1662,10 @@ private fun DynamicFeedScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp),
+                                .height(40.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         }
                     }
                 }
@@ -1670,44 +1686,43 @@ private fun DynamicFeedItem(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AsyncImage(
                 model = item.authorFaceUrl,
                 contentDescription = item.video.author,
                 modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentScale = ContentScale.Crop,
             )
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text(
-                    item.video.author.ifBlank { "未知 UP 主" },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    formatPublishedAt(item.publishedAtEpochSeconds),
-                    maxLines = 1,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                item.video.author.ifBlank { "未知 UP 主" },
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                formatPublishedAt(item.publishedAtEpochSeconds),
+                maxLines = 1,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(enabled = !resolving, onClick = onPlay),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 modifier = Modifier
-                    .size(width = 112.dp, height = 64.dp)
+                    .size(width = 96.dp, height = 54.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
@@ -1731,7 +1746,7 @@ private fun DynamicFeedItem(
                     )
                 }
             }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     item.video.title,
                     maxLines = 1,
@@ -1741,7 +1756,7 @@ private fun DynamicFeedItem(
                 if (item.description.isNotBlank()) {
                     Text(
                         item.description,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1749,9 +1764,14 @@ private fun DynamicFeedItem(
                 }
             }
             if (resolving) {
-                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
             } else {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = "播放 ${item.video.title}")
+                Icon(
+                    Icons.Rounded.PlayArrow,
+                    contentDescription = "播放 ${item.video.title}",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
             }
         }
         Row(
@@ -1842,9 +1862,11 @@ private fun FeedSelector(
                 ) {
                     Text(
                         option.label,
-                        modifier = Modifier.padding(horizontal = 8.dp),
+                        modifier = Modifier.padding(horizontal = 2.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelSmall,
                         color = if (isSelected) {
                             MaterialTheme.colorScheme.onPrimaryContainer
                         } else {
@@ -3134,10 +3156,25 @@ private fun VideoList(
     resolvingBvid: String?,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
+    onLoadMore: (() -> Unit)?,
+    hasMore: Boolean,
+    loadingMore: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+    val shouldLoadMore by remember(listState, videos.size, hasMore) {
+        derivedStateOf {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            hasMore && videos.isNotEmpty() && lastVisibleIndex >= videos.lastIndex - 3
+        }
+    }
+    // long: 续页全是重复 BV 时列表长度不会变化；不把 loadingMore 作为 effect key，可避免加载结束后在同一位置连续刷接口。
+    LaunchedEffect(shouldLoadMore, videos.size, hasMore) {
+        if (shouldLoadMore && !loadingMore) onLoadMore?.invoke()
+    }
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
+        state = listState,
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
         items(videos, key = BilibiliVideo::bvid) { video ->
@@ -3149,6 +3186,18 @@ private fun VideoList(
                 onAddFavorite = { onAddFavorite(video) },
             )
             MediaDivider(start = 114.dp)
+        }
+        if (loadingMore) {
+            item(key = "recommendation-loading-more") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
         }
     }
 }
@@ -3460,7 +3509,7 @@ private fun CreatorSelectionSheet(
                     when {
                         !accountLoggedIn -> "登录后保存"
                         saving -> "正在保存"
-                        selectedMids.isEmpty() -> "恢复音乐区和音乐榜"
+                        selectedMids.isEmpty() -> "恢复默认热门"
                         else -> "保存 ${selectedMids.size} 位 UP"
                     },
                 )

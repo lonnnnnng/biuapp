@@ -29,10 +29,12 @@ class BilibiliRepository(
     private val wbiKeyMutex = Mutex()
     private var cachedWbiKeys: CachedWbiKeys? = null
 
-    suspend fun recommendations(feed: RecommendFeed, page: Int = 1): List<BilibiliVideo> {
+    suspend fun recommendations(feed: RecommendFeed, page: Int = 1): BilibiliRecommendationPage {
+        val normalizedPage = page.coerceAtLeast(1)
         return when (feed) {
-            RecommendFeed.MUSIC -> regionRecommendations(page)
-            RecommendFeed.POPULAR -> popularRecommendations(page)
+            RecommendFeed.COMPREHENSIVE -> comprehensivePopularRecommendations(normalizedPage)
+            RecommendFeed.WEEKLY -> weeklyPopularRecommendations(normalizedPage)
+            RecommendFeed.RANKING -> rankingRecommendations(normalizedPage)
         }
     }
 
@@ -809,38 +811,64 @@ class BilibiliRepository(
         return ParsedDashStreams(video = video, flac = flac, dolby = dolby, standard = standard)
     }
 
-    private suspend fun regionRecommendations(page: Int): List<BilibiliVideo> {
-        val root = request(
-            path = "/x/web-interface/region/feed/rcmd",
-            parameters = mapOf(
-                "display_id" to page,
-                "request_cnt" to 15,
-                "from_region" to 1003,
-                "device" to "web",
-                "plat" to 30,
-                "web_location" to "333.40138",
-            ),
-            useWbi = true,
-        ).requireSuccess()
-        return root.optJSONObject("data")
-            ?.optJSONArray("archives")
-            .toObjects()
-            .mapNotNull(::parseRegionVideo)
-    }
-
-    private suspend fun popularRecommendations(page: Int): List<BilibiliVideo> {
-        val root = request(
-            path = "/x/centralization/interface/music/comprehensive/web/rank",
+    private suspend fun comprehensivePopularRecommendations(page: Int): BilibiliRecommendationPage {
+        val data = request(
+            path = "/x/web-interface/popular",
             parameters = mapOf(
                 "pn" to page,
-                "ps" to 20,
-                "web_location" to "333.1351",
+                "ps" to RECOMMENDATION_PAGE_SIZE,
             ),
-        ).requireSuccess()
-        return root.optJSONObject("data")
+        ).requireSuccess().optJSONObject("data") ?: JSONObject()
+        val videos = data.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parsePublicVideo)
+        return BilibiliRecommendationPage(
+            videos = videos,
+            page = page,
+            hasMore = !data.optBoolean("no_more", false) && videos.isNotEmpty(),
+        )
+    }
+
+    private suspend fun weeklyPopularRecommendations(page: Int): BilibiliRecommendationPage {
+        val issues = request("/x/web-interface/popular/series/list")
+            .requireSuccess()
+            .optJSONObject("data")
             ?.optJSONArray("list")
             .toObjects()
-            .mapNotNull(::parsePopularVideo)
+        val issue = issues.getOrNull(page - 1)
+            ?: return BilibiliRecommendationPage(emptyList(), page, hasMore = false)
+        val number = issue.optInt("number", 0)
+        if (number <= 0) return BilibiliRecommendationPage(emptyList(), page, hasMore = false)
+        val videos = request(
+            path = "/x/web-interface/popular/series/one",
+            parameters = mapOf("number" to number),
+        ).requireSuccess()
+            .optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parsePublicVideo)
+        // long: 每周必看没有视频分页参数，首页的“下一页”表示继续读取更早一期，不能伪造 pn 请求。
+        return BilibiliRecommendationPage(videos, page, hasMore = page < issues.size)
+    }
+
+    private suspend fun rankingRecommendations(page: Int): BilibiliRecommendationPage {
+        val videos = request(
+            path = "/x/web-interface/ranking/v2",
+            parameters = mapOf("type" to "all"),
+        ).requireSuccess()
+            .optJSONObject("data")
+            ?.optJSONArray("list")
+            .toObjects()
+            .mapNotNull(::parsePublicVideo)
+        val fromIndex = (page - 1) * RECOMMENDATION_PAGE_SIZE
+        if (fromIndex >= videos.size) return BilibiliRecommendationPage(emptyList(), page, hasMore = false)
+        val toIndex = (fromIndex + RECOMMENDATION_PAGE_SIZE).coerceAtMost(videos.size)
+        // long: 全站排行接口固定返回 Top 100，分批展示只发生在客户端，避免向 B 站发送并不存在的 pn/rid 参数。
+        return BilibiliRecommendationPage(
+            videos = videos.subList(fromIndex, toIndex),
+            page = page,
+            hasMore = toIndex < videos.size,
+        )
     }
 
     private suspend fun request(
@@ -960,41 +988,21 @@ class BilibiliRepository(
         }.build()
     }
 
-    private fun parseRegionVideo(item: JSONObject): BilibiliVideo? {
+    private fun parsePublicVideo(item: JSONObject): BilibiliVideo? {
         val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return null
         return BilibiliVideo(
             bvid = bvid,
             aid = item.optLongOrNull("aid"),
             title = BilibiliText.plainTitle(item.optString("title")),
-            author = item.optJSONObject("author")?.optString("name").orEmpty(),
-            // long: 音乐区推荐会随卡片版本切换封面字段，按兼容顺序取第一个有效地址，避免列表只显示占位色块。
+            author = item.optJSONObject("owner")?.optString("name").orEmpty()
+                .ifBlank { item.optString("author") },
             coverUrl = BilibiliText.firstHttpsUrl(
-                item.optString("cover"),
-                item.optString("cover_pic"),
                 item.optString("pic"),
+                item.optString("cover"),
             ),
             durationSeconds = item.optIntOrNull("duration"),
             playCount = item.optJSONObject("stat")?.optLongOrNull("view"),
             publishedAtEpochSeconds = item.optLongOrNull("pubdate") ?: item.optLongOrNull("ctime"),
-        )
-    }
-
-    private fun parsePopularVideo(item: JSONObject): BilibiliVideo? {
-        val archive = item.optJSONObject("related_archive")
-        val bvid = archive?.optString("bvid").orEmpty()
-            .ifBlank { item.optString("bvid") }
-            .takeIf(String::isNotBlank) ?: return null
-        return BilibiliVideo(
-            bvid = bvid,
-            aid = archive?.optLongOrNull("aid") ?: item.optLongOrNull("aid"),
-            title = BilibiliText.plainTitle(archive?.optString("title").orEmpty().ifBlank { item.optString("music_title") }),
-            author = archive?.optString("username").orEmpty().ifBlank { item.optString("author") },
-            coverUrl = BilibiliText.httpsUrl(archive?.optString("cover").orEmpty().ifBlank { item.optString("cover") }),
-            durationSeconds = archive?.optIntOrNull("duration"),
-            playCount = archive?.optLongOrNull("vv_count"),
-            publishedAtEpochSeconds = archive?.optLongOrNull("pubdate")
-                ?: archive?.optLongOrNull("pubtime")
-                ?: item.optLongOrNull("pubdate"),
         )
     }
 
@@ -1276,6 +1284,7 @@ class BilibiliRepository(
         const val FOLLOWING_PAGE_SIZE = 50
         const val CREATOR_SEARCH_PAGE_SIZE = 20
         const val CREATOR_VIDEO_PAGE_SIZE = 30
+        const val RECOMMENDATION_PAGE_SIZE = 20
         const val FAVORITE_FOLDER_PAGE_SIZE = 50
         const val FAVORITE_PAGE_SIZE = 20
         const val HISTORY_PAGE_SIZE = 20

@@ -5,7 +5,7 @@ import org.junit.Test
 
 class CreatorFeedPolicyTest {
     @Test
-    fun `空配置使用音乐区和音乐榜作为首页来源`() {
+    fun `空配置使用B站热门内容作为首页来源`() {
         assertEquals(HomeFeedMode.FALLBACK, CreatorFeedPolicy.modeFor(emptyList()))
     }
 

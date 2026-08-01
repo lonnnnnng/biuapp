@@ -4,8 +4,9 @@ import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import java.net.URI
 
 enum class RecommendFeed(val label: String) {
-    MUSIC("音乐区"),
-    POPULAR("音乐榜"),
+    COMPREHENSIVE("综合热门"),
+    WEEKLY("每周必看"),
+    RANKING("全站排行"),
 }
 
 data class BilibiliVideo(
@@ -17,6 +18,12 @@ data class BilibiliVideo(
     val durationSeconds: Int?,
     val playCount: Long?,
     val publishedAtEpochSeconds: Long? = null,
+)
+
+data class BilibiliRecommendationPage(
+    val videos: List<BilibiliVideo>,
+    val page: Int,
+    val hasMore: Boolean,
 )
 
 data class BilibiliCreator(

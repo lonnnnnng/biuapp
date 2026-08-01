@@ -151,8 +151,9 @@ data class DynamicFeedUiState(
 
 data class BiuUiState(
     val section: MainSection = MainSection.RECOMMEND,
-    val feed: RecommendFeed = RecommendFeed.MUSIC,
+    val feed: RecommendFeed = RecommendFeed.COMPREHENSIVE,
     val recommendations: List<BilibiliVideo> = emptyList(),
+    val recommendationHasMore: Boolean = false,
     val homeFeedMode: HomeFeedMode = HomeFeedMode.FALLBACK,
     val followedCreators: List<BilibiliCreator> = emptyList(),
     val selectedCreators: List<BilibiliCreator> = emptyList(),
@@ -185,6 +186,7 @@ data class BiuUiState(
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val reportPlayHistory: Boolean = true,
     val isFeedLoading: Boolean = true,
+    val isFeedLoadingMore: Boolean = false,
     val isCreatorConfigLoading: Boolean = false,
     val isCreatorConfigSaving: Boolean = false,
     val isSearchLoading: Boolean = false,
@@ -204,6 +206,11 @@ data class BiuUiState(
     val message: String? = null,
 )
 
+private data class CreatorFeedBatch(
+    val videos: List<BilibiliVideo>,
+    val nextPages: Map<Long, Int?>,
+)
+
 class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val container = application.appContainer
     private val repository = container.bilibiliRepository
@@ -213,6 +220,9 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val mutablePlaybackCommands = Channel<PlaybackCommand>(Channel.UNLIMITED)
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
+    private var recommendationNextPage: Int? = null
+    private var creatorFeedNextPages: Map<Long, Int?> = emptyMap()
+    private var recommendationGeneration: Long = 0L
     private var favoriteBatchLoadJob: Job? = null
     private var favoriteFolderJob: Job? = null
     private var onlineHistoryJob: Job? = null
@@ -633,6 +643,66 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     fun loadRecommendations(feed: RecommendFeed = state.value.feed) {
         if (!creatorSelectionInitialized) return
         loadHomeFeed(state.value.selectedCreators, feed)
+    }
+
+    fun loadMoreRecommendations() {
+        val current = state.value
+        if (
+            !creatorSelectionInitialized ||
+            current.isFeedLoading ||
+            current.isFeedLoadingMore ||
+            !current.recommendationHasMore ||
+            recommendationsJob?.isActive == true
+        ) {
+            return
+        }
+        val generation = recommendationGeneration
+        val creators = current.selectedCreators
+        val feed = current.feed
+        mutableState.update { it.copy(isFeedLoadingMore = true, message = null) }
+        recommendationsJob = viewModelScope.launch {
+            try {
+                if (creators.isEmpty()) {
+                    val page = recommendationNextPage ?: return@launch finishRecommendationPagination(generation)
+                    val result = repository.recommendations(feed, page)
+                    if (generation != recommendationGeneration) return@launch
+                    recommendationNextPage = if (result.hasMore) result.page + 1 else null
+                    mutableState.update { latest ->
+                        latest.copy(
+                            recommendations = (latest.recommendations + result.videos)
+                                .distinctBy(BilibiliVideo::bvid),
+                            recommendationHasMore = result.hasMore,
+                            isFeedLoadingMore = false,
+                        )
+                    }
+                } else {
+                    val requestedPages = creatorFeedNextPages.filterValues { page -> page != null }
+                        .mapValues { (_, page) -> requireNotNull(page) }
+                    if (requestedPages.isEmpty()) return@launch finishRecommendationPagination(generation)
+                    val batch = loadCreatorFeedBatch(creators, requestedPages)
+                    if (generation != recommendationGeneration) return@launch
+                    creatorFeedNextPages = creatorFeedNextPages + batch.nextPages
+                    mutableState.update { latest ->
+                        latest.copy(
+                            recommendations = CreatorFeedPolicy.merge(listOf(latest.recommendations, batch.videos)),
+                            recommendationHasMore = creatorFeedNextPages.values.any { it != null },
+                            isFeedLoadingMore = false,
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (generation == recommendationGeneration) {
+                    mutableState.update {
+                        it.copy(
+                            isFeedLoadingMore = false,
+                            message = error.userMessage("更多推荐加载失败"),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun loadFollowingCreators() {
@@ -2323,53 +2393,103 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadHomeFeed(selectedCreators: List<BilibiliCreator>, feed: RecommendFeed) {
         // long: 切换来源或手动刷新时取消旧请求，防止较慢的旧响应覆盖用户刚保存的新范围。
         recommendationsJob?.cancel()
+        recommendationGeneration += 1L
+        val generation = recommendationGeneration
+        recommendationNextPage = null
+        creatorFeedNextPages = emptyMap()
         mutableState.update {
             it.copy(
                 feed = if (selectedCreators.isEmpty()) feed else it.feed,
+                recommendations = emptyList(),
+                recommendationHasMore = false,
                 isFeedLoading = true,
+                isFeedLoadingMore = false,
                 message = null,
             )
         }
         recommendationsJob = viewModelScope.launch {
             try {
-                val videos = if (selectedCreators.isEmpty()) {
-                    repository.recommendations(feed)
+                if (selectedCreators.isEmpty()) {
+                    val result = repository.recommendations(feed)
+                    if (generation != recommendationGeneration) return@launch
+                    recommendationNextPage = if (result.hasMore) result.page + 1 else null
+                    mutableState.update {
+                        it.copy(
+                            recommendations = result.videos,
+                            recommendationHasMore = result.hasMore,
+                            isFeedLoading = false,
+                        )
+                    }
                 } else {
-                    loadCreatorFeed(selectedCreators)
+                    val initialPages = selectedCreators.associate { creator -> creator.mid to 1 }
+                    val batch = loadCreatorFeedBatch(selectedCreators, initialPages)
+                    if (generation != recommendationGeneration) return@launch
+                    creatorFeedNextPages = batch.nextPages
+                    mutableState.update {
+                        it.copy(
+                            recommendations = batch.videos,
+                            recommendationHasMore = creatorFeedNextPages.values.any { page -> page != null },
+                            isFeedLoading = false,
+                        )
+                    }
                 }
-                mutableState.update { it.copy(recommendations = videos, isFeedLoading = false) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                mutableState.update {
-                    it.copy(isFeedLoading = false, message = error.userMessage("推荐加载失败"))
+                if (generation == recommendationGeneration) {
+                    mutableState.update {
+                        it.copy(isFeedLoading = false, message = error.userMessage("推荐加载失败"))
+                    }
                 }
             }
         }
     }
 
-    private suspend fun loadCreatorFeed(creators: List<BilibiliCreator>): List<BilibiliVideo> = coroutineScope {
+    private suspend fun loadCreatorFeedBatch(
+        creators: List<BilibiliCreator>,
+        requestedPages: Map<Long, Int>,
+    ): CreatorFeedBatch = coroutineScope {
         val concurrency = Semaphore(3)
-        // long: 关注范围可能很大，限制同时访问空间投稿接口的数量，降低触发 Bilibili 风控的概率。
-        val results = creators.map { creator ->
+        val creatorsByMid = creators.associateBy(BilibiliCreator::mid)
+        // long: 只为仍有下一页的 UP 发请求，并限制并发为 3，避免大范围配置在触底时集中触发 Bilibili 风控。
+        val results = requestedPages.mapNotNull { (mid, page) -> creatorsByMid[mid]?.let { it to page } }.map { (creator, page) ->
             async {
                 concurrency.withPermit {
                     try {
-                        Result.success(repository.creatorVideos(creator))
+                        creator.mid to Result.success(repository.creatorVideoPage(creator, page))
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (error: Throwable) {
-                        Result.failure(error)
+                        creator.mid to Result.failure(error)
                     }
                 }
             }
         }.awaitAll()
-        val successfulFeeds = results.mapNotNull(Result<List<BilibiliVideo>>::getOrNull)
-        if (successfulFeeds.isEmpty()) {
-            throw results.firstNotNullOfOrNull(Result<List<BilibiliVideo>>::exceptionOrNull)
+        val successfulPages = results.mapNotNull { (_, result) -> result.getOrNull() }
+        if (successfulPages.isEmpty()) {
+            throw results.firstNotNullOfOrNull { (_, result) -> result.exceptionOrNull() }
                 ?: IllegalStateException("没有可加载的关注 UP")
         }
-        CreatorFeedPolicy.merge(successfulFeeds)
+        val nextPages = results.associate { (mid, result) ->
+            val successfulPage = result.getOrNull()
+            // long: 单个 UP 请求失败时保留原页码，下一次触底可单独重试；成功后才推进或关闭该 UP 的游标。
+            mid to when {
+                successfulPage == null -> requestedPages[mid]
+                successfulPage.hasMore -> successfulPage.page + 1
+                else -> null
+            }
+        }
+        CreatorFeedBatch(
+            videos = CreatorFeedPolicy.merge(successfulPages.map { page -> page.videos }),
+            nextPages = nextPages,
+        )
+    }
+
+    private fun finishRecommendationPagination(generation: Long) {
+        if (generation != recommendationGeneration) return
+        mutableState.update {
+            it.copy(recommendationHasMore = false, isFeedLoadingMore = false)
+        }
     }
 
     private fun clearOnlineLibrary() {
