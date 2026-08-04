@@ -2,6 +2,7 @@ package com.lonnnnnng.biu.data.bilibili
 
 import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
+import com.lonnnnnng.biu.core.model.PROGRESSIVE_AUDIO_QUALITY_LABEL
 import com.lonnnnnng.biu.core.model.Track
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -701,6 +702,7 @@ class BilibiliRepository(
             streamUrl = stream.url,
             artworkUrl = page.coverUrl ?: detail.coverUrl.ifBlank { video.coverUrl },
             qualityLabel = stream.qualityLabel,
+            mimeType = stream.mimeType,
             pageTitle = pageTitle,
             publishedAtEpochSeconds = video.publishedAtEpochSeconds ?: detail.publishedAtEpochSeconds,
             source = BilibiliTrackSource(
@@ -745,6 +747,7 @@ class BilibiliRepository(
     ): DashAudioStream {
         val streams = resolveDashStreams(bvid, cid)
         return DashAudioSelector.select(qualityPreference, streams.flac, streams.dolby, streams.standard)
+            ?: streams.progressive
             ?: throw BilibiliApiException(-404, "没有可用音频流")
     }
 
@@ -802,22 +805,52 @@ class BilibiliRepository(
             ),
             useWbi = true,
         ).requireSuccess()
-        val dash = root.optJSONObject("data")?.optJSONObject("dash")
-            ?: throw BilibiliApiException(-404, "没有 DASH 音频")
-        val flac = dash.optJSONObject("flac")
+        val data = root.optJSONObject("data") ?: JSONObject()
+        val dash = data.optJSONObject("dash")
+        val flac = dash?.optJSONObject("flac")
             ?.optJSONObject("audio")
             ?.let { parseAudio(it, "无损") }
-        val dolby = dash.optJSONObject("dolby")
+        val dolby = dash?.optJSONObject("dolby")
             ?.optJSONArray("audio")
             .toObjects()
             .mapNotNull { parseAudio(it, "杜比") }
-        val standard = dash.optJSONArray("audio")
+        val standard = dash?.optJSONArray("audio")
             .toObjects()
             .mapNotNull { parseAudio(it, "${it.optInt("bandwidth") / 1000} kbps") }
-        val video = dash.optJSONArray("video")
+        val video = dash?.optJSONArray("video")
             .toObjects()
             .mapNotNull(::parseVideo)
-        return ParsedDashStreams(video = video, flac = flac, dolby = dolby, standard = standard)
+        val progressive = parseProgressiveAudio(data)
+        if (dash == null && progressive == null) {
+            throw BilibiliApiException(-404, "没有可用音频流")
+        }
+        return ParsedDashStreams(
+            video = video,
+            flac = flac,
+            dolby = dolby,
+            standard = standard,
+            progressive = progressive,
+        )
+    }
+
+    private fun parseProgressiveAudio(data: JSONObject): DashAudioStream? {
+        val item = data.optJSONArray("durl")?.toObjects()?.firstOrNull() ?: return null
+        val backupUrls = (item.optJSONArray("backup_url").toStrings() + item.optJSONArray("backupUrl").toStrings())
+            .map(BilibiliText::httpsUrl)
+            .filter(String::isNotBlank)
+            .distinct()
+        val url = BilibiliText.firstHttpsUrl(item.optString("url"), backupUrls.firstOrNull())
+        if (url.isBlank()) return null
+        return DashAudioStream(
+            url = url,
+            bandwidth = item.optLong("size", 0L),
+            codecs = item.optString("format").ifBlank { "mp4" },
+            qualityLabel = PROGRESSIVE_AUDIO_QUALITY_LABEL,
+            expiresAtEpochSeconds = StreamUrlExpiry.epochSeconds(url),
+            backupUrls = backupUrls.filterNot { backupUrl -> backupUrl == url },
+            // long: 合并 MP4 的 CDN URL 常没有扩展名，显式 MIME 让 Media3 直接使用 MP4 解析器。
+            mimeType = "video/mp4",
+        )
     }
 
     private suspend fun comprehensivePopularRecommendations(page: Int): BilibiliRecommendationPage {
@@ -1329,6 +1362,7 @@ private data class ParsedDashStreams(
     val flac: DashAudioStream?,
     val dolby: List<DashAudioStream>,
     val standard: List<DashAudioStream>,
+    val progressive: DashAudioStream? = null,
 )
 
 private fun parseFrameRate(value: String): Double {

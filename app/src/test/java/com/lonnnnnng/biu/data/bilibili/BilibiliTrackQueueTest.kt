@@ -76,6 +76,37 @@ class BilibiliTrackQueueTest {
     }
 
     @Test
+    fun `DASH缺失时使用合并MP4渐进流播放`() = runBlocking {
+        server.enqueue(jsonResponse(videoDetailPayload()))
+        server.enqueue(jsonResponse(wbiKeyPayload()))
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "quality": 32,
+                    "format": "mp4",
+                    "durl": [{"url": "https://cdn.example/merged.mp4", "size": 1024}]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(
+            client = OkHttpClient(),
+            nowEpochSeconds = { 1_700_000_000L },
+            apiBase = server.url("/"),
+        )
+
+        val track = repository.resolveTrack(video(), pageIndex = 0)
+
+        assertEquals("https://cdn.example/merged.mp4", track.streamUrl)
+        assertEquals("兼容流", track.qualityLabel)
+        assertEquals("video/mp4", track.mimeType)
+    }
+
+    @Test
     fun `视频播放解析独立视频轨和最高码率AAC音频轨`() = runBlocking {
         server.enqueue(jsonResponse(wbiKeyPayload()))
         server.enqueue(jsonResponse(videoPlayUrlPayload()))

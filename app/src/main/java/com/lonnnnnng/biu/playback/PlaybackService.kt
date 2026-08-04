@@ -183,6 +183,10 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            mediaItem?.let { item ->
+                // long: 合并 MP4 只用于音频播放时不应创建无用视频解码器；切到视频模式再恢复视频轨选择。
+                setVideoTrackEnabled(player, item.playbackMediaMode() == PlaybackMediaMode.VIDEO)
+            }
             if (!isMediaReplacementInFlight) {
                 retryConsumedForCurrentItem = false
                 codecRecoveryPolicy.resetForExternalMediaItemTransition()
@@ -301,6 +305,12 @@ class PlaybackService : MediaSessionService() {
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
+                // long: 手机默认播放音频；禁用视频轨可避免合并 MP4 按视频缓冲阈值等待，视频模式切换时由服务重新启用。
+                setTrackSelectionParameters(
+                    trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                        .build(),
+                )
                 setAudioAttributes(AudioAttributes.DEFAULT, true)
                 setHandleAudioBecomingNoisy(true)
                 repeatMode = Player.REPEAT_MODE_OFF
@@ -666,6 +676,7 @@ class PlaybackService : MediaSessionService() {
                 availableVideoQualities = stream.availableVideoQualities,
             )
         }
+        setVideoTrackEnabled(activePlayer, stream.mode == PlaybackMediaMode.VIDEO)
         if (stream.mode == PlaybackMediaMode.VIDEO) {
             val sources = (0 until activePlayer.mediaItemCount).map { index ->
                 val item = if (index == target.mediaIndex) replacementItem else activePlayer.getMediaItemAt(index)
@@ -679,6 +690,15 @@ class PlaybackService : MediaSessionService() {
         activePlayer.prepare()
         // long: 暂停状态切视频只预加载画面，不得因为媒体源重建而擅自开始播放。
         if (target.playWhenReady) activePlayer.play() else activePlayer.pause()
+    }
+
+    private fun setVideoTrackEnabled(activePlayer: ExoPlayer?, enabled: Boolean) {
+        activePlayer ?: return
+        activePlayer.setTrackSelectionParameters(
+            activePlayer.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !enabled)
+                .build(),
+        )
     }
 
     @androidx.annotation.OptIn(UnstableApi::class)

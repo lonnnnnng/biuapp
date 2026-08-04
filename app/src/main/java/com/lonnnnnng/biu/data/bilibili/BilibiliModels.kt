@@ -210,6 +210,7 @@ data class DashAudioStream(
     val qualityLabel: String,
     val expiresAtEpochSeconds: Long?,
     val backupUrls: List<String> = emptyList(),
+    val mimeType: String? = null,
 ) {
     fun replacementUrl(failedUrl: String): String {
         return (listOf(url) + backupUrls).firstOrNull { candidate -> candidate != failedUrl } ?: url

@@ -12,10 +12,13 @@ data class Track(
     val streamUrl: String,
     val artworkUrl: String? = null,
     val qualityLabel: String? = null,
+    val mimeType: String? = null,
     val pageTitle: String? = null,
     val publishedAtEpochSeconds: Long? = null,
     val source: BilibiliTrackSource? = null,
 )
+
+const val PROGRESSIVE_AUDIO_QUALITY_LABEL = "兼容流"
 
 enum class AudioQualityPreference(val label: String) {
     HIGHEST("最高音质"),
@@ -34,6 +37,8 @@ fun Track.toMediaItem(): MediaItem {
     return MediaItem.Builder()
         .setMediaId(id)
         .setUri(streamUrl.toUri())
+        // long: 队列持久化只保存音质标签，不新增数据库字段；通过兼容流标签恢复合并 MP4 的 MIME，避免重启后再次卡缓冲。
+        .setMimeType(mimeType ?: if (qualityLabel == PROGRESSIVE_AUDIO_QUALITY_LABEL) "video/mp4" else null)
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(mediaText.title)
@@ -166,6 +171,7 @@ fun MediaItem.toTrackOrNull(): Track? {
         artworkUrl = mediaMetadata.artworkUri?.toString(),
         qualityLabel = streamMetadata?.audioQualityLabel
             ?: mediaMetadata.description?.toString()?.takeIf(String::isNotBlank),
+        mimeType = localConfiguration?.mimeType,
         pageTitle = pageTitle,
         publishedAtEpochSeconds = mediaMetadata.extras
             ?.getLong(EXTRA_PUBLISHED_AT_EPOCH_SECONDS, 0L)
