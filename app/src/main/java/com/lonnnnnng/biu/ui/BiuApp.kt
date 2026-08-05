@@ -1722,8 +1722,15 @@ private fun RecommendationScreen(
                     icon = if (showingSearchResults) Icons.Rounded.Search else Icons.Rounded.LibraryMusic,
                     title = if (showingSearchResults) "没有找到结果" else "暂时没有推荐",
                     message = if (showingSearchResults) "换一个关键词再试试" else null,
-                    actionLabel = if (showingSearchResults) null else "重新加载",
-                    onAction = if (showingSearchResults) null else onRefresh,
+                    actionLabel = if (showingSearchResults) "返回推荐" else "重新加载",
+                    onAction = if (showingSearchResults) {
+                        {
+                            keyword = ""
+                            onClearSearch()
+                        }
+                    } else {
+                        onRefresh
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -1841,9 +1848,9 @@ private fun DynamicFeedItem(
         18.dp,
         with(density) { MaterialTheme.typography.labelSmall.lineHeight.toDp() } + 1.dp,
     )
-    val titleHeight = with(density) { MaterialTheme.typography.bodySmall.lineHeight.toDp() } * 2 + 1.dp
+    val titleHeight = with(density) { MaterialTheme.typography.bodyMedium.lineHeight.toDp() } * 2 + 1.dp
     val actionRowHeight = maxOf(
-        24.dp,
+        40.dp,
         with(density) { MaterialTheme.typography.labelSmall.lineHeight.toDp() } + 1.dp,
     )
     val itemHeight = authorRowHeight + titleHeight + actionRowHeight
@@ -1930,7 +1937,7 @@ private fun DynamicFeedItem(
                 maxLines = 2,
                 softWrap = true,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
             )
             Row(
                 modifier = Modifier
@@ -1977,24 +1984,32 @@ private fun DynamicAction(
     }
     Row(
         modifier = Modifier
-            .height(24.dp)
-            .clip(RoundedCornerShape(4.dp))
+            .height(40.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.56f)
+                } else {
+                    Color.Transparent
+                },
+            )
             .semantics {
                 role = Role.Button
                 this.contentDescription = contentDescription
+                if (selected) stateDescription = "已选中"
             }
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 7.dp),
+            .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (loading) {
             CircularProgressIndicator(
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(16.dp),
                 strokeWidth = 2.dp,
                 color = contentColor,
             )
         } else {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(15.dp), tint = contentColor)
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = contentColor)
         }
         Spacer(Modifier.width(4.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = contentColor)
@@ -3501,35 +3516,38 @@ private fun VideoGrid(
     LaunchedEffect(shouldLoadMore, videos.size, hasMore) {
         if (shouldLoadMore && !loadingMore) onLoadMore?.invoke()
     }
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
-        modifier = modifier.fillMaxWidth(),
-        state = gridState,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = listMetrics.contentVerticalPadding),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
-    ) {
-        gridItems(items = videos, key = BilibiliVideo::bvid) { video ->
-            VideoGridCard(
-                video = video,
-                resolving = resolvingBvid == video.bvid,
-                enabled = resolvingBvid == null,
-                onClick = { onPlay(video) },
-                onAddFavorite = { onAddFavorite(video) },
-            )
-        }
-        if (loadingMore) {
-            item(
-                key = "recommendation-grid-loading-more",
-                span = { GridItemSpan(maxLineSpan) },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(40.dp),
-                    contentAlignment = Alignment.Center,
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val columnCount = VideoGridLayoutPolicy.columnCount(maxWidth)
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columnCount),
+            modifier = Modifier.fillMaxSize(),
+            state = gridState,
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = listMetrics.contentVerticalPadding),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
+        ) {
+            gridItems(items = videos, key = BilibiliVideo::bvid) { video ->
+                VideoGridCard(
+                    video = video,
+                    resolving = resolvingBvid == video.bvid,
+                    enabled = resolvingBvid == null,
+                    onClick = { onPlay(video) },
+                    onAddFavorite = { onAddFavorite(video) },
+                )
+            }
+            if (loadingMore) {
+                item(
+                    key = "recommendation-grid-loading-more",
+                    span = { GridItemSpan(maxLineSpan) },
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
                 }
             }
         }
@@ -3548,7 +3566,7 @@ private fun VideoGridCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Box(
             modifier = Modifier
@@ -3567,7 +3585,7 @@ private fun VideoGridCard(
                 Text(
                     formatDuration(duration),
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
+                        .align(Alignment.BottomStart)
                         .padding(4.dp)
                         .clip(RoundedCornerShape(4.dp))
                         .background(Color.Black.copy(alpha = 0.72f))
@@ -3575,6 +3593,65 @@ private fun VideoGridCard(
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
                 )
+            }
+            IconButton(
+                onClick = onAddFavorite,
+                enabled = enabled,
+                modifier = Modifier.align(Alignment.TopEnd),
+            ) {
+                Surface(
+                    modifier = Modifier.size(32.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Rounded.FavoriteBorder,
+                            contentDescription = "收藏 ${video.title}",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+            if (resolving) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        modifier = Modifier.size(32.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            } else {
+                IconButton(
+                    onClick = onClick,
+                    enabled = enabled,
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                ) {
+                    Surface(
+                        modifier = Modifier.size(32.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f),
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Rounded.PlayArrow,
+                                contentDescription = "播放 ${video.title}",
+                                modifier = Modifier.size(21.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
         Text(
@@ -3598,33 +3675,6 @@ private fun VideoGridCard(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onAddFavorite, enabled = enabled) {
-                Icon(
-                    Icons.Rounded.FavoriteBorder,
-                    contentDescription = "收藏 ${video.title}",
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            if (resolving) {
-                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                }
-            } else {
-                IconButton(onClick = onClick, enabled = enabled) {
-                    Icon(
-                        Icons.Rounded.PlayArrow,
-                        contentDescription = "播放 ${video.title}",
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-        }
     }
 }
 

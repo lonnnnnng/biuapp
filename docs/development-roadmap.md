@@ -363,6 +363,21 @@
 - `:app:testDebugUnitTest`、`:app:lintDebug`、`:app:assembleDebug`、`:app:assembleRelease` 均通过，Redmi crash buffer 为空。
 - `0.1.14` Release APK 已通过 zipalign、APK Signature Scheme v2/v3、版本和 SHA-256 校验，并继续使用历史正式证书；当前 Redmi 安装的是 Android Debug 证书版本，因此系统禁止在不清数据的前提下用正式证书包覆盖，真机功能验收使用同版本同源码 Debug APK 完成。
 
+### M13.1：手机端 UI/UX 打磨
+
+状态：第一条纵向切片完成（2026-08-06），目标版本 `0.1.16`。
+
+- [x] 推荐与搜索网格按可用宽度自动使用两列、三列或四列。
+- [x] 网格播放与收藏移入封面覆盖层，移除底部冗余动作行。
+- [x] 动态标题提升为正文层级，点赞与三连扩大触控区域并强化选中态。
+- [x] 搜索无结果提供“返回推荐”恢复动作。
+
+验证证据：
+
+- `VideoGridLayoutPolicyTest` 覆盖手机、中等宽度和横屏主内容断点。
+- Redmi 真机已验证竖屏两列、横屏三列，以及明暗主题下覆盖按钮的对比度。
+- `:app:testDebugUnitTest`、`:app:assembleDebug` 已通过。
+
 ### M14：正式版质量
 
 - Room 迁移、登录 Cookie、日志和导出文件隐私检查。
