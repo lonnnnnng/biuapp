@@ -10,7 +10,7 @@ import org.junit.Test
 
 class PlaybackQueueRepositoryTest {
     @Test
-    fun `在线分P和本地内容往返后保留队列顺序与恢复进度`() = runBlocking {
+    fun `在线分P和本地内容往返后保留队列并把旧省流量档升级为最高音质`() = runBlocking {
         val dao = FakePlaybackQueueDao()
         val repository = PlaybackQueueRepository(dao, nowEpochMs = { 8_800L })
         val queue = PlaybackQueueRecord(
@@ -42,7 +42,11 @@ class PlaybackQueueRepositoryTest {
 
         repository.replace(queue)
 
-        assertEquals(queue, repository.load())
+        val restored = requireNotNull(repository.load())
+        assertEquals(queue.currentIndex, restored.currentIndex)
+        assertEquals(queue.currentPositionMs, restored.currentPositionMs)
+        assertEquals(queue.items.map(Track::id), restored.items.map(Track::id))
+        assertEquals(AudioQualityPreference.HIGHEST, restored.items.first().source?.qualityPreference)
         assertEquals(8_800L, dao.state?.updatedAtEpochMs)
     }
 

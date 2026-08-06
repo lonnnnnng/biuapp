@@ -29,6 +29,7 @@ import androidx.media3.session.SessionResult
 import com.lonnnnnng.biu.appContainer
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
+import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.core.model.PlaybackMediaMode
 import com.lonnnnnng.biu.core.model.PlaybackStreamMetadata
@@ -626,7 +627,8 @@ class PlaybackService : MediaSessionService() {
                 val stream = appContainer.bilibiliRepository.resolveAudioStream(
                     source.bvid,
                     source.cid,
-                    source.qualityPreference,
+                    // long: 地址失效刷新也重新选择最高可用音质，避免旧媒体项把已移除的省流量档带回播放链路。
+                    AudioQualityPreference.HIGHEST,
                 )
                 PlaybackStreamMetadata.audio(
                     audioUrl = failedUrl?.let(stream::replacementUrl) ?: stream.url,

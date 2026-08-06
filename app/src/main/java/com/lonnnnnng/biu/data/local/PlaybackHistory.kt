@@ -34,8 +34,8 @@ data class PlaybackHistoryEntity(
         get() = BilibiliTrackSource(
             bvid = bvid,
             cid = cid,
-            qualityPreference = runCatching { AudioQualityPreference.valueOf(qualityPreference) }
-                .getOrDefault(AudioQualityPreference.HIGHEST),
+            // long: 数据库字段继续保留以兼容旧表，历史恢复时不再沿用已下线的省流量档。
+            qualityPreference = AudioQualityPreference.HIGHEST,
         )
 }
 

@@ -736,7 +736,8 @@ class BilibiliRepository(
             ),
             detail = detail,
             pageIndex = pageIndex,
-            qualityPreference = source.qualityPreference,
+            // long: 历史、队列或下载任务可能来自旧版省流量档；统一从最高音质开始并按可用轨自动回退。
+            qualityPreference = AudioQualityPreference.HIGHEST,
         )
     }
 

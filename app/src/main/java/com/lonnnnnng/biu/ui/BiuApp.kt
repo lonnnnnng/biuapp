@@ -84,7 +84,6 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Lyrics
@@ -197,7 +196,6 @@ import androidx.media3.session.SessionToken
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
-import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.BilibiliTrackSource
 import com.lonnnnnng.biu.core.model.PlaybackMediaMode
 import com.lonnnnnng.biu.core.model.PlaybackVideoQuality
@@ -319,7 +317,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var playback by remember { mutableStateOf(PlaybackSnapshot()) }
     var showLogin by remember { mutableStateOf(false) }
     var showThemeMenu by remember { mutableStateOf(false) }
-    var showQualityMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
     var showDisplaySettings by rememberSaveable { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
@@ -902,8 +899,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 section = uiState.section,
                 themeMode = uiState.themeMode,
                 themeMenuExpanded = showThemeMenu,
-                qualityPreference = uiState.qualityPreference,
-                qualityMenuExpanded = showQualityMenu,
                 account = uiState.account,
                 accountMenuExpanded = showAccountMenu,
                 isAccountLoading = uiState.isAccountLoading,
@@ -913,7 +908,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 onOpenCreatorCenter = openCreatorCenter,
                 onRefreshDynamic = { viewModel.loadDynamicFeed(reset = true) },
                 onShowThemeMenu = {
-                    showQualityMenu = false
                     showAccountMenu = false
                     showThemeMenu = true
                 },
@@ -922,19 +916,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     showThemeMenu = false
                     viewModel.selectThemeMode(mode)
                 },
-                onShowQualityMenu = {
-                    showThemeMenu = false
-                    showAccountMenu = false
-                    showQualityMenu = true
-                },
-                onDismissQualityMenu = { showQualityMenu = false },
-                onQualitySelected = { preference ->
-                    showQualityMenu = false
-                    viewModel.selectQualityPreference(preference)
-                },
                 onShowAccountMenu = {
                     showThemeMenu = false
-                    showQualityMenu = false
                     showAccountMenu = true
                 },
                 onDismissAccountMenu = { showAccountMenu = false },
@@ -1188,8 +1171,6 @@ private fun BiuTopBar(
     section: MainSection,
     themeMode: AppThemeMode,
     themeMenuExpanded: Boolean,
-    qualityPreference: AudioQualityPreference,
-    qualityMenuExpanded: Boolean,
     account: BilibiliAccount,
     accountMenuExpanded: Boolean,
     isAccountLoading: Boolean,
@@ -1201,9 +1182,6 @@ private fun BiuTopBar(
     onShowThemeMenu: () -> Unit,
     onDismissThemeMenu: () -> Unit,
     onThemeSelected: (AppThemeMode) -> Unit,
-    onShowQualityMenu: () -> Unit,
-    onDismissQualityMenu: () -> Unit,
-    onQualitySelected: (AudioQualityPreference) -> Unit,
     onShowAccountMenu: () -> Unit,
     onDismissAccountMenu: () -> Unit,
     onOpenDisplaySettings: () -> Unit,
@@ -1269,32 +1247,6 @@ private fun BiuTopBar(
                                     }
                                 },
                                 onClick = { onThemeSelected(mode) },
-                            )
-                        }
-                    }
-                }
-                Box {
-                    IconButton(onClick = onShowQualityMenu) {
-                        Icon(
-                            Icons.Rounded.HighQuality,
-                            contentDescription = "播放音质：${qualityPreference.label}",
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = qualityMenuExpanded,
-                        onDismissRequest = onDismissQualityMenu,
-                    ) {
-                        AudioQualityPreference.entries.forEach { preference ->
-                            DropdownMenuItem(
-                                text = { Text(preference.label) },
-                                leadingIcon = {
-                                    if (qualityPreference == preference) {
-                                        Icon(Icons.Rounded.Check, contentDescription = "已选择")
-                                    } else {
-                                        Spacer(Modifier.size(24.dp))
-                                    }
-                                },
-                                onClick = { onQualitySelected(preference) },
                             )
                         }
                     }

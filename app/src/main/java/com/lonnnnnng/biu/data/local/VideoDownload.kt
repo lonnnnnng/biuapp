@@ -62,8 +62,8 @@ data class VideoDownloadTaskEntity(
             source = BilibiliTrackSource(
                 bvid = bvid,
                 cid = cid,
-                qualityPreference = runCatching { AudioQualityPreference.valueOf(qualityPreference) }
-                    .getOrDefault(AudioQualityPreference.HIGHEST),
+                // long: 旧任务字段保留用于数据库兼容，恢复下载时统一选择最高可用音频轨。
+                qualityPreference = AudioQualityPreference.HIGHEST,
             ),
             currentTitle = title,
             resourceTitle = title,

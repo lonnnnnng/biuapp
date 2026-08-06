@@ -50,8 +50,8 @@ data class AudioDownloadTaskEntity(
             source = BilibiliTrackSource(
                 bvid = bvid,
                 cid = cid,
-                qualityPreference = runCatching { AudioQualityPreference.valueOf(qualityPreference) }
-                    .getOrDefault(AudioQualityPreference.HIGHEST),
+                // long: 暂停任务从旧版本恢复时也使用最高可用音质，不继续继承省流量档。
+                qualityPreference = AudioQualityPreference.HIGHEST,
             ),
             currentTitle = title,
             resourceTitle = title,

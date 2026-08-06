@@ -13,7 +13,7 @@ Biu Android 是桌面版 Biu 的原生 Android 重写项目。目标不是把 El
 - [x] WebView 登录页与 Cookie 同步原型
 - [x] 音乐区推荐、音乐榜和 WBI 搜索
 - [x] 视频详情、分 P 元数据与 DASH 音频解析
-- [x] 最高音质/省流量全局选择
+- [x] 默认选择最高可用音质，音频轨不可用时自动降级
 - [x] 播放地址过期刷新与备用 CDN 切换
 - [x] M2 真实 Bilibili 播放闭环
 - [x] 收藏夹、在线历史和 Room 本地播放历史
@@ -46,7 +46,7 @@ bash ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDe
 
 - 已验证：JVM 单元测试、Android Lint、Debug/Release APK 构建。
 - 已在 Redmi Note 8 Pro（`wsvwypiz7xwslvl7`）验证：真实推荐及封面、`Jay Chou` 搜索、推荐与搜索结果 DASH 音频播放、切到后台继续播放、媒体通知、系统媒体暂停/恢复控制。
-- 已在同一设备验证顶栏音质菜单可在“最高音质”和“省流量”之间切换；选择对下一次播放生效，并随 MediaItem 传入后台失效刷新链路。
+- 音频播放默认按无损、杜比、标准 AAC 的顺序选择最高可用轨，必要时回退兼容流；账号页不再提供省流量入口。
 - 已验证 Bilibili H5 手机号登录、账号态与 Cookie 回传、收藏夹、在线历史和本地历史。
 - 实机当时没有可用默认网络，联网验收通过临时 ADB reverse HTTP CONNECT 代理完成；验证后已删除设备系统代理并移除端口转发。
 - 已在 Pixel_9 模拟器验证：首页关注范围配置、名称搜索、投稿时间倒排、保存后切换“我的关注”，以及重启后配置恢复。

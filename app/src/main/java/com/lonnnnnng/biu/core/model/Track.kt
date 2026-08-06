@@ -88,11 +88,9 @@ fun MediaItem.bilibiliSource(): BilibiliTrackSource? {
     val extras = mediaMetadata.extras ?: return null
     val bvid = extras.getString(EXTRA_BVID)?.takeIf(String::isNotBlank) ?: return null
     val cid = extras.getLong(EXTRA_CID, 0L).takeIf { it > 0L } ?: return null
-    val qualityPreference = extras.getString(EXTRA_QUALITY_PREFERENCE)
-        ?.let { value -> runCatching { AudioQualityPreference.valueOf(value) }.getOrNull() }
-        ?: AudioQualityPreference.HIGHEST
     val aid = extras.getLong(EXTRA_AID, 0L).takeIf { it > 0L }
-    return BilibiliTrackSource(bvid, cid, qualityPreference, aid)
+    // long: 旧版本可能在媒体 extras 中保存省流量档；升级后所有在线播放统一从最高音质开始自动降级。
+    return BilibiliTrackSource(bvid, cid, AudioQualityPreference.HIGHEST, aid)
 }
 
 fun MediaItem.playbackMediaMode(): PlaybackMediaMode {

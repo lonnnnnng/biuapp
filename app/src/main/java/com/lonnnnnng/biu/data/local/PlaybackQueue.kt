@@ -136,9 +136,8 @@ private fun PlaybackQueueItemEntity.toTrackOrNull(): Track? {
         BilibiliTrackSource(
             bvid = normalizedBvid,
             cid = normalizedCid,
-            qualityPreference = qualityPreference
-                ?.let { value -> runCatching { AudioQualityPreference.valueOf(value) }.getOrNull() }
-                ?: AudioQualityPreference.HIGHEST,
+            // long: Room 仍读取旧字段，但恢复在线队列时统一请求最高可用音质并由选择器自动降级。
+            qualityPreference = AudioQualityPreference.HIGHEST,
         )
     }
     return Track(

@@ -186,7 +186,6 @@ data class BiuUiState(
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val lyrics: LyricsUiState = LyricsUiState(),
-    val qualityPreference: AudioQualityPreference = AudioQualityPreference.HIGHEST,
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val listDensity: AppListDensity = AppListDensity.STANDARD,
     val textScale: AppTextScale = AppTextScale.STANDARD,
@@ -1182,7 +1181,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun play(video: BilibiliVideo) {
         if (state.value.resolvingBvid != null || state.value.isPageQueueLoading) return
-        val qualityPreference = state.value.qualityPreference
         mutableState.update { it.copy(resolvingBvid = video.bvid, message = null) }
         viewModelScope.launch {
             try {
@@ -1197,7 +1195,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } else {
                     cancelPageQueueExpansion()
-                    val tracks = repository.resolveTracks(video, detail, qualityPreference)
+                    val tracks = repository.resolveTracks(video, detail, AudioQualityPreference.HIGHEST)
                     publishPlaybackRequest(tracks)
                 }
             } catch (error: Throwable) {
@@ -1215,7 +1213,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(message = "分 P 索引无效") }
             return
         }
-        val qualityPreference = state.value.qualityPreference
         cancelPageQueueExpansion()
         mutableState.update {
             it.copy(
@@ -1230,7 +1227,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 var queueId = 0L
                 ProgressivePageQueueLoader(
                     resolve = { pageIndex ->
-                        repository.resolveTrack(selection.video, selection.detail, pageIndex, qualityPreference)
+                        repository.resolveTrack(
+                            selection.video,
+                            selection.detail,
+                            pageIndex,
+                            AudioQualityPreference.HIGHEST,
+                        )
                     },
                 ).load(
                     pageCount = selection.detail.pages.size,
@@ -1289,12 +1291,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(resolvingBvid = null, message = error.userMessage("历史播放地址解析失败"))
                     }
                 }
-        }
-    }
-
-    fun selectQualityPreference(preference: AudioQualityPreference) {
-        mutableState.update {
-            it.copy(qualityPreference = preference, message = "播放音质 · ${preference.label}（下一次播放生效）")
         }
     }
 
@@ -1788,11 +1784,10 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(message = "请至少选择一个收藏资源") }
             return
         }
-        val qualityPreference = state.value.qualityPreference
         mutableState.update { it.copy(isFavoriteBatchSubmitting = true, message = null) }
         viewModelScope.launch {
             try {
-                val pageResults = resolveFavoriteDownloadPages(selectedVideos, qualityPreference)
+                val pageResults = resolveFavoriteDownloadPages(selectedVideos, AudioQualityPreference.HIGHEST)
                 val resolvedPages = pageResults.flatMap { result -> result.getOrNull().orEmpty() }
                 if (resolvedPages.isEmpty()) {
                     throw pageResults.firstNotNullOfOrNull(Result<List<FavoriteDownloadPage>>::exceptionOrNull)
