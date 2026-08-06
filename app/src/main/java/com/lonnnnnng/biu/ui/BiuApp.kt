@@ -5218,6 +5218,7 @@ private fun FullscreenVideoBottomControls(
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
             enabled = controllerReady && progress.isSeekable,
+            dragSensitivity = VIDEO_PROGRESS_DRAG_SENSITIVITY,
             modifier = Modifier.fillMaxWidth(),
         )
         Row(
@@ -5293,6 +5294,7 @@ private fun EmbeddedVideoBottomControls(
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
             enabled = controllerReady && progress.isSeekable,
+            dragSensitivity = VIDEO_PROGRESS_DRAG_SENSITIVITY,
             modifier = Modifier.weight(1f),
         )
         VideoSpeedMenuButton(
@@ -6421,6 +6423,7 @@ private fun BiuPlaybackSlider(
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: (Float) -> Unit,
     enabled: Boolean,
+    dragSensitivity: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
     val normalizedValue = value.coerceIn(0f, 1f)
@@ -6444,23 +6447,64 @@ private fun BiuPlaybackSlider(
                     }
                 }
             }
-            .pointerInput(enabled) {
+            .pointerInput(enabled, dragSensitivity) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    var finalValue = (down.position.x / size.width).coerceIn(0f, 1f)
-                    onValueChange(finalValue)
-                    down.consume()
-                    do {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                        if (change != null) {
-                            finalValue = (change.position.x / size.width).coerceIn(0f, 1f)
-                            onValueChange(finalValue)
-                            change.consume()
-                        }
-                    } while (change?.pressed == true)
-                    onValueChangeFinished(finalValue)
+                    val trackStartPx = 5.dp.toPx()
+                    val trackWidthPx = (size.width.toFloat() - trackStartPx * 2f).coerceAtLeast(0f)
+                    val startFraction = if (trackWidthPx > 0f) {
+                        ((down.position.x - trackStartPx) / trackWidthPx).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    var finalValue = startFraction
+                    var dragStarted = false
+                    var valueCommitted = false
+                    var isPressed = true
+                    try {
+                        do {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            isPressed = change.pressed
+                            val dragDistanceX = change.position.x - down.position.x
+                            val dragDistanceY = change.position.y - down.position.y
+                            val horizontalDrag = abs(dragDistanceX) > viewConfiguration.touchSlop &&
+                                abs(dragDistanceX) > abs(dragDistanceY)
+                            if (!dragStarted && horizontalDrag) {
+                                // long: 只有横向位移越过系统触控阈值才进入拖动，按下时的轻微抖动不会改变播放位置。
+                                dragStarted = true
+                                onValueChange(startFraction)
+                            }
+                            if (dragStarted) {
+                                finalValue = PlaybackSliderDragPolicy.adjustedFraction(
+                                    startFraction = startFraction,
+                                    dragDistancePx = dragDistanceX,
+                                    trackWidthPx = trackWidthPx,
+                                    sensitivity = dragSensitivity,
+                                )
+                                onValueChange(finalValue)
+                                change.consume()
+                            }
+                            if (!change.pressed) {
+                                if (dragStarted) {
+                                    onValueChangeFinished(finalValue)
+                                    valueCommitted = true
+                                } else if (
+                                    abs(dragDistanceX) <= viewConfiguration.touchSlop &&
+                                    abs(dragDistanceY) <= viewConfiguration.touchSlop
+                                ) {
+                                    // long: 短按仍保留直接定位能力，精细倍率只影响连续拖动，不牺牲快速跳转效率。
+                                    onValueChange(startFraction)
+                                    onValueChangeFinished(startFraction)
+                                    valueCommitted = true
+                                }
+                            }
+                        } while (isPressed)
+                    } finally {
+                        // long: 系统手势或窗口切换取消触控时也结束拖动，避免界面持续显示已取消的预览位置。
+                        if (dragStarted && !valueCommitted) onValueChangeFinished(finalValue)
+                    }
                 }
             },
     ) {
@@ -6668,6 +6712,7 @@ private fun MediaController.matchesPlaybackQueue(snapshot: PlaybackQueueSnapshot
 
 private const val PLAYBACK_PROGRESS_TICK_MS = 500L
 private const val VIDEO_CONTROLS_HIDE_DELAY_MS = 3_500L
+private const val VIDEO_PROGRESS_DRAG_SENSITIVITY = 0.5f
 
 private val PUBLISHED_AT_FORMATTER: DateTimeFormatter = DateTimeFormatter
     .ofPattern("yyyy-MM-dd HH:mm")

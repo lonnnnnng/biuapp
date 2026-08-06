@@ -46,6 +46,24 @@ internal object PlaybackProgressPolicy {
 }
 
 /**
+ * 播放进度条拖动时的精细定位换算。
+ *
+ * long: 点击轨道仍由界面直接定位；真正拖动时按灵敏度缩小位移，避免长视频里手指轻微移动就跨越大量内容。
+ */
+internal object PlaybackSliderDragPolicy {
+    fun adjustedFraction(
+        startFraction: Float,
+        dragDistancePx: Float,
+        trackWidthPx: Float,
+        sensitivity: Float,
+    ): Float {
+        if (trackWidthPx <= 0f) return startFraction.coerceIn(0f, 1f)
+        val progressDelta = dragDistancePx / trackWidthPx * sensitivity.coerceIn(0f, 1f)
+        return (startFraction + progressDelta).coerceIn(0f, 1f)
+    }
+}
+
+/**
  * 视频画面横向滑动的定位换算。
  *
  * long: 画面上的滑动只在手指离开时提交给播放器；这里先把位移稳定换算成目标时间，

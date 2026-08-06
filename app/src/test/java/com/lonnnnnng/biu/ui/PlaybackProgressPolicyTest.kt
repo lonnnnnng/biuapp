@@ -47,6 +47,30 @@ class PlaybackProgressPolicyTest {
     }
 
     @Test
+    fun `视频进度条精细拖动按灵敏度缩小位移`() {
+        assertEquals(
+            0.4f,
+            PlaybackSliderDragPolicy.adjustedFraction(
+                startFraction = 0.25f,
+                dragDistancePx = 90f,
+                trackWidthPx = 300f,
+                sensitivity = 0.5f,
+            ),
+            0.0001f,
+        )
+        assertEquals(
+            1f,
+            PlaybackSliderDragPolicy.adjustedFraction(
+                startFraction = 0.9f,
+                dragDistancePx = 300f,
+                trackWidthPx = 300f,
+                sensitivity = 0.5f,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test
     fun `视频横滑按画面宽度快进和快退`() {
         assertEquals(
             90_000L,
