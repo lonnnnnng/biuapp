@@ -1818,14 +1818,7 @@ private fun DynamicFeedScreen(
                 }
                 if (state.isLoadingMore) {
                     item(key = "dynamic-loading-more") {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(40.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        }
+                        ListLoadingFooter()
                     }
                 }
             }
@@ -1858,7 +1851,6 @@ private fun DynamicFeedItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !resolving, onClick = onPlay)
             .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding)
             .height(itemHeight),
         horizontalArrangement = Arrangement.spacedBy(listMetrics.dynamicRowSpacing),
@@ -1868,7 +1860,12 @@ private fun DynamicFeedItem(
             modifier = Modifier
                 .size(width = listMetrics.dynamicThumbnailWidth, height = itemHeight)
                 .clip(RoundedCornerShape(6.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "播放 ${item.video.title}"
+                }
+                .clickable(enabled = !resolving, onClick = onPlay),
         ) {
             AsyncImage(
                 model = item.video.coverUrl,
@@ -1898,47 +1895,54 @@ private fun DynamicFeedItem(
                 )
             }
         }
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-        ) {
-            Row(
-                modifier = Modifier.height(authorRowHeight),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "播放 ${item.video.title}"
+                    }
+                    .clickable(enabled = !resolving, onClick = onPlay),
             ) {
-                AsyncImage(
-                    model = item.authorFaceUrl,
-                    contentDescription = item.video.author,
-                    modifier = Modifier
-                        .size(16.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentScale = ContentScale.Crop,
-                )
+                Row(
+                    modifier = Modifier.height(authorRowHeight),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    AsyncImage(
+                        model = item.authorFaceUrl,
+                        contentDescription = item.video.author,
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentScale = ContentScale.Crop,
+                    )
+                    Text(
+                        item.video.author.ifBlank { "未知 UP 主" },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    Text(
+                        formatPublishedDateTime(item.publishedAtEpochSeconds),
+                        maxLines = 1,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    item.video.author.ifBlank { "未知 UP 主" },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
+                    item.video.title,
+                    modifier = Modifier.height(titleHeight),
+                    maxLines = 2,
+                    softWrap = true,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                Text(
-                    formatPublishedDateTime(item.publishedAtEpochSeconds),
-                    maxLines = 1,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
                 )
             }
-            Text(
-                item.video.title,
-                modifier = Modifier.height(titleHeight),
-                maxLines = 2,
-                softWrap = true,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
-            )
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3011,12 +3015,7 @@ private fun LibraryVideoList(
         }
         if (loadingMore) {
             item(key = "favorite-loading") {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                }
+                ListLoadingFooter(modifier = Modifier.padding(vertical = 4.dp))
             }
         }
     }
@@ -3173,12 +3172,7 @@ private fun OnlineHistoryList(
                 }
                 if (loadingMore) {
                     item(key = "online-history-loading") {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        }
+                        ListLoadingFooter(modifier = Modifier.padding(vertical = 4.dp))
                     }
                 }
             }
@@ -3395,8 +3389,31 @@ internal fun BiuEmptyState(
         }
         if (actionLabel != null && onAction != null) {
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onAction) { Text(actionLabel) }
+            FilledTonalButton(onClick = onAction) { Text(actionLabel) }
         }
+    }
+}
+
+@Composable
+private fun ListLoadingFooter(
+    label: String = "正在加载更多",
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .semantics { contentDescription = label },
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -3478,14 +3495,7 @@ private fun VideoRowList(
         }
         if (loadingMore) {
             item(key = "recommendation-loading-more") {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(40.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                }
+                ListLoadingFooter()
             }
         }
     }
@@ -3540,14 +3550,7 @@ private fun VideoGrid(
                     key = "recommendation-grid-loading-more",
                     span = { GridItemSpan(maxLineSpan) },
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(40.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    }
+                    ListLoadingFooter()
                 }
             }
         }
