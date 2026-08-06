@@ -3770,16 +3770,27 @@ internal fun VideoRow(
 private fun PlayAffordance(contentDescription: String) {
     Box(
         modifier = Modifier
-            .size(40.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.primaryContainer),
+            .size(48.dp)
+            .semantics {
+                role = Role.Button
+                this.contentDescription = contentDescription
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            Icons.Rounded.PlayArrow,
-            contentDescription = contentDescription,
-            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-        )
+        Surface(
+            modifier = Modifier.size(32.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Rounded.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
     }
 }
 
