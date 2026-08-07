@@ -232,6 +232,7 @@ import com.lonnnnnng.biu.data.local.AppVideoLayout
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
+import com.lonnnnnng.biu.data.local.LocalAudioPlaybackMode
 import com.lonnnnnng.biu.data.local.LocalMediaPermissionPolicy
 import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
@@ -1211,7 +1212,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onRemoveFavoriteVideo = viewModel::removeVideoFromFavorite,
                     onPlay = viewModel::play,
                     onPlayHistory = viewModel::play,
-                    onPlayLocalAudio = viewModel::play,
+                    onPlayLocalAudio = viewModel::playLocalAudio,
                     onAddLocalAudioToPlaylist = { audio ->
                         pendingPlaylistAddition = PendingPlaylistAddition.LocalTrack(audio)
                     },
@@ -2366,7 +2367,7 @@ private fun AccountScreen(
     onRemoveFavoriteVideo: (BilibiliLibraryVideo) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onPlayHistory: (PlaybackHistoryEntity) -> Unit,
-    onPlayLocalAudio: (LocalAudio) -> Unit,
+    onPlayLocalAudio: (LocalAudio, LocalAudioPlaybackMode) -> Unit,
     onAddLocalAudioToPlaylist: (LocalAudio) -> Unit,
     onCreateLocalPlaylist: (String) -> Unit,
     onRenameLocalPlaylist: (LocalPlaylistEntity, String) -> Unit,
@@ -2894,6 +2895,7 @@ private enum class AccountLibraryGroup(
     DOWNLOADS("下载", listOf(AccountLibrarySection.DOWNLOADS)),
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LocalAudioList(
     audio: List<LocalAudio>,
@@ -2904,12 +2906,58 @@ private fun LocalAudioList(
     onSelectDirectory: () -> Unit,
     onClearDirectory: () -> Unit,
     onRefresh: () -> Unit,
-    onPlay: (LocalAudio) -> Unit,
+    onPlay: (LocalAudio, LocalAudioPlaybackMode) -> Unit,
     onAddToPlaylist: (LocalAudio) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val directoryFilteringSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     val listMetrics = LocalBiuListDensity.current
+    var pendingPlaybackId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val pendingPlayback = audio.firstOrNull { item -> item.mediaStoreId == pendingPlaybackId }
+    if (pendingPlayback != null) {
+        ModalBottomSheet(
+            onDismissRequest = { pendingPlaybackId = null },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 20.dp),
+            ) {
+                Text(
+                    "选择播放范围",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    pendingPlayback.title,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LocalAudioPlaybackChoice(
+                    icon = Icons.Rounded.PlayArrow,
+                    title = "仅播放此曲",
+                    description = "加入播放队列 · 1 首",
+                    onClick = {
+                        pendingPlaybackId = null
+                        onPlay(pendingPlayback, LocalAudioPlaybackMode.SINGLE)
+                    },
+                )
+                LocalAudioPlaybackChoice(
+                    icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                    title = "播放当前目录",
+                    description = "加入播放队列 · ${audio.size} 首，从当前歌曲开始",
+                    onClick = {
+                        pendingPlaybackId = null
+                        onPlay(pendingPlayback, LocalAudioPlaybackMode.CURRENT_DIRECTORY)
+                    },
+                )
+            }
+        }
+    }
     Column(modifier) {
         Row(
             modifier = Modifier
@@ -2998,7 +3046,7 @@ private fun LocalAudioList(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onPlay(item) }
+                            .clickable { pendingPlaybackId = item.mediaStoreId }
                             .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
@@ -3060,6 +3108,41 @@ private fun LocalAudioList(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LocalAudioPlaybackChoice(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(24.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

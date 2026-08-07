@@ -20,6 +20,38 @@ data class LocalAudio(
     val artworkUri: String? = null,
 )
 
+enum class LocalAudioPlaybackMode {
+    SINGLE,
+    CURRENT_DIRECTORY,
+}
+
+internal data class LocalAudioPlaybackPlan(
+    val audio: List<LocalAudio>,
+    val startIndex: Int,
+)
+
+internal object LocalAudioPlaybackPolicy {
+    fun create(
+        audio: List<LocalAudio>,
+        selectedMediaStoreId: Long,
+        mode: LocalAudioPlaybackMode,
+    ): LocalAudioPlaybackPlan? {
+        val selectedIndex = audio.indexOfFirst { item -> item.mediaStoreId == selectedMediaStoreId }
+        if (selectedIndex < 0) return null
+        // long: 单曲模式必须真正替换成一首队列；目录模式才保留当前筛选顺序，避免弹层文案与实际入队范围不一致。
+        return when (mode) {
+            LocalAudioPlaybackMode.SINGLE -> LocalAudioPlaybackPlan(
+                audio = listOf(audio[selectedIndex]),
+                startIndex = 0,
+            )
+            LocalAudioPlaybackMode.CURRENT_DIRECTORY -> LocalAudioPlaybackPlan(
+                audio = audio,
+                startIndex = selectedIndex,
+            )
+        }
+    }
+}
+
 internal fun LocalAudio.toTrack(): Track {
     return Track(
         id = "local:$mediaStoreId",

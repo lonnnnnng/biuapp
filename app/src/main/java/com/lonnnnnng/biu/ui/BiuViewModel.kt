@@ -32,6 +32,8 @@ import com.lonnnnnng.biu.data.local.AppVideoLayout
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
+import com.lonnnnnng.biu.data.local.LocalAudioPlaybackMode
+import com.lonnnnnng.biu.data.local.LocalAudioPlaybackPolicy
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
@@ -2291,15 +2293,17 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun play(audio: LocalAudio) {
-        val audioItems = state.value.localAudio
-        val startIndex = audioItems.indexOfFirst { it.mediaStoreId == audio.mediaStoreId }
-        if (startIndex < 0) return
+    fun playLocalAudio(audio: LocalAudio, mode: LocalAudioPlaybackMode) {
+        val plan = LocalAudioPlaybackPolicy.create(
+            audio = state.value.localAudio,
+            selectedMediaStoreId = audio.mediaStoreId,
+            mode = mode,
+        ) ?: return
         cancelPageQueueExpansion()
-        // long: 点击任意本地歌曲时把当前扫描结果整体作为队列，系统上一首/下一首可直接浏览本机音乐。
+        // long: 用户在弹层中明确选择播放范围后再替换队列；目录模式沿用屏幕当前顺序，上一首/下一首与列表所见一致。
         publishPlaybackRequest(
-            tracks = audioItems.map(LocalAudio::toTrack),
-            startIndex = startIndex,
+            tracks = plan.audio.map(LocalAudio::toTrack),
+            startIndex = plan.startIndex,
         )
     }
 

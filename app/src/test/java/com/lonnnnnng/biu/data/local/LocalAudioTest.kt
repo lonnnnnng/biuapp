@@ -5,6 +5,12 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class LocalAudioTest {
+    private val audio = listOf(
+        localAudio(id = 1L, title = "夜曲"),
+        localAudio(id = 2L, title = "海阔天空"),
+        localAudio(id = 3L, title = "无赖"),
+    )
+
     @Test
     fun `MediaStore 标题为空时使用去扩展名的文件名`() {
         assertEquals(
@@ -37,4 +43,34 @@ class LocalAudioTest {
         assertEquals("本地音频", track.qualityLabel)
         assertNull(track.source)
     }
+
+    @Test
+    fun `仅播放此曲时队列只包含当前歌曲`() {
+        val plan = LocalAudioPlaybackPolicy.create(audio, 2L, LocalAudioPlaybackMode.SINGLE)
+
+        assertEquals(listOf(2L), plan?.audio?.map(LocalAudio::mediaStoreId))
+        assertEquals(0, plan?.startIndex)
+    }
+
+    @Test
+    fun `播放当前目录时保留列表顺序和当前索引`() {
+        val plan = LocalAudioPlaybackPolicy.create(audio, 2L, LocalAudioPlaybackMode.CURRENT_DIRECTORY)
+
+        assertEquals(listOf(1L, 2L, 3L), plan?.audio?.map(LocalAudio::mediaStoreId))
+        assertEquals(1, plan?.startIndex)
+    }
+
+    @Test
+    fun `当前歌曲已不在扫描结果时不创建播放计划`() {
+        assertNull(LocalAudioPlaybackPolicy.create(audio, 9L, LocalAudioPlaybackMode.CURRENT_DIRECTORY))
+    }
+
+    private fun localAudio(id: Long, title: String) = LocalAudio(
+        mediaStoreId = id,
+        title = title,
+        artist = "测试歌手",
+        album = "测试专辑",
+        durationMs = 180_000L,
+        contentUri = "content://media/external/audio/media/$id",
+    )
 }
