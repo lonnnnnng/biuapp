@@ -11,6 +11,7 @@ import com.lonnnnnng.biu.data.local.BiuDatabaseMigrations
 import com.lonnnnnng.biu.data.local.AudioDownloadRepository
 import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
 import com.lonnnnnng.biu.data.local.CreatorGroupRepository
+import com.lonnnnnng.biu.data.local.CreatorCenterSessionRepository
 import com.lonnnnnng.biu.data.local.DisplayPreferenceRepository
 import com.lonnnnnng.biu.data.local.LocalAudioDirectoryRepository
 import com.lonnnnnng.biu.data.local.LocalAudioRepository
@@ -85,6 +86,7 @@ class AppContainer(context: Context) {
     val lyricsCacheRepository = LyricsCacheRepository(database.lyricsCacheDao())
     val creatorSelectionRepository = CreatorSelectionRepository(database.creatorSelectionDao())
     val creatorGroupRepository = CreatorGroupRepository(database.creatorGroupDao())
+    val creatorCenterSessionRepository = CreatorCenterSessionRepository(context)
     val localPlaylistRepository = LocalPlaylistRepository(database.localPlaylistDao())
     val audioDownloadRepository = AudioDownloadRepository(database.audioDownloadTaskDao())
     val videoDownloadRepository = VideoDownloadRepository(database.videoDownloadTaskDao())

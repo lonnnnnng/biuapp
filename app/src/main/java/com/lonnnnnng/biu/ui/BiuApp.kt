@@ -344,7 +344,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showThemeMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
     var showDisplaySettings by rememberSaveable { mutableStateOf(false) }
-    var showCreatorConfig by remember { mutableStateOf(false) }
     var showCreatorCenter by rememberSaveable { mutableStateOf(false) }
     var showQuickQueue by rememberSaveable { mutableStateOf(false) }
     var confirmClearQuickQueue by remember { mutableStateOf(false) }
@@ -850,26 +849,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
-    if (showCreatorConfig) {
-        CreatorSelectionSheet(
-            accountLoggedIn = uiState.account.isLoggedIn,
-            creators = uiState.followedCreators,
-            selectedCreators = uiState.selectedCreators,
-            loading = uiState.isCreatorConfigLoading,
-            saving = uiState.isCreatorConfigSaving,
-            onDismiss = { showCreatorConfig = false },
-            onRetry = viewModel::loadFollowingCreators,
-            onOpenAccount = {
-                showCreatorConfig = false
-                viewModel.selectSection(MainSection.ACCOUNT)
-            },
-            onSave = { creators ->
-                showCreatorConfig = false
-                viewModel.saveCreatorSelection(creators)
-            },
-        )
-    }
-
     tripleConfirmation?.let { dynamic ->
         AlertDialog(
             onDismissRequest = { tripleConfirmation = null },
@@ -1068,7 +1047,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
 
     val openCreatorCenter: () -> Unit = {
         showCreatorCenter = true
-        viewModel.selectCreatorCenterTab(
+    }
+    LaunchedEffect(showCreatorCenter, uiState.account.isLoggedIn) {
+        if (showCreatorCenter) viewModel.prepareCreatorCenter(
             if (uiState.account.isLoggedIn) CreatorCenterTab.FOLLOWING else CreatorCenterTab.SEARCH,
         )
     }
@@ -1340,16 +1321,19 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         CreatorCenterScreen(
             state = uiState.creatorCenter,
             selectedCreators = uiState.selectedCreators,
+            sourceDraft = uiState.creatorSourceDraft,
             groups = uiState.creatorGroups,
             groupMembers = uiState.creatorGroupMembers,
             accountLoggedIn = uiState.account.isLoggedIn,
             resolvingBvid = uiState.resolvingBvid,
             onBack = {
-                viewModel.closeCreatorProfile()
                 showCreatorCenter = false
             },
             onTabSelected = viewModel::selectCreatorCenterTab,
             onGroupSelected = viewModel::selectCreatorGroup,
+            onSearchInputChanged = viewModel::updateCreatorSearchInput,
+            onFilterKeywordChanged = viewModel::updateCreatorFilterKeyword,
+            onListPositionChanged = viewModel::updateCreatorListPosition,
             onSearch = viewModel::searchCreators,
             onClearSearch = viewModel::clearCreatorSearch,
             onLoadMoreSearch = { viewModel.searchCreators("", loadMore = true) },
@@ -1364,11 +1348,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onPlayCollection = viewModel::playCreatorCollection,
             onToggleRelation = viewModel::toggleCreatorRelation,
             onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
-            onOpenHomeScope = {
-                showCreatorCenter = false
-                showCreatorConfig = true
-                viewModel.loadFollowingCreators()
-            },
+            savingSources = uiState.isCreatorConfigSaving,
+            onToggleSource = viewModel::toggleCreatorSource,
+            onSaveSources = viewModel::saveCreatorSelectionDraft,
+            onDiscardSourceChanges = viewModel::discardCreatorSourceChanges,
             onCreateGroup = viewModel::createCreatorGroup,
             onRenameGroup = viewModel::renameCreatorGroup,
             onDeleteGroup = viewModel::deleteCreatorGroup,
@@ -5390,215 +5373,6 @@ internal fun BiuSheetHeader(
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CreatorSelectionSheet(
-    accountLoggedIn: Boolean,
-    creators: List<BilibiliCreator>,
-    selectedCreators: List<BilibiliCreator>,
-    loading: Boolean,
-    saving: Boolean,
-    onDismiss: () -> Unit,
-    onRetry: () -> Unit,
-    onOpenAccount: () -> Unit,
-    onSave: (List<BilibiliCreator>) -> Unit,
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var keyword by remember { mutableStateOf("") }
-    var selectedMids by remember(creators, selectedCreators) {
-        mutableStateOf(selectedCreators.map(BilibiliCreator::mid).toSet())
-    }
-    val visibleCreators = remember(creators, keyword) {
-        val normalized = keyword.trim()
-        if (normalized.isEmpty()) creators else creators.filter { creator ->
-            creator.name.contains(normalized, ignoreCase = true)
-        }
-    }
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        modifier = Modifier.widthIn(max = 840.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-    ) {
-        // long: 内容范围包含可滚动的长关注列表，弹层直接占满可用高度，并把保存动作留在滚动区之外持续可见。
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(),
-        ) {
-            BiuSheetHeader(title = "首页内容范围", onClose = onDismiss)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-            ) {
-                if (!accountLoggedIn) {
-                    BiuEmptyState(
-                        icon = Icons.Rounded.AccountCircle,
-                        title = "需要登录 Bilibili",
-                        message = "登录后才能读取你的关注列表并选择 UP",
-                        actionLabel = "前往账号页",
-                        onAction = onOpenAccount,
-                    )
-                } else {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        CompactSearchField(
-                            value = keyword,
-                            onValueChange = { keyword = it },
-                            onSearch = null,
-                            onClear = { keyword = "" },
-                            placeholder = "按 UP 名称筛选",
-                            loading = loading,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                        )
-                        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        if (!loading && creators.isEmpty()) {
-                            BiuEmptyState(
-                                icon = Icons.Rounded.AccountCircle,
-                                title = "暂时没有关注列表",
-                                message = "可以重试从 Bilibili 获取",
-                                actionLabel = "重新加载",
-                                onAction = onRetry,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else if (!loading && visibleCreators.isEmpty()) {
-                            BiuEmptyState(
-                                icon = Icons.Rounded.Search,
-                                title = "没有匹配的 UP",
-                                message = "换一个名称关键词再试试",
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                contentPadding = PaddingValues(vertical = 2.dp),
-                            ) {
-                                items(visibleCreators, key = BilibiliCreator::mid) { creator ->
-                                    val selected = creator.mid in selectedMids
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .semantics {
-                                                role = Role.Checkbox
-                                                this.selected = selected
-                                                stateDescription = if (selected) "已选择" else "未选择"
-                                            }
-                                            .clickable {
-                                                selectedMids = if (selected) {
-                                                    selectedMids - creator.mid
-                                                } else {
-                                                    selectedMids + creator.mid
-                                                }
-                                            }
-                                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    ) {
-                                        AsyncImage(
-                                            model = creator.faceUrl,
-                                            contentDescription = creator.name,
-                                            modifier = Modifier
-                                                .size(40.dp)
-                                                .clip(RoundedCornerShape(20.dp))
-                                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                                            contentScale = ContentScale.Crop,
-                                        )
-                                        Column(
-                                            modifier = Modifier.weight(1f),
-                                            verticalArrangement = Arrangement.spacedBy(1.dp),
-                                        ) {
-                                            Text(
-                                                creator.name,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                            )
-                                            Text(
-                                                "UID ${creator.mid}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                        Surface(
-                                            modifier = Modifier.size(24.dp),
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                Color.Transparent
-                                            },
-                                            border = if (selected) null else BorderStroke(
-                                                1.dp,
-                                                MaterialTheme.colorScheme.outline,
-                                            ),
-                                            contentColor = if (selected) {
-                                                MaterialTheme.colorScheme.onPrimary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                if (selected) {
-                                                    Icon(
-                                                        Icons.Rounded.Check,
-                                                        contentDescription = "已选择 ${creator.name}",
-                                                        modifier = Modifier.size(16.dp),
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                    MediaDivider(start = 68.dp)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(
-                        if (selectedMids.isEmpty()) "使用默认热门" else "已选 ${selectedMids.size} 位 UP",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(
-                        onClick = { onSave(creators.filter { creator -> creator.mid in selectedMids }) },
-                        enabled = accountLoggedIn && !loading && !saving,
-                        modifier = Modifier
-                            .height(40.dp)
-                            .widthIn(min = 112.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) {
-                        Text(
-                            when {
-                                !accountLoggedIn -> "登录后保存"
-                                saving -> "保存中"
-                                selectedMids.isEmpty() -> "恢复默认"
-                                else -> "保存"
-                            },
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 

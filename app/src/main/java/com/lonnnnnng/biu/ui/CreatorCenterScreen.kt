@@ -22,7 +22,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -48,19 +51,25 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,13 +79,19 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorCollection
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
+import com.lonnnnnng.biu.data.local.CreatorCenterListSlot
+import com.lonnnnnng.biu.data.local.PersistedListPosition
 import java.util.Locale
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CreatorCenterScreen(
     state: CreatorCenterUiState,
     selectedCreators: List<BilibiliCreator>,
+    sourceDraft: CreatorSourceDraftUiState,
     groups: List<CreatorGroupEntity>,
     groupMembers: Map<Long, Set<Long>>,
     accountLoggedIn: Boolean,
@@ -84,6 +99,9 @@ internal fun CreatorCenterScreen(
     onBack: () -> Unit,
     onTabSelected: (CreatorCenterTab) -> Unit,
     onGroupSelected: (Long?) -> Unit,
+    onSearchInputChanged: (String) -> Unit,
+    onFilterKeywordChanged: (String) -> Unit,
+    onListPositionChanged: (CreatorCenterListSlot, PersistedListPosition) -> Unit,
     onSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
     onLoadMoreSearch: () -> Unit,
@@ -96,7 +114,10 @@ internal fun CreatorCenterScreen(
     onCloseCollection: () -> Unit,
     onLoadMoreCollectionVideos: () -> Unit,
     onPlayCollection: (List<BilibiliVideo>) -> Unit,
-    onOpenHomeScope: () -> Unit,
+    savingSources: Boolean,
+    onToggleSource: (BilibiliCreator) -> Unit,
+    onSaveSources: () -> Unit,
+    onDiscardSourceChanges: () -> Unit,
     onCreateGroup: (String) -> Unit,
     onRenameGroup: (CreatorGroupEntity, String) -> Unit,
     onDeleteGroup: (Long) -> Unit,
@@ -158,16 +179,23 @@ internal fun CreatorCenterScreen(
                     CreatorDirectory(
                         state = state,
                         selectedCreators = selectedCreators,
+                        sourceDraft = sourceDraft,
                         groups = groups,
                         groupMembers = groupMembers,
                         accountLoggedIn = accountLoggedIn,
                         onTabSelected = onTabSelected,
                         onGroupSelected = onGroupSelected,
+                        onSearchInputChanged = onSearchInputChanged,
+                        onFilterKeywordChanged = onFilterKeywordChanged,
+                        onListPositionChanged = onListPositionChanged,
                         onSearch = onSearch,
                         onClearSearch = onClearSearch,
                         onLoadMoreSearch = onLoadMoreSearch,
                         onLoadFollowing = onLoadFollowing,
-                        onOpenHomeScope = onOpenHomeScope,
+                        savingSources = savingSources,
+                        onToggleSource = onToggleSource,
+                        onSaveSources = onSaveSources,
+                        onDiscardSourceChanges = onDiscardSourceChanges,
                         onManageGroups = { showGroupManager = true },
                         onOpenCreator = onOpenCreator,
                         onLogin = onLogin,
@@ -178,12 +206,17 @@ internal fun CreatorCenterScreen(
                 } else {
                     CreatorProfile(
                         state = state,
+                        sourceSelected = sourceDraft.creators.any { creator ->
+                            creator.mid == state.selectedCreator.mid
+                        },
                         groups = groups,
                         groupMembers = groupMembers,
                         accountLoggedIn = accountLoggedIn,
                         resolvingBvid = resolvingBvid,
                         onToggleRelation = onToggleRelation,
+                        onToggleSource = { onToggleSource(state.selectedCreator) },
                         onProfileTabSelected = onProfileTabSelected,
+                        onListPositionChanged = onListPositionChanged,
                         onLoadMoreCollections = onLoadMoreCollections,
                         onOpenCollection = onOpenCollection,
                         onLoadMoreCollectionVideos = onLoadMoreCollectionVideos,
@@ -208,44 +241,48 @@ internal fun CreatorCenterScreen(
 private fun CreatorDirectory(
     state: CreatorCenterUiState,
     selectedCreators: List<BilibiliCreator>,
+    sourceDraft: CreatorSourceDraftUiState,
     groups: List<CreatorGroupEntity>,
     groupMembers: Map<Long, Set<Long>>,
     accountLoggedIn: Boolean,
     onTabSelected: (CreatorCenterTab) -> Unit,
     onGroupSelected: (Long?) -> Unit,
+    onSearchInputChanged: (String) -> Unit,
+    onFilterKeywordChanged: (String) -> Unit,
+    onListPositionChanged: (CreatorCenterListSlot, PersistedListPosition) -> Unit,
     onSearch: (String) -> Unit,
     onClearSearch: () -> Unit,
     onLoadMoreSearch: () -> Unit,
     onLoadFollowing: (Boolean) -> Unit,
-    onOpenHomeScope: () -> Unit,
+    savingSources: Boolean,
+    onToggleSource: (BilibiliCreator) -> Unit,
+    onSaveSources: () -> Unit,
+    onDiscardSourceChanges: () -> Unit,
     onManageGroups: () -> Unit,
     onOpenCreator: (BilibiliCreator) -> Unit,
     onLogin: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var searchKeyword by remember(state.searchKeyword) { mutableStateOf(state.searchKeyword) }
-    var followingKeyword by remember { mutableStateOf("") }
     Column(modifier = modifier) {
-        val keyword = if (state.tab == CreatorCenterTab.SEARCH) searchKeyword else followingKeyword
+        val keyword = if (state.tab == CreatorCenterTab.SEARCH) state.searchInput else state.filterKeyword
         CompactSearchField(
             value = keyword,
             onValueChange = { value ->
                 if (state.tab == CreatorCenterTab.SEARCH) {
-                    searchKeyword = value
+                    onSearchInputChanged(value)
                     if (value.isBlank() && state.searchKeyword.isNotBlank()) onClearSearch()
                 } else {
-                    followingKeyword = value
+                    onFilterKeywordChanged(value)
                 }
             },
             onSearch = {
-                if (state.tab == CreatorCenterTab.SEARCH) onSearch(searchKeyword)
+                if (state.tab == CreatorCenterTab.SEARCH) onSearch(state.searchInput)
             },
             onClear = {
                 if (state.tab == CreatorCenterTab.SEARCH) {
-                    searchKeyword = ""
                     onClearSearch()
                 } else {
-                    followingKeyword = ""
+                    onFilterKeywordChanged("")
                 }
             },
             placeholder = when (state.tab) {
@@ -270,16 +307,11 @@ private fun CreatorDirectory(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "首页来源",
+                "首页来源 · 草稿 ${sourceDraft.creators.size} 位",
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(onClick = onOpenHomeScope) {
-                Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("管理范围")
-            }
             TextButton(onClick = onManageGroups) {
                 Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
@@ -317,41 +349,138 @@ private fun CreatorDirectory(
             state.followingCreators.filter { it.mid in mids }
         } ?: state.followingCreators
         val filteredSelectedCreators = selectedGroupMids?.let { mids ->
-            selectedCreators.filter { it.mid in mids }
-        } ?: selectedCreators
+            sourceDraft.creators.filter { it.mid in mids }
+        } ?: sourceDraft.creators
+        val selectedMids = sourceDraft.creators.mapTo(hashSetOf(), BilibiliCreator::mid)
         when (state.tab) {
             CreatorCenterTab.SEARCH -> SearchCreatorContent(
                 state = state.copy(searchResults = filteredSearchResults),
+                selectedMids = selectedMids,
+                listPosition = state.position(CreatorCenterListSlot.SEARCH),
+                onListPositionChanged = { position ->
+                    onListPositionChanged(CreatorCenterListSlot.SEARCH, position)
+                },
                 onLoadMore = onLoadMoreSearch,
                 onOpenCreator = onOpenCreator,
+                onToggleSource = onToggleSource,
                 modifier = Modifier.weight(1f),
             )
             CreatorCenterTab.FOLLOWING -> FollowingCreatorContent(
                 state = state.copy(followingCreators = filteredFollowingCreators),
                 accountLoggedIn = accountLoggedIn,
-                keyword = followingKeyword,
+                keyword = state.filterKeyword,
+                selectedMids = selectedMids,
+                listPosition = state.position(CreatorCenterListSlot.FOLLOWING),
+                onListPositionChanged = { position ->
+                    onListPositionChanged(CreatorCenterListSlot.FOLLOWING, position)
+                },
                 onLoadFollowing = onLoadFollowing,
                 onOpenCreator = onOpenCreator,
+                onToggleSource = onToggleSource,
                 onLogin = onLogin,
                 modifier = Modifier.weight(1f),
             )
             CreatorCenterTab.HOME_SELECTED -> SelectedCreatorContent(
                 creators = filteredSelectedCreators,
-                keyword = followingKeyword,
+                keyword = state.filterKeyword,
+                listPosition = state.position(CreatorCenterListSlot.HOME_SELECTED),
+                onListPositionChanged = { position ->
+                    onListPositionChanged(CreatorCenterListSlot.HOME_SELECTED, position)
+                },
                 onOpenCreator = onOpenCreator,
-                onOpenHomeScope = onOpenHomeScope,
+                onToggleSource = onToggleSource,
                 modifier = Modifier.weight(1f),
             )
         }
+        CreatorSourceFooter(
+            draft = sourceDraft.creators,
+            saved = selectedCreators,
+            saving = savingSources,
+            onSave = onSaveSources,
+            onDiscard = onDiscardSourceChanges,
+        )
     }
+}
+
+@Composable
+private fun CreatorSourceFooter(
+    draft: List<BilibiliCreator>,
+    saved: List<BilibiliCreator>,
+    saving: Boolean,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    val dirty = CreatorSourceDraftPolicy.isDirty(draft, saved)
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                when {
+                    draft.isEmpty() -> "保存后使用默认热门"
+                    dirty -> "已选 ${draft.size} 位 · 有未保存修改"
+                    else -> "已选 ${draft.size} 位 UP 主"
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (dirty) {
+                TextButton(onClick = onDiscard, enabled = !saving) { Text("撤销修改") }
+            }
+            Button(
+                onClick = onSave,
+                enabled = dirty && !saving,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(if (saving) "保存中" else "保存范围")
+            }
+        }
+    }
+}
+
+private fun CreatorCenterUiState.position(slot: CreatorCenterListSlot): PersistedListPosition =
+    listPositions[slot]?.normalized() ?: PersistedListPosition()
+
+@OptIn(FlowPreview::class)
+@Composable
+private fun rememberPersistedLazyListState(
+    position: PersistedListPosition,
+    onPositionChanged: (PersistedListPosition) -> Unit,
+): LazyListState {
+    val normalized = position.normalized()
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = normalized.index,
+        initialFirstVisibleItemScrollOffset = normalized.offset,
+    )
+    val latestCallback by rememberUpdatedState(onPositionChanged)
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            PersistedListPosition(
+                index = listState.firstVisibleItemIndex,
+                offset = listState.firstVisibleItemScrollOffset,
+            )
+        }
+            .distinctUntilChanged()
+            .debounce(150L)
+            .collect { latestCallback(it) }
+    }
+    return listState
 }
 
 @Composable
 private fun SelectedCreatorContent(
     creators: List<BilibiliCreator>,
     keyword: String,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     onOpenCreator: (BilibiliCreator) -> Unit,
-    onOpenHomeScope: () -> Unit,
+    onToggleSource: (BilibiliCreator) -> Unit,
     modifier: Modifier,
 ) {
     val visibleCreators = remember(creators, keyword) {
@@ -364,9 +493,7 @@ private fun SelectedCreatorContent(
         creators.isEmpty() -> BiuEmptyState(
             icon = Icons.Rounded.Tune,
             title = "首页使用默认热门",
-            message = "选择 UP 主后，首页会按发布时间展示他们的投稿。",
-            actionLabel = "选择首页来源",
-            onAction = onOpenHomeScope,
+            message = "在用户搜索或我的关注中勾选 UP 主，再保存首页来源。",
             modifier = modifier,
         )
         visibleCreators.isEmpty() -> BiuEmptyState(
@@ -376,10 +503,14 @@ private fun SelectedCreatorContent(
         )
         else -> CreatorList(
             creators = visibleCreators,
+            selectedMids = visibleCreators.mapTo(hashSetOf(), BilibiliCreator::mid),
+            listPosition = listPosition,
+            onListPositionChanged = onListPositionChanged,
             loadingMore = false,
             hasMore = false,
             onLoadMore = {},
             onOpenCreator = onOpenCreator,
+            onToggleSource = onToggleSource,
             modifier = modifier,
         )
     }
@@ -388,8 +519,12 @@ private fun SelectedCreatorContent(
 @Composable
 private fun SearchCreatorContent(
     state: CreatorCenterUiState,
+    selectedMids: Set<Long>,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     onLoadMore: () -> Unit,
     onOpenCreator: (BilibiliCreator) -> Unit,
+    onToggleSource: (BilibiliCreator) -> Unit,
     modifier: Modifier,
 ) {
     when {
@@ -408,10 +543,14 @@ private fun SearchCreatorContent(
         )
         else -> CreatorList(
             creators = state.searchResults,
+            selectedMids = selectedMids,
+            listPosition = listPosition,
+            onListPositionChanged = onListPositionChanged,
             loadingMore = state.isListLoadingMore,
             hasMore = state.searchNextPage != null,
             onLoadMore = onLoadMore,
             onOpenCreator = onOpenCreator,
+            onToggleSource = onToggleSource,
             modifier = modifier,
         )
     }
@@ -422,8 +561,12 @@ private fun FollowingCreatorContent(
     state: CreatorCenterUiState,
     accountLoggedIn: Boolean,
     keyword: String,
+    selectedMids: Set<Long>,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     onLoadFollowing: (Boolean) -> Unit,
     onOpenCreator: (BilibiliCreator) -> Unit,
+    onToggleSource: (BilibiliCreator) -> Unit,
     onLogin: () -> Unit,
     modifier: Modifier,
 ) {
@@ -458,10 +601,14 @@ private fun FollowingCreatorContent(
         )
         else -> CreatorList(
             creators = visibleCreators,
+            selectedMids = selectedMids,
+            listPosition = listPosition,
+            onListPositionChanged = onListPositionChanged,
             loadingMore = state.isListLoadingMore,
             hasMore = state.followingNextPage != null && keyword.isBlank(),
             onLoadMore = { onLoadFollowing(false) },
             onOpenCreator = onOpenCreator,
+            onToggleSource = onToggleSource,
             modifier = modifier,
         )
     }
@@ -636,15 +783,29 @@ private fun CreatorCenterTabs(
 @Composable
 private fun CreatorList(
     creators: List<BilibiliCreator>,
+    selectedMids: Set<Long>,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     loadingMore: Boolean,
     hasMore: Boolean,
     onLoadMore: () -> Unit,
     onOpenCreator: (BilibiliCreator) -> Unit,
+    onToggleSource: (BilibiliCreator) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LazyColumn(modifier = modifier.fillMaxWidth(), contentPadding = PaddingValues(vertical = 2.dp)) {
+    val listState = rememberPersistedLazyListState(listPosition, onListPositionChanged)
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(vertical = 2.dp),
+    ) {
         items(creators, key = BilibiliCreator::mid) { creator ->
-            CreatorRow(creator = creator, onClick = { onOpenCreator(creator) })
+            CreatorRow(
+                creator = creator,
+                selected = creator.mid in selectedMids,
+                onClick = { onOpenCreator(creator) },
+                onToggleSource = { onToggleSource(creator) },
+            )
             MediaDivider(start = 72.dp)
         }
         if (hasMore || loadingMore) {
@@ -667,7 +828,12 @@ private fun CreatorList(
 }
 
 @Composable
-private fun CreatorRow(creator: BilibiliCreator, onClick: () -> Unit) {
+private fun CreatorRow(
+    creator: BilibiliCreator,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onToggleSource: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -704,18 +870,33 @@ private fun CreatorRow(creator: BilibiliCreator, onClick: () -> Unit) {
                 )
             }
         }
+        Checkbox(
+            checked = selected,
+            onCheckedChange = { onToggleSource() },
+            modifier = Modifier.semantics {
+                contentDescription = if (selected) {
+                    "从首页来源移除 ${creator.name}"
+                } else {
+                    "将 ${creator.name} 加入首页来源"
+                }
+                stateDescription = if (selected) "已加入首页来源" else "未加入首页来源"
+            },
+        )
     }
 }
 
 @Composable
 private fun CreatorProfile(
     state: CreatorCenterUiState,
+    sourceSelected: Boolean,
     groups: List<CreatorGroupEntity>,
     groupMembers: Map<Long, Set<Long>>,
     accountLoggedIn: Boolean,
     resolvingBvid: String?,
     onToggleRelation: () -> Unit,
+    onToggleSource: () -> Unit,
     onProfileTabSelected: (CreatorProfileTab) -> Unit,
+    onListPositionChanged: (CreatorCenterListSlot, PersistedListPosition) -> Unit,
     onLoadMoreCollections: () -> Unit,
     onOpenCollection: (BilibiliCreatorCollection) -> Unit,
     onLoadMoreCollectionVideos: () -> Unit,
@@ -739,6 +920,10 @@ private fun CreatorProfile(
             resolvingBvid = resolvingBvid,
             onLoadMore = onLoadMoreCollectionVideos,
             onPlayAll = { onPlayCollection(state.collectionVideos) },
+            listPosition = state.position(CreatorCenterListSlot.COLLECTION_VIDEOS),
+            onListPositionChanged = { position ->
+                onListPositionChanged(CreatorCenterListSlot.COLLECTION_VIDEOS, position)
+            },
             onPlay = onPlay,
             onAddFavorite = onAddFavorite,
             modifier = modifier,
@@ -803,6 +988,18 @@ private fun CreatorProfile(
             } else {
                 TextButton(onClick = onLogin) { Text("登录关注") }
             }
+            Checkbox(
+                checked = sourceSelected,
+                onCheckedChange = { onToggleSource() },
+                modifier = Modifier.semantics {
+                    contentDescription = if (sourceSelected) {
+                        "从首页来源移除 ${creator.name}"
+                    } else {
+                        "将 ${creator.name} 加入首页来源"
+                    }
+                    stateDescription = if (sourceSelected) "已加入首页来源" else "未加入首页来源"
+                },
+            )
         }
         if (creator.signature.isNotBlank()) {
             Text(
@@ -843,6 +1040,10 @@ private fun CreatorProfile(
         when (state.profileTab) {
             CreatorProfileTab.WORKS -> CreatorWorks(
                 state = state,
+                listPosition = state.position(CreatorCenterListSlot.WORKS),
+                onListPositionChanged = { position ->
+                    onListPositionChanged(CreatorCenterListSlot.WORKS, position)
+                },
                 resolvingBvid = resolvingBvid,
                 onLoadMoreVideos = onLoadMoreVideos,
                 onPlay = onPlay,
@@ -851,6 +1052,10 @@ private fun CreatorProfile(
             )
             CreatorProfileTab.COLLECTIONS -> CreatorCollections(
                 state = state,
+                listPosition = state.position(CreatorCenterListSlot.COLLECTIONS),
+                onListPositionChanged = { position ->
+                    onListPositionChanged(CreatorCenterListSlot.COLLECTIONS, position)
+                },
                 onLoadMore = onLoadMoreCollections,
                 onOpenCollection = onOpenCollection,
                 modifier = Modifier.weight(1f),
@@ -905,6 +1110,8 @@ private fun CreatorProfileTabs(
 @Composable
 private fun CreatorWorks(
     state: CreatorCenterUiState,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     resolvingBvid: String?,
     onLoadMoreVideos: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
@@ -921,7 +1128,8 @@ private fun CreatorWorks(
         return
     }
     // long: 空间投稿复用推荐页的紧凑媒体行，让播放、收藏和解析中状态在两个入口保持一致。
-    LazyColumn(modifier = modifier, contentPadding = PaddingValues(vertical = 2.dp)) {
+    val listState = rememberPersistedLazyListState(listPosition, onListPositionChanged)
+    LazyColumn(state = listState, modifier = modifier, contentPadding = PaddingValues(vertical = 2.dp)) {
         items(state.videos, key = BilibiliVideo::bvid) { video ->
             VideoRow(
                 video = video,
@@ -954,6 +1162,8 @@ private fun CreatorWorks(
 @Composable
 private fun CreatorCollections(
     state: CreatorCenterUiState,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     onLoadMore: () -> Unit,
     onOpenCollection: (BilibiliCreatorCollection) -> Unit,
     modifier: Modifier,
@@ -967,7 +1177,8 @@ private fun CreatorCollections(
         )
         return
     }
-    LazyColumn(modifier = modifier, contentPadding = PaddingValues(vertical = 2.dp)) {
+    val listState = rememberPersistedLazyListState(listPosition, onListPositionChanged)
+    LazyColumn(state = listState, modifier = modifier, contentPadding = PaddingValues(vertical = 2.dp)) {
         items(state.collections, key = { item -> "${item.type}:${item.id}" }) { collection ->
             Row(
                 modifier = Modifier
@@ -1031,6 +1242,8 @@ private fun CreatorCollectionVideos(
     resolvingBvid: String?,
     onLoadMore: () -> Unit,
     onPlayAll: () -> Unit,
+    listPosition: PersistedListPosition,
+    onListPositionChanged: (PersistedListPosition) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier,
@@ -1062,7 +1275,12 @@ private fun CreatorCollectionVideos(
                 modifier = Modifier.weight(1f),
             )
         } else {
-            LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 2.dp)) {
+            val listState = rememberPersistedLazyListState(listPosition, onListPositionChanged)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(vertical = 2.dp),
+            ) {
                 items(videos, key = BilibiliVideo::bvid) { video ->
                     VideoRow(
                         video = video,

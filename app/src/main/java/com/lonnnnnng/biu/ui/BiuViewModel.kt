@@ -37,6 +37,10 @@ import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.LocalAudioPlaybackMode
 import com.lonnnnnng.biu.data.local.LocalAudioPlaybackPolicy
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
+import com.lonnnnnng.biu.data.local.CreatorCenterListSlot
+import com.lonnnnnng.biu.data.local.CreatorCenterSession
+import com.lonnnnnng.biu.data.local.CreatorSourceDraftItem
+import com.lonnnnnng.biu.data.local.PersistedListPosition
 import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
@@ -65,14 +69,20 @@ import com.lonnnnnng.biu.playback.SleepTimerMode
 import com.lonnnnnng.biu.playback.SleepTimerPolicy
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -145,7 +155,9 @@ enum class CreatorProfileTab(val label: String) {
 data class CreatorCenterUiState(
     val tab: CreatorCenterTab = CreatorCenterTab.FOLLOWING,
     val selectedGroupId: Long? = null,
+    val searchInput: String = "",
     val searchKeyword: String = "",
+    val filterKeyword: String = "",
     val searchResults: List<BilibiliCreator> = emptyList(),
     val searchNextPage: Int? = null,
     val followingCreators: List<BilibiliCreator> = emptyList(),
@@ -169,6 +181,12 @@ data class CreatorCenterUiState(
     val isCollectionVideosLoading: Boolean = false,
     val isCollectionVideosLoadingMore: Boolean = false,
     val isRelationMutating: Boolean = false,
+    val listPositions: Map<CreatorCenterListSlot, PersistedListPosition> = emptyMap(),
+)
+
+data class CreatorSourceDraftUiState(
+    val initialized: Boolean = false,
+    val creators: List<BilibiliCreator> = emptyList(),
 )
 
 data class DynamicFeedUiState(
@@ -188,11 +206,11 @@ data class BiuUiState(
     val creatorFeedTabs: List<CreatorFeedTabState> = emptyList(),
     val homeDiscoveryScope: HomeDiscoveryScope = HomeDiscoveryScope.All,
     val homeDiscoveryMode: HomeDiscoveryMode = HomeDiscoveryMode.LATEST,
-    val followedCreators: List<BilibiliCreator> = emptyList(),
     val selectedCreators: List<BilibiliCreator> = emptyList(),
     val creatorGroups: List<CreatorGroupEntity> = emptyList(),
     val creatorGroupMembers: Map<Long, Set<Long>> = emptyMap(),
     val creatorCenter: CreatorCenterUiState = CreatorCenterUiState(),
+    val creatorSourceDraft: CreatorSourceDraftUiState = CreatorSourceDraftUiState(),
     val dynamicFeed: DynamicFeedUiState = DynamicFeedUiState(),
     val searchResults: List<BilibiliVideo> = emptyList(),
     val searchCreators: List<BilibiliCreator> = emptyList(),
@@ -238,7 +256,6 @@ data class BiuUiState(
     val sleepTimerDeadlineEpochMs: Long = 0L,
     val isFeedLoading: Boolean = true,
     val isFeedLoadingMore: Boolean = false,
-    val isCreatorConfigLoading: Boolean = false,
     val isCreatorConfigSaving: Boolean = false,
     val isSearchLoading: Boolean = false,
     val isSearchLoadingMore: Boolean = false,
@@ -290,11 +307,32 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var lyricsSaveJob: Job? = null
     private var localAudioDirectoryInitialized = false
     private var creatorSelectionInitialized = false
+    private var creatorCenterHasPersistedState = false
+    private val creatorCenterSessionReady = CompletableDeferred<Unit>()
 
     val state: StateFlow<BiuUiState> = mutableState.asStateFlow()
     internal val playbackCommands = mutablePlaybackCommands.receiveAsFlow()
 
     init {
+        viewModelScope.launch {
+            val session = runCatching {
+                container.creatorCenterSessionRepository.session.first()
+            }.getOrDefault(CreatorCenterSession())
+            creatorCenterHasPersistedState = session.tab.isNotBlank()
+            mutableState.update { current -> current.restoreCreatorCenterSession(session) }
+            creatorCenterSessionReady.complete(Unit)
+        }
+        viewModelScope.launch {
+            creatorCenterSessionReady.await()
+            state
+                .map(BiuUiState::toCreatorCenterSession)
+                .distinctUntilChanged()
+                .collectLatest { session ->
+                    // long: 列表滚动会连续产生位置变化，短延迟合并写入可保留离开前位置，同时避免每个像素都落盘。
+                    delay(250L)
+                    runCatching { container.creatorCenterSessionRepository.save(session) }
+                }
+        }
         localAudioDirectoryInitializationJob = viewModelScope.launch {
             runCatching { container.localAudioDirectoryRepository.currentDirectory() }
                 .onSuccess { directory ->
@@ -325,8 +363,23 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             container.creatorSelectionRepository.selected.collect { selectedCreators ->
                 val changed = state.value.selectedCreators != selectedCreators
                 mutableState.update { current ->
+                    val draftWasDirty = current.creatorSourceDraft.initialized &&
+                        CreatorSourceDraftPolicy.isDirty(
+                            draft = current.creatorSourceDraft.creators,
+                            saved = current.selectedCreators,
+                        )
                     current.copy(
                         selectedCreators = selectedCreators,
+                        creatorSourceDraft = if (!current.creatorSourceDraft.initialized || !draftWasDirty) {
+                            CreatorSourceDraftUiState(initialized = true, creators = selectedCreators)
+                        } else {
+                            current.creatorSourceDraft.copy(
+                                creators = CreatorSourceDraftPolicy.mergeMetadata(
+                                    draft = current.creatorSourceDraft.creators,
+                                    candidates = selectedCreators,
+                                ),
+                            )
+                        },
                         homeDiscoveryScope = HomeDiscoveryPolicy.normalizeScope(
                             scope = current.homeDiscoveryScope,
                             creators = selectedCreators,
@@ -892,33 +945,113 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadFollowingCreators() {
-        val account = state.value.account
-        if (!account.isLoggedIn || account.mid <= 0L) {
-            mutableState.update { it.copy(followedCreators = emptyList(), isCreatorConfigLoading = false) }
-            return
-        }
-        // long: 候选数据只在用户打开配置时按需读取，避免每次启动都分页扫描完整关注列表。
-        mutableState.update { it.copy(isCreatorConfigLoading = true, message = null) }
+    fun prepareCreatorCenter(defaultTab: CreatorCenterTab) {
         viewModelScope.launch {
-            runCatching { repository.followingCreators(account.mid) }
-                .onSuccess { creators ->
-                    mutableState.update { it.copy(followedCreators = creators, isCreatorConfigLoading = false) }
+            creatorCenterSessionReady.await()
+            val current = state.value
+            if (!current.creatorSourceDraft.initialized) {
+                mutableState.update {
+                    it.copy(
+                        creatorSourceDraft = CreatorSourceDraftUiState(
+                            initialized = true,
+                            creators = it.selectedCreators,
+                        ),
+                    )
                 }
-                .onFailure { error ->
-                    mutableState.update {
-                        it.copy(isCreatorConfigLoading = false, message = error.userMessage("关注列表加载失败"))
-                    }
+            }
+            if (!creatorCenterHasPersistedState) {
+                selectCreatorCenterTab(defaultTab)
+                creatorCenterHasPersistedState = true
+            }
+            val center = state.value.creatorCenter
+            val creator = center.selectedCreator
+            when {
+                creator != null && center.videos.isEmpty() && !center.isProfileLoading -> {
+                    loadCreatorProfile(creator, center.profileTab)
                 }
+                center.tab == CreatorCenterTab.SEARCH &&
+                    center.searchKeyword.isNotBlank() &&
+                    center.searchResults.isEmpty() -> {
+                    searchCreators(center.searchKeyword)
+                }
+                center.tab == CreatorCenterTab.FOLLOWING &&
+                    state.value.account.isLoggedIn &&
+                    center.followingCreators.isEmpty() -> {
+                    loadCreatorCenterFollowing(reset = true)
+                }
+            }
         }
     }
 
-    fun saveCreatorSelection(creators: List<BilibiliCreator>) {
+    fun updateCreatorSearchInput(value: String) {
+        mutableState.update { current ->
+            current.copy(creatorCenter = current.creatorCenter.copy(searchInput = value.take(160)))
+        }
+    }
+
+    fun updateCreatorFilterKeyword(value: String) {
+        mutableState.update { current ->
+            current.copy(creatorCenter = current.creatorCenter.copy(filterKeyword = value.take(160)))
+        }
+    }
+
+    fun updateCreatorListPosition(
+        slot: CreatorCenterListSlot,
+        position: PersistedListPosition,
+    ) {
+        val normalized = position.normalized()
+        mutableState.update { current ->
+            if (current.creatorCenter.listPositions[slot] == normalized) return@update current
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    listPositions = current.creatorCenter.listPositions + (slot to normalized),
+                ),
+            )
+        }
+    }
+
+    fun toggleCreatorSource(creator: BilibiliCreator) {
+        mutableState.update { current ->
+            val draft = current.creatorSourceDraft.creators.takeIf { current.creatorSourceDraft.initialized }
+                ?: current.selectedCreators
+            current.copy(
+                creatorSourceDraft = CreatorSourceDraftUiState(
+                    initialized = true,
+                    creators = CreatorSourceDraftPolicy.toggle(draft, creator),
+                ),
+            )
+        }
+    }
+
+    fun discardCreatorSourceChanges() {
+        mutableState.update { current ->
+            current.copy(
+                creatorSourceDraft = CreatorSourceDraftUiState(
+                    initialized = true,
+                    creators = current.selectedCreators,
+                ),
+            )
+        }
+    }
+
+    fun saveCreatorSelectionDraft() {
         if (state.value.isCreatorConfigSaving) return
+        val creators = state.value.creatorSourceDraft.creators
         // long: 保存结果由 Room Flow 统一回推并触发首页换源，避免 UI 与数据库分别维护两套选择状态。
         mutableState.update { it.copy(isCreatorConfigSaving = true, message = null) }
         viewModelScope.launch {
             runCatching { container.creatorSelectionRepository.replaceAll(creators) }
+                .onSuccess {
+                    mutableState.update { current ->
+                        current.copy(
+                            isCreatorConfigSaving = false,
+                            creatorSourceDraft = CreatorSourceDraftUiState(
+                                initialized = true,
+                                creators = creators,
+                            ),
+                        )
+                    }
+                }
                 .onFailure { error ->
                     mutableState.update {
                         it.copy(isCreatorConfigSaving = false, message = error.userMessage("首页范围保存失败"))
@@ -1004,6 +1137,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
                     tab = CreatorCenterTab.SEARCH,
+                    searchInput = normalizedKeyword,
                     searchKeyword = normalizedKeyword,
                     searchResults = if (loadMore) current.creatorCenter.searchResults else emptyList(),
                     searchNextPage = if (loadMore) current.creatorCenter.searchNextPage else null,
@@ -1053,6 +1187,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { current ->
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
+                    searchInput = "",
                     searchKeyword = "",
                     searchResults = emptyList(),
                     searchNextPage = null,
@@ -1128,12 +1263,19 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openCreatorProfile(creator: BilibiliCreator) {
+        loadCreatorProfile(creator, CreatorProfileTab.WORKS)
+    }
+
+    private fun loadCreatorProfile(
+        creator: BilibiliCreator,
+        initialTab: CreatorProfileTab,
+    ) {
         creatorProfileJob?.cancel()
         mutableState.update { current ->
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
                     selectedCreator = creator,
-                    profileTab = CreatorProfileTab.WORKS,
+                    profileTab = initialTab,
                     relation = BilibiliCreatorRelation.UNKNOWN,
                     videos = emptyList(),
                     videosNextPage = null,
@@ -1486,13 +1628,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         state.creatorCenter.followingCreators.filterNot { followed -> followed.mid == creator.mid }
                     }
-                    val configCreators = if (following) {
-                        (state.followedCreators + creator).distinctBy(BilibiliCreator::mid)
-                    } else {
-                        state.followedCreators.filterNot { followed -> followed.mid == creator.mid }
-                    }
                     state.copy(
-                        followedCreators = configCreators,
                         creatorCenter = state.creatorCenter.copy(
                             followingCreators = centerCreators,
                             relation = relation,
@@ -2225,12 +2361,13 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     if (account.isLoggedIn) {
                         loadLibrary(AccountLibrarySection.FAVORITES)
                         if (state.value.section == MainSection.DYNAMIC) loadDynamicFeed(reset = true)
-                        state.value.creatorCenter.selectedCreator?.let(::openCreatorProfile)
+                        state.value.creatorCenter.let { center ->
+                            center.selectedCreator?.let { creator -> loadCreatorProfile(creator, center.profileTab) }
+                        }
                     } else {
                         clearOnlineLibrary()
                         mutableState.update { current ->
                             current.copy(
-                                followedCreators = emptyList(),
                                 creatorCenter = current.creatorCenter.copy(
                                     followingCreators = emptyList(),
                                     followingNextPage = null,
@@ -2240,7 +2377,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                                     isRelationMutating = false,
                                 ),
                                 dynamicFeed = DynamicFeedUiState(),
-                                isCreatorConfigLoading = false,
                             )
                         }
                     }
@@ -3753,6 +3889,69 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
     }
+}
+
+private fun BiuUiState.restoreCreatorCenterSession(session: CreatorCenterSession): BiuUiState {
+    val restoredCreator = session.selectedCreatorMid?.let { mid ->
+        BilibiliCreator(
+            mid = mid,
+            name = session.selectedCreatorName.ifBlank { "UID $mid" },
+            faceUrl = session.selectedCreatorFaceUrl,
+        )
+    }
+    val restoredDraft = if (session.hasSourceDraft) {
+        CreatorSourceDraftUiState(
+            initialized = true,
+            creators = session.sourceDraft.map { item ->
+                BilibiliCreator(
+                    mid = item.mid,
+                    name = item.name.ifBlank { "UID ${item.mid}" },
+                    faceUrl = item.faceUrl,
+                )
+            },
+        )
+    } else {
+        creatorSourceDraft
+    }
+    return copy(
+        creatorCenter = creatorCenter.copy(
+            tab = CreatorCenterTab.entries.firstOrNull { tab -> tab.name == session.tab }
+                ?: creatorCenter.tab,
+            selectedGroupId = session.selectedGroupId,
+            searchInput = session.searchInput.ifBlank { session.searchKeyword },
+            searchKeyword = session.searchKeyword,
+            filterKeyword = session.filterKeyword,
+            selectedCreator = restoredCreator,
+            profileTab = CreatorProfileTab.entries.firstOrNull { tab -> tab.name == session.profileTab }
+                ?: creatorCenter.profileTab,
+            listPositions = session.listPositions,
+        ),
+        creatorSourceDraft = restoredDraft,
+    )
+}
+
+private fun BiuUiState.toCreatorCenterSession(): CreatorCenterSession {
+    val center = creatorCenter
+    return CreatorCenterSession(
+        tab = center.tab.name,
+        selectedGroupId = center.selectedGroupId,
+        searchInput = center.searchInput,
+        searchKeyword = center.searchKeyword,
+        filterKeyword = center.filterKeyword,
+        selectedCreatorMid = center.selectedCreator?.mid,
+        selectedCreatorName = center.selectedCreator?.name.orEmpty(),
+        selectedCreatorFaceUrl = center.selectedCreator?.faceUrl.orEmpty(),
+        profileTab = center.profileTab.name,
+        listPositions = center.listPositions,
+        hasSourceDraft = creatorSourceDraft.initialized,
+        sourceDraft = creatorSourceDraft.creators.map { creator ->
+            CreatorSourceDraftItem(
+                mid = creator.mid,
+                name = creator.name,
+                faceUrl = creator.faceUrl,
+            )
+        },
+    )
 }
 
 private data class FavoriteFolderLoadResult(
