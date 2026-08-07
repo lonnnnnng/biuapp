@@ -28,9 +28,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PersonSearch
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
@@ -64,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorCollection
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
@@ -87,6 +90,12 @@ internal fun CreatorCenterScreen(
     onLoadFollowing: (Boolean) -> Unit,
     onOpenCreator: (BilibiliCreator) -> Unit,
     onCloseCreator: () -> Unit,
+    onProfileTabSelected: (CreatorProfileTab) -> Unit,
+    onLoadMoreCollections: () -> Unit,
+    onOpenCollection: (BilibiliCreatorCollection) -> Unit,
+    onCloseCollection: () -> Unit,
+    onLoadMoreCollectionVideos: () -> Unit,
+    onPlayCollection: (List<BilibiliVideo>) -> Unit,
     onOpenHomeScope: () -> Unit,
     onCreateGroup: (String) -> Unit,
     onRenameGroup: (CreatorGroupEntity, String) -> Unit,
@@ -111,7 +120,11 @@ internal fun CreatorCenterScreen(
         )
     }
     BackHandler {
-        if (state.selectedCreator != null) onCloseCreator() else onBack()
+        when {
+            state.selectedCollection != null -> onCloseCollection()
+            state.selectedCreator != null -> onCloseCreator()
+            else -> onBack()
+        }
     }
     ModalBottomSheet(
         onDismissRequest = onBack,
@@ -127,11 +140,13 @@ internal fun CreatorCenterScreen(
                 .fillMaxHeight(),
         ) {
             BiuSheetHeader(
-                title = state.selectedCreator?.name ?: "管理音乐来源",
+                title = state.selectedCollection?.title ?: state.selectedCreator?.name ?: "管理音乐来源",
                 onClose = onBack,
                 navigationIcon = if (state.selectedCreator == null) null else Icons.AutoMirrored.Rounded.ArrowBack,
                 navigationContentDescription = "返回 UP 主列表",
-                onNavigation = onCloseCreator,
+                onNavigation = {
+                    if (state.selectedCollection != null) onCloseCollection() else onCloseCreator()
+                },
             )
             Box(
                 modifier = Modifier
@@ -168,6 +183,11 @@ internal fun CreatorCenterScreen(
                         accountLoggedIn = accountLoggedIn,
                         resolvingBvid = resolvingBvid,
                         onToggleRelation = onToggleRelation,
+                        onProfileTabSelected = onProfileTabSelected,
+                        onLoadMoreCollections = onLoadMoreCollections,
+                        onOpenCollection = onOpenCollection,
+                        onLoadMoreCollectionVideos = onLoadMoreCollectionVideos,
+                        onPlayCollection = onPlayCollection,
                         onToggleCreatorGroup = onToggleCreatorGroup,
                         onManageGroups = { showGroupManager = true },
                         onLoadMoreVideos = onLoadMoreVideos,
@@ -695,6 +715,11 @@ private fun CreatorProfile(
     accountLoggedIn: Boolean,
     resolvingBvid: String?,
     onToggleRelation: () -> Unit,
+    onProfileTabSelected: (CreatorProfileTab) -> Unit,
+    onLoadMoreCollections: () -> Unit,
+    onOpenCollection: (BilibiliCreatorCollection) -> Unit,
+    onLoadMoreCollectionVideos: () -> Unit,
+    onPlayCollection: (List<BilibiliVideo>) -> Unit,
     onToggleCreatorGroup: (Long, Long) -> Unit,
     onManageGroups: () -> Unit,
     onLoadMoreVideos: () -> Unit,
@@ -704,6 +729,22 @@ private fun CreatorProfile(
     modifier: Modifier = Modifier,
 ) {
     val creator = state.selectedCreator ?: return
+    state.selectedCollection?.let { collection ->
+        CreatorCollectionVideos(
+            collection = collection,
+            videos = state.collectionVideos,
+            loading = state.isCollectionVideosLoading,
+            loadingMore = state.isCollectionVideosLoadingMore,
+            hasMore = state.collectionVideosNextPage != null,
+            resolvingBvid = resolvingBvid,
+            onLoadMore = onLoadMoreCollectionVideos,
+            onPlayAll = { onPlayCollection(state.collectionVideos) },
+            onPlay = onPlay,
+            onAddFavorite = onAddFavorite,
+            modifier = modifier,
+        )
+        return
+    }
     Column(modifier = modifier) {
         Row(
             modifier = Modifier
@@ -795,22 +836,234 @@ private fun CreatorProfile(
                 Text(if (groups.isEmpty()) "新建分组" else "管理分组")
             }
         }
-        Text(
-            "投稿",
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.titleSmall,
+        CreatorProfileTabs(
+            selected = state.profileTab,
+            onSelected = onProfileTabSelected,
         )
-        if (state.isProfileLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        if (!state.isProfileLoading && state.videos.isEmpty()) {
+        when (state.profileTab) {
+            CreatorProfileTab.WORKS -> CreatorWorks(
+                state = state,
+                resolvingBvid = resolvingBvid,
+                onLoadMoreVideos = onLoadMoreVideos,
+                onPlay = onPlay,
+                onAddFavorite = onAddFavorite,
+                modifier = Modifier.weight(1f),
+            )
+            CreatorProfileTab.COLLECTIONS -> CreatorCollections(
+                state = state,
+                onLoadMore = onLoadMoreCollections,
+                onOpenCollection = onOpenCollection,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CreatorProfileTabs(
+    selected: CreatorProfileTab,
+    onSelected: (CreatorProfileTab) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+    ) {
+        CreatorProfileTab.entries.forEach { tab ->
+            val active = tab == selected
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .semantics {
+                        role = Role.Tab
+                        this.selected = active
+                    }
+                    .clickable { onSelected(tab) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    tab.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (active) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+private fun CreatorWorks(
+    state: CreatorCenterUiState,
+    resolvingBvid: String?,
+    onLoadMoreVideos: () -> Unit,
+    onPlay: (BilibiliVideo) -> Unit,
+    onAddFavorite: (BilibiliVideo) -> Unit,
+    modifier: Modifier,
+) {
+    if (state.isProfileLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    if (!state.isProfileLoading && state.videos.isEmpty()) {
+        BiuEmptyState(
+            icon = Icons.Rounded.PersonSearch,
+            title = "暂时没有投稿",
+            modifier = modifier,
+        )
+        return
+    }
+    // long: 空间投稿复用推荐页的紧凑媒体行，让播放、收藏和解析中状态在两个入口保持一致。
+    LazyColumn(modifier = modifier, contentPadding = PaddingValues(vertical = 2.dp)) {
+        items(state.videos, key = BilibiliVideo::bvid) { video ->
+            VideoRow(
+                video = video,
+                resolving = resolvingBvid == video.bvid,
+                enabled = resolvingBvid == null,
+                onClick = { onPlay(video) },
+                onAddFavorite = { onAddFavorite(video) },
+            )
+            MediaDivider(start = 114.dp)
+        }
+        if (state.videosNextPage != null || state.isVideosLoadingMore) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (state.isVideosLoadingMore) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    } else {
+                        TextButton(onClick = onLoadMoreVideos) { Text("加载更多投稿") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreatorCollections(
+    state: CreatorCenterUiState,
+    onLoadMore: () -> Unit,
+    onOpenCollection: (BilibiliCreatorCollection) -> Unit,
+    modifier: Modifier,
+) {
+    if (state.isCollectionsLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    if (!state.isCollectionsLoading && state.collections.isEmpty()) {
+        BiuEmptyState(
+            icon = Icons.Rounded.Album,
+            title = "暂时没有合集或系列",
+            modifier = modifier,
+        )
+        return
+    }
+    LazyColumn(modifier = modifier, contentPadding = PaddingValues(vertical = 2.dp)) {
+        items(state.collections, key = { item -> "${item.type}:${item.id}" }) { collection ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenCollection(collection) }
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                AsyncImage(
+                    model = collection.coverUrl,
+                    contentDescription = collection.title,
+                    modifier = Modifier
+                        .size(width = 88.dp, height = 50.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentScale = ContentScale.Crop,
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        collection.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "${collection.type.label} · ${collection.mediaCount} 个视频",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            MediaDivider(start = 116.dp)
+        }
+        if (state.collectionsNextPage != null || state.isCollectionsLoadingMore) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (state.isCollectionsLoadingMore) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    } else {
+                        TextButton(onClick = onLoadMore) { Text("加载更多合集") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreatorCollectionVideos(
+    collection: BilibiliCreatorCollection,
+    videos: List<BilibiliVideo>,
+    loading: Boolean,
+    loadingMore: Boolean,
+    hasMore: Boolean,
+    resolvingBvid: String?,
+    onLoadMore: () -> Unit,
+    onPlayAll: () -> Unit,
+    onPlay: (BilibiliVideo) -> Unit,
+    onAddFavorite: (BilibiliVideo) -> Unit,
+    modifier: Modifier,
+) {
+    Column(modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${collection.type.label} · ${collection.mediaCount} 个视频",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onPlayAll, enabled = videos.isNotEmpty() && !loading) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("播放全部")
+            }
+        }
+        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (!loading && videos.isEmpty()) {
             BiuEmptyState(
-                icon = Icons.Rounded.PersonSearch,
-                title = "暂时没有投稿",
+                icon = Icons.Rounded.Album,
+                title = "合集暂时没有可播放内容",
                 modifier = Modifier.weight(1f),
             )
         } else {
-            // long: 空间投稿复用推荐页的紧凑媒体行，让播放、收藏和解析中状态在两个入口保持一致。
             LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 2.dp)) {
-                items(state.videos, key = BilibiliVideo::bvid) { video ->
+                items(videos, key = BilibiliVideo::bvid) { video ->
                     VideoRow(
                         video = video,
                         resolving = resolvingBvid == video.bvid,
@@ -820,7 +1073,7 @@ private fun CreatorProfile(
                     )
                     MediaDivider(start = 114.dp)
                 }
-                if (state.videosNextPage != null || state.isVideosLoadingMore) {
+                if (hasMore || loadingMore) {
                     item {
                         Box(
                             modifier = Modifier
@@ -828,10 +1081,10 @@ private fun CreatorProfile(
                                 .height(48.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            if (state.isVideosLoadingMore) {
+                            if (loadingMore) {
                                 CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                             } else {
-                                TextButton(onClick = onLoadMoreVideos) { Text("加载更多投稿") }
+                                TextButton(onClick = onLoadMore) { Text("加载更多视频") }
                             }
                         }
                     }

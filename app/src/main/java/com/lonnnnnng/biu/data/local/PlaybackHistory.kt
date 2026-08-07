@@ -68,8 +68,10 @@ interface PlaybackHistoryDao {
         LyricsCacheEntity::class,
         CreatorGroupEntity::class,
         CreatorGroupMemberEntity::class,
+        LocalPlaylistEntity::class,
+        LocalPlaylistItemEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
@@ -80,6 +82,7 @@ abstract class BiuDatabase : RoomDatabase() {
     abstract fun playbackQueueDao(): PlaybackQueueDao
     abstract fun lyricsCacheDao(): LyricsCacheDao
     abstract fun creatorGroupDao(): CreatorGroupDao
+    abstract fun localPlaylistDao(): LocalPlaylistDao
 }
 
 object BiuDatabaseMigrations {
@@ -250,6 +253,46 @@ object BiuDatabaseMigrations {
             )
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_creator_group_members_mid` ON `creator_group_members` (`mid`)")
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_creator_group_members_groupId_position` ON `creator_group_members` (`groupId`, `position`)")
+        }
+    }
+
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 本地歌单只新增稳定曲目索引；B 站临时播放地址不进入表，升级不会污染现有队列与下载记录。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `local_playlists` (
+                    `playlistId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    `name` TEXT NOT NULL,
+                    `position` INTEGER NOT NULL,
+                    `createdAtEpochMs` INTEGER NOT NULL,
+                    `updatedAtEpochMs` INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `local_playlist_items` (
+                    `playlistId` INTEGER NOT NULL,
+                    `mediaId` TEXT NOT NULL,
+                    `position` INTEGER NOT NULL,
+                    `title` TEXT NOT NULL,
+                    `artist` TEXT NOT NULL,
+                    `artworkUrl` TEXT,
+                    `pageTitle` TEXT,
+                    `streamUrl` TEXT,
+                    `bvid` TEXT,
+                    `cid` INTEGER,
+                    `aid` INTEGER,
+                    `publishedAtEpochSeconds` INTEGER,
+                    `addedAtEpochMs` INTEGER NOT NULL,
+                    PRIMARY KEY(`playlistId`, `mediaId`),
+                    FOREIGN KEY(`playlistId`) REFERENCES `local_playlists`(`playlistId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_playlist_items_playlistId_position` ON `local_playlist_items` (`playlistId`, `position`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_playlist_items_bvid_cid` ON `local_playlist_items` (`bvid`, `cid`)")
         }
     }
 }

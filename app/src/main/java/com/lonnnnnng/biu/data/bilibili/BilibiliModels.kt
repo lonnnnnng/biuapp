@@ -51,6 +51,36 @@ data class BilibiliCreatorVideoPage(
     val total: Int? = null,
 )
 
+enum class BilibiliCreatorCollectionType(val label: String) {
+    SEASON("合集"),
+    SERIES("系列"),
+}
+
+data class BilibiliCreatorCollection(
+    val id: Long,
+    val type: BilibiliCreatorCollectionType,
+    val title: String,
+    val coverUrl: String,
+    val mediaCount: Int,
+    val ownerMid: Long,
+    val ownerName: String,
+    val publishedAtEpochSeconds: Long? = null,
+)
+
+data class BilibiliCreatorCollectionPage(
+    val collections: List<BilibiliCreatorCollection>,
+    val page: Int,
+    val hasMore: Boolean,
+    val total: Int? = null,
+)
+
+data class BilibiliCreatorCollectionVideoPage(
+    val videos: List<BilibiliVideo>,
+    val page: Int,
+    val hasMore: Boolean,
+    val total: Int? = null,
+)
+
 data class BilibiliDynamicItem(
     val id: String,
     val video: BilibiliVideo,
@@ -122,6 +152,7 @@ data class BilibiliAccount(
 enum class AccountLibrarySection(val label: String) {
     FAVORITES("收藏夹"),
     ONLINE_HISTORY("在线历史"),
+    PLAYLISTS("歌单"),
     LOCAL_HISTORY("本地历史"),
     LOCAL_MUSIC("本地音乐"),
     DOWNLOADS("下载"),

@@ -249,6 +249,82 @@ class BilibiliCreatorRepositoryTest {
     }
 
     @Test
+    fun `读取UP主合集和系列并合并分页`() = runBlocking {
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "items_lists": {
+                      "page": {"page_num": 1, "page_size": 20, "total": 21},
+                      "seasons_list": [
+                        {"meta": {"season_id": 11, "name": "现场合集", "cover": "//i0.hdslb.com/s.jpg", "mid": 1001, "total": 8, "ptime": 1700001000}}
+                      ],
+                      "series_list": [
+                        {"meta": {"series_id": 22, "name": "翻唱系列", "cover": "//i0.hdslb.com/r.jpg", "mid": 1001, "total": 12, "ctime": 1700002000}}
+                      ]
+                    }
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+        val creator = BilibiliCreator(1001L, "音乐UP", "")
+
+        val page = repository.creatorCollectionPage(creator)
+
+        assertEquals(listOf("翻唱系列", "现场合集"), page.collections.map { it.title })
+        assertEquals(BilibiliCreatorCollectionType.SERIES, page.collections.first().type)
+        assertTrue(page.hasMore)
+        val request = server.takeRequest()
+        assertEquals("/x/polymer/web-space/seasons_series_list", request.requestUrl?.encodedPath)
+        assertEquals("1001", request.requestUrl?.queryParameter("mid"))
+        assertEquals("20", request.requestUrl?.queryParameter("page_size"))
+    }
+
+    @Test
+    fun `读取系列视频并保留稳定BV号和发布时间`() = runBlocking {
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "page": {"num": 1, "size": 30, "total": 31},
+                    "archives": [
+                      {"aid": 42, "bvid": "BV1SERIES", "title": "系列歌曲", "pic": "//i0.hdslb.com/v.jpg", "duration": 245, "pubdate": 1700003000, "stat": {"view": 99}}
+                    ]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+        val collection = BilibiliCreatorCollection(
+            id = 22L,
+            type = BilibiliCreatorCollectionType.SERIES,
+            title = "翻唱系列",
+            coverUrl = "",
+            mediaCount = 31,
+            ownerMid = 1001L,
+            ownerName = "音乐UP",
+        )
+
+        val page = repository.creatorCollectionVideoPage(collection)
+
+        assertEquals("BV1SERIES", page.videos.single().bvid)
+        assertEquals("音乐UP", page.videos.single().author)
+        assertEquals(1_700_003_000L, page.videos.single().publishedAtEpochSeconds)
+        assertTrue(page.hasMore)
+        val request = server.takeRequest()
+        assertEquals("/x/series/archives", request.requestUrl?.encodedPath)
+        assertEquals("22", request.requestUrl?.queryParameter("series_id"))
+        assertEquals("desc", request.requestUrl?.queryParameter("sort"))
+    }
+
+    @Test
     fun `读取关注关系并映射互相关注`() = runBlocking {
         server.enqueue(jsonResponse("""{"code":0,"data":{"mid":1001,"attribute":6}}"""))
         val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))

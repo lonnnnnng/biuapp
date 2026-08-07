@@ -13,6 +13,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorCollection
 import com.lonnnnnng.biu.data.bilibili.BilibiliDynamicItem
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
@@ -32,6 +33,8 @@ import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
+import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
+import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.lyrics.LrcParser
@@ -127,6 +130,11 @@ enum class CreatorCenterTab(val label: String) {
     HOME_SELECTED("首页已选"),
 }
 
+enum class CreatorProfileTab(val label: String) {
+    WORKS("投稿"),
+    COLLECTIONS("合集/系列"),
+}
+
 data class CreatorCenterUiState(
     val tab: CreatorCenterTab = CreatorCenterTab.FOLLOWING,
     val selectedGroupId: Long? = null,
@@ -136,13 +144,23 @@ data class CreatorCenterUiState(
     val followingCreators: List<BilibiliCreator> = emptyList(),
     val followingNextPage: Int? = null,
     val selectedCreator: BilibiliCreator? = null,
+    val profileTab: CreatorProfileTab = CreatorProfileTab.WORKS,
     val relation: BilibiliCreatorRelation = BilibiliCreatorRelation.UNKNOWN,
     val videos: List<BilibiliVideo> = emptyList(),
     val videosNextPage: Int? = null,
+    val collections: List<BilibiliCreatorCollection> = emptyList(),
+    val collectionsNextPage: Int? = null,
+    val selectedCollection: BilibiliCreatorCollection? = null,
+    val collectionVideos: List<BilibiliVideo> = emptyList(),
+    val collectionVideosNextPage: Int? = null,
     val isListLoading: Boolean = false,
     val isListLoadingMore: Boolean = false,
     val isProfileLoading: Boolean = false,
     val isVideosLoadingMore: Boolean = false,
+    val isCollectionsLoading: Boolean = false,
+    val isCollectionsLoadingMore: Boolean = false,
+    val isCollectionVideosLoading: Boolean = false,
+    val isCollectionVideosLoadingMore: Boolean = false,
     val isRelationMutating: Boolean = false,
 )
 
@@ -185,6 +203,9 @@ data class BiuUiState(
     val favoriteBatchVideos: List<BilibiliLibraryVideo> = emptyList(),
     val localHistory: List<PlaybackHistoryEntity> = emptyList(),
     val localAudio: List<LocalAudio> = emptyList(),
+    val localPlaylists: List<LocalPlaylistEntity> = emptyList(),
+    val selectedLocalPlaylist: LocalPlaylistEntity? = null,
+    val localPlaylistItems: List<LocalPlaylistItemEntity> = emptyList(),
     val audioDownloads: List<AudioDownloadTaskEntity> = emptyList(),
     val videoDownloads: List<VideoDownloadTaskEntity> = emptyList(),
     val downloadNetworkPreference: DownloadNetworkPreference = DownloadNetworkPreference.ANY_VALIDATED,
@@ -211,6 +232,7 @@ data class BiuUiState(
     val isFavoriteBatchSubmitting: Boolean = false,
     val isPageQueueLoading: Boolean = false,
     val isLocalAudioLoading: Boolean = false,
+    val isLocalPlaylistLoading: Boolean = false,
     val availableUpdate: AppUpdate? = null,
     val isUpdateChecking: Boolean = false,
     val resolvingBvid: String? = null,
@@ -232,9 +254,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var favoriteFolderJob: Job? = null
     private var onlineHistoryJob: Job? = null
     private var localAudioJob: Job? = null
+    private var localPlaylistItemsJob: Job? = null
     private var localAudioDirectoryInitializationJob: Job? = null
     private var creatorListJob: Job? = null
     private var creatorProfileJob: Job? = null
+    private var creatorCollectionJob: Job? = null
     private var creatorRelationJob: Job? = null
     private var dynamicFeedJob: Job? = null
     private var lyricsLoadJob: Job? = null
@@ -310,6 +334,19 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.playbackHistoryRepository.recent.collect { history ->
                 mutableState.update { it.copy(localHistory = history) }
+            }
+        }
+        viewModelScope.launch {
+            container.localPlaylistRepository.playlists.collect { playlists ->
+                mutableState.update { current ->
+                    val selected = current.selectedLocalPlaylist
+                        ?.let { currentSelection -> playlists.firstOrNull { it.playlistId == currentSelection.playlistId } }
+                    current.copy(
+                        localPlaylists = playlists,
+                        selectedLocalPlaylist = selected,
+                        localPlaylistItems = if (selected == null) emptyList() else current.localPlaylistItems,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -1000,11 +1037,21 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
                     selectedCreator = creator,
+                    profileTab = CreatorProfileTab.WORKS,
                     relation = BilibiliCreatorRelation.UNKNOWN,
                     videos = emptyList(),
                     videosNextPage = null,
+                    collections = emptyList(),
+                    collectionsNextPage = null,
+                    selectedCollection = null,
+                    collectionVideos = emptyList(),
+                    collectionVideosNextPage = null,
                     isProfileLoading = true,
                     isVideosLoadingMore = false,
+                    isCollectionsLoading = true,
+                    isCollectionsLoadingMore = false,
+                    isCollectionVideosLoading = false,
+                    isCollectionVideosLoadingMore = false,
                     isRelationMutating = false,
                 ),
                 message = null,
@@ -1015,18 +1062,26 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 // long: 资料、投稿与关系互不依赖，并行读取可明显缩短进入空间后的首屏等待时间。
                 val profileDeferred = async { runCatching { repository.creatorProfile(creator.mid) } }
                 val videosDeferred = async { runCatching { repository.creatorVideoPage(creator, page = 1) } }
+                val collectionsDeferred = async { runCatching { repository.creatorCollectionPage(creator, page = 1) } }
                 val relationDeferred = async {
                     if (state.value.account.isLoggedIn) runCatching { repository.creatorRelation(creator.mid) }
                     else Result.success(BilibiliCreatorRelation.NONE)
                 }
                 val profileResult = profileDeferred.await()
                 val videosResult = videosDeferred.await()
+                val collectionsResult = collectionsDeferred.await()
                 val relationResult = relationDeferred.await()
-                listOf(profileResult.exceptionOrNull(), videosResult.exceptionOrNull(), relationResult.exceptionOrNull())
+                listOf(
+                    profileResult.exceptionOrNull(),
+                    videosResult.exceptionOrNull(),
+                    collectionsResult.exceptionOrNull(),
+                    relationResult.exceptionOrNull(),
+                )
                     .filterIsInstance<CancellationException>()
                     .firstOrNull()
                     ?.let { throw it }
                 val page = videosResult.getOrNull()
+                val collectionPage = collectionsResult.getOrNull()
                 val loadedProfile = profileResult.getOrNull()?.copy(
                     followerCount = creator.followerCount,
                     videoCount = page?.total ?: creator.videoCount,
@@ -1039,10 +1094,15 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             relation = relationResult.getOrDefault(BilibiliCreatorRelation.UNKNOWN),
                             videos = page?.videos.orEmpty(),
                             videosNextPage = page?.let { result -> (result.page + 1).takeIf { result.hasMore } },
+                            collections = collectionPage?.collections.orEmpty(),
+                            collectionsNextPage = collectionPage?.let { result ->
+                                (result.page + 1).takeIf { result.hasMore }
+                            },
                             isProfileLoading = false,
+                            isCollectionsLoading = false,
                         ),
                         message = when {
-                            profileResult.isFailure && videosResult.isFailure -> "UP 主空间加载失败"
+                            profileResult.isFailure && videosResult.isFailure && collectionsResult.isFailure -> "UP 主空间加载失败"
                             state.value.account.isLoggedIn && relationResult.isFailure -> "关注状态读取失败，请点击按钮重试"
                             else -> current.message
                         },
@@ -1053,7 +1113,10 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 mutableState.update { current ->
                     current.copy(
-                        creatorCenter = current.creatorCenter.copy(isProfileLoading = false),
+                        creatorCenter = current.creatorCenter.copy(
+                            isProfileLoading = false,
+                            isCollectionsLoading = false,
+                        ),
                         message = error.userMessage("UP 主空间加载失败"),
                     )
                 }
@@ -1063,19 +1126,164 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeCreatorProfile() {
         creatorProfileJob?.cancel()
+        creatorCollectionJob?.cancel()
         creatorRelationJob?.cancel()
         mutableState.update { current ->
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
                     selectedCreator = null,
+                    profileTab = CreatorProfileTab.WORKS,
                     relation = BilibiliCreatorRelation.UNKNOWN,
                     videos = emptyList(),
                     videosNextPage = null,
+                    collections = emptyList(),
+                    collectionsNextPage = null,
+                    selectedCollection = null,
+                    collectionVideos = emptyList(),
+                    collectionVideosNextPage = null,
                     isProfileLoading = false,
                     isVideosLoadingMore = false,
+                    isCollectionsLoading = false,
+                    isCollectionsLoadingMore = false,
+                    isCollectionVideosLoading = false,
+                    isCollectionVideosLoadingMore = false,
                     isRelationMutating = false,
                 ),
             )
+        }
+    }
+
+    fun selectCreatorProfileTab(tab: CreatorProfileTab) {
+        mutableState.update { current ->
+            current.copy(creatorCenter = current.creatorCenter.copy(profileTab = tab))
+        }
+    }
+
+    fun loadMoreCreatorCollections() {
+        val center = state.value.creatorCenter
+        val creator = center.selectedCreator ?: return
+        val nextPage = center.collectionsNextPage ?: return
+        if (center.isCollectionsLoading || center.isCollectionsLoadingMore) return
+        mutableState.update { current ->
+            current.copy(creatorCenter = current.creatorCenter.copy(isCollectionsLoadingMore = true), message = null)
+        }
+        creatorCollectionJob = viewModelScope.launch {
+            runCatching { repository.creatorCollectionPage(creator, nextPage) }
+                .onSuccess { page ->
+                    mutableState.update { current ->
+                        if (current.creatorCenter.selectedCreator?.mid != creator.mid) return@update current
+                        current.copy(
+                            creatorCenter = current.creatorCenter.copy(
+                                collections = (current.creatorCenter.collections + page.collections)
+                                    .distinctBy { it.type to it.id },
+                                collectionsNextPage = (page.page + 1).takeIf { page.hasMore },
+                                isCollectionsLoadingMore = false,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    mutableState.update { current ->
+                        current.copy(
+                            creatorCenter = current.creatorCenter.copy(isCollectionsLoadingMore = false),
+                            message = error.userMessage("更多合集加载失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun openCreatorCollection(collection: BilibiliCreatorCollection) {
+        creatorCollectionJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    selectedCollection = collection,
+                    collectionVideos = emptyList(),
+                    collectionVideosNextPage = null,
+                    isCollectionVideosLoading = true,
+                    isCollectionVideosLoadingMore = false,
+                ),
+                message = null,
+            )
+        }
+        creatorCollectionJob = viewModelScope.launch {
+            runCatching { repository.creatorCollectionVideoPage(collection, page = 1) }
+                .onSuccess { page ->
+                    mutableState.update { current ->
+                        if (current.creatorCenter.selectedCollection != collection) return@update current
+                        current.copy(
+                            creatorCenter = current.creatorCenter.copy(
+                                collectionVideos = page.videos,
+                                collectionVideosNextPage = (page.page + 1).takeIf { page.hasMore },
+                                isCollectionVideosLoading = false,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    mutableState.update { current ->
+                        current.copy(
+                            creatorCenter = current.creatorCenter.copy(isCollectionVideosLoading = false),
+                            message = error.userMessage("合集内容加载失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun closeCreatorCollection() {
+        creatorCollectionJob?.cancel()
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(
+                    selectedCollection = null,
+                    collectionVideos = emptyList(),
+                    collectionVideosNextPage = null,
+                    isCollectionVideosLoading = false,
+                    isCollectionVideosLoadingMore = false,
+                ),
+            )
+        }
+    }
+
+    fun loadMoreCreatorCollectionVideos() {
+        val center = state.value.creatorCenter
+        val collection = center.selectedCollection ?: return
+        val nextPage = center.collectionVideosNextPage ?: return
+        if (center.isCollectionVideosLoading || center.isCollectionVideosLoadingMore) return
+        mutableState.update { current ->
+            current.copy(
+                creatorCenter = current.creatorCenter.copy(isCollectionVideosLoadingMore = true),
+                message = null,
+            )
+        }
+        creatorCollectionJob = viewModelScope.launch {
+            runCatching { repository.creatorCollectionVideoPage(collection, nextPage) }
+                .onSuccess { page ->
+                    mutableState.update { current ->
+                        if (current.creatorCenter.selectedCollection != collection) return@update current
+                        current.copy(
+                            creatorCenter = current.creatorCenter.copy(
+                                collectionVideos = (current.creatorCenter.collectionVideos + page.videos)
+                                    .distinctBy(BilibiliVideo::bvid),
+                                collectionVideosNextPage = (page.page + 1).takeIf { page.hasMore },
+                                isCollectionVideosLoadingMore = false,
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    mutableState.update { current ->
+                        current.copy(
+                            creatorCenter = current.creatorCenter.copy(isCollectionVideosLoadingMore = false),
+                            message = error.userMessage("更多合集内容加载失败"),
+                        )
+                    }
+                }
         }
     }
 
@@ -1277,7 +1485,56 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun playCreatorCollection(videos: List<BilibiliVideo>) {
+        if (videos.isEmpty() || state.value.isPageQueueLoading) return
+        cancelPageQueueExpansion()
+        mutableState.update { it.copy(isPageQueueLoading = true, message = null) }
+        viewModelScope.launch {
+            try {
+                val semaphore = Semaphore(3)
+                val resolved = coroutineScope {
+                    videos.map { video ->
+                        async {
+                            semaphore.withPermit {
+                                runCatching {
+                                    repository.resolveTracks(video, AudioQualityPreference.HIGHEST)
+                                }
+                            }
+                        }
+                    }.awaitAll()
+                }
+                val tracks = resolved.flatMap { it.getOrNull().orEmpty() }
+                if (tracks.isEmpty()) throw BilibiliApiException(-404, "合集没有可播放曲目")
+                publishPlaybackRequest(tracks)
+                val skipped = resolved.count(Result<List<Track>>::isFailure)
+                if (skipped > 0) {
+                    mutableState.update { it.copy(message = "$skipped 个失效视频已跳过") }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update {
+                    it.copy(
+                        isPageQueueLoading = false,
+                        message = error.userMessage("合集播放地址解析失败"),
+                    )
+                }
+            }
+        }
+    }
+
     fun playPageQueue(startIndex: Int) {
+        playPageQueue(startIndex, startPositionMs = 0L)
+    }
+
+    fun resumePageQueue(startIndex: Int, lastPositionMs: Long, durationMs: Long) {
+        playPageQueue(
+            startIndex = startIndex,
+            startPositionMs = PlaybackResumePolicy.startPositionMs(lastPositionMs, durationMs),
+        )
+    }
+
+    private fun playPageQueue(startIndex: Int, startPositionMs: Long) {
         val selection = state.value.pageSelection ?: return
         if (state.value.isPageQueueLoading) return
         if (startIndex !in selection.detail.pages.indices) {
@@ -1309,7 +1566,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     pageCount = selection.detail.pages.size,
                     startIndex = startIndex,
                     onSelected = { selectedTrack ->
-                        queueId = publishPlaybackRequest(listOf(selectedTrack))
+                        queueId = publishPlaybackRequest(listOf(selectedTrack), startPositionMs = startPositionMs)
                         queueStarted = true
                     },
                     onExpansion = { expansion ->
@@ -1336,6 +1593,45 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }
+        }
+    }
+
+    fun addPageToLocalPlaylist(
+        playlistId: Long,
+        selection: VideoPageSelection,
+        pageIndex: Int,
+    ) {
+        if (pageIndex !in selection.detail.pages.indices) return
+        mutableState.update { it.copy(message = null) }
+        viewModelScope.launch {
+            runCatching {
+                repository.resolveTrack(
+                    selection.video,
+                    selection.detail,
+                    pageIndex,
+                    AudioQualityPreference.HIGHEST,
+                )
+            }.onSuccess { track ->
+                runCatching { container.localPlaylistRepository.addTrack(playlistId, track) }
+                    .onSuccess {
+                        mutableState.update { it.copy(message = "已加入歌单") }
+                    }
+                    .onFailure { error ->
+                        mutableState.update { it.copy(message = error.userMessage("加入歌单失败")) }
+                    }
+            }.onFailure { error ->
+                mutableState.update { it.copy(message = error.userMessage("分 P 信息解析失败")) }
+            }
+        }
+    }
+
+    fun addLocalAudioToPlaylist(playlistId: Long, audio: LocalAudio) {
+        viewModelScope.launch {
+            runCatching { container.localPlaylistRepository.addTrack(playlistId, audio.toTrack()) }
+                .onSuccess { mutableState.update { it.copy(message = "已加入歌单") } }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("加入歌单失败")) }
+                }
         }
     }
 
@@ -1543,6 +1839,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 librarySection = section,
                 isLibraryLoading = section !in setOf(
                     AccountLibrarySection.LOCAL_HISTORY,
+                    AccountLibrarySection.PLAYLISTS,
                     AccountLibrarySection.LOCAL_MUSIC,
                     AccountLibrarySection.DOWNLOADS,
                 ),
@@ -1551,6 +1848,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 isFavoriteLoadingMore = false,
                 libraryVideos = if (section in setOf(
                         AccountLibrarySection.LOCAL_HISTORY,
+                        AccountLibrarySection.PLAYLISTS,
                         AccountLibrarySection.LOCAL_MUSIC,
                         AccountLibrarySection.DOWNLOADS,
                     )
@@ -1563,6 +1861,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         if (section == AccountLibrarySection.LOCAL_HISTORY) return
+        if (section == AccountLibrarySection.PLAYLISTS) return
         if (section == AccountLibrarySection.DOWNLOADS) return
         if (section == AccountLibrarySection.LOCAL_MUSIC) {
             loadLocalAudio()
@@ -1595,6 +1894,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     AccountLibrarySection.ONLINE_HISTORY -> Unit
+                    AccountLibrarySection.PLAYLISTS -> Unit
                     AccountLibrarySection.LOCAL_HISTORY -> Unit
                     AccountLibrarySection.LOCAL_MUSIC -> Unit
                     AccountLibrarySection.DOWNLOADS -> Unit
@@ -1668,6 +1968,151 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
+        }
+    }
+
+    fun createLocalPlaylist(name: String) {
+        val normalized = name.trim()
+        if (normalized.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                container.localPlaylistRepository.create(normalized, state.value.localPlaylists.size)
+            }.onFailure { error ->
+                mutableState.update { it.copy(message = error.userMessage("创建歌单失败")) }
+            }
+        }
+    }
+
+    fun renameLocalPlaylist(playlist: LocalPlaylistEntity, name: String) {
+        val normalized = name.trim()
+        if (normalized.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { container.localPlaylistRepository.rename(playlist, normalized) }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("重命名歌单失败")) }
+                }
+        }
+    }
+
+    fun deleteLocalPlaylist(playlistId: Long) {
+        viewModelScope.launch {
+            runCatching { container.localPlaylistRepository.delete(playlistId) }
+                .onSuccess {
+                    if (state.value.selectedLocalPlaylist?.playlistId == playlistId) closeLocalPlaylist()
+                }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("删除歌单失败")) }
+                }
+        }
+    }
+
+    fun openLocalPlaylist(playlist: LocalPlaylistEntity) {
+        localPlaylistItemsJob?.cancel()
+        mutableState.update {
+            it.copy(
+                selectedLocalPlaylist = playlist,
+                localPlaylistItems = emptyList(),
+                isLocalPlaylistLoading = true,
+                message = null,
+            )
+        }
+        localPlaylistItemsJob = viewModelScope.launch {
+            container.localPlaylistRepository.items(playlist.playlistId).collect { items ->
+                mutableState.update { current ->
+                    if (current.selectedLocalPlaylist?.playlistId != playlist.playlistId) current else {
+                        current.copy(localPlaylistItems = items, isLocalPlaylistLoading = false)
+                    }
+                }
+            }
+        }
+    }
+
+    fun closeLocalPlaylist() {
+        localPlaylistItemsJob?.cancel()
+        mutableState.update {
+            it.copy(
+                selectedLocalPlaylist = null,
+                localPlaylistItems = emptyList(),
+                isLocalPlaylistLoading = false,
+            )
+        }
+    }
+
+    fun removeLocalPlaylistItem(mediaId: String) {
+        val playlist = state.value.selectedLocalPlaylist ?: return
+        viewModelScope.launch {
+            runCatching { container.localPlaylistRepository.remove(playlist.playlistId, mediaId) }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("移出歌单失败")) }
+                }
+        }
+    }
+
+    fun moveLocalPlaylistItem(mediaId: String, direction: Int) {
+        val playlist = state.value.selectedLocalPlaylist ?: return
+        val items = state.value.localPlaylistItems
+        val from = items.indexOfFirst { it.mediaId == mediaId }
+        val to = (from + direction).coerceIn(items.indices)
+        if (from < 0 || from == to) return
+        val reordered = items.toMutableList().apply { add(to, removeAt(from)) }
+        mutableState.update { it.copy(localPlaylistItems = reordered) }
+        viewModelScope.launch {
+            runCatching {
+                container.localPlaylistRepository.reorder(playlist.playlistId, reordered.map { it.mediaId })
+            }.onFailure { error ->
+                mutableState.update { it.copy(message = error.userMessage("歌单排序失败")) }
+            }
+        }
+    }
+
+    fun playLocalPlaylist(startIndex: Int = 0) {
+        val items = state.value.localPlaylistItems
+        if (startIndex !in items.indices || state.value.isLocalPlaylistLoading) return
+        mutableState.update { it.copy(isLocalPlaylistLoading = true, message = null) }
+        viewModelScope.launch {
+            try {
+                val semaphore = Semaphore(3)
+                val resolved = coroutineScope {
+                    items.map { item ->
+                        async {
+                            semaphore.withPermit {
+                                runCatching { resolveLocalPlaylistItem(item) }
+                            }
+                        }
+                    }.awaitAll()
+                }
+                val selected = resolved[startIndex].getOrThrow()
+                val tracks = resolved.mapNotNull(Result<Track>::getOrNull)
+                val resolvedStartIndex = tracks.indexOfFirst { it.id == selected.id }
+                publishPlaybackRequest(tracks, startIndex = resolvedStartIndex.coerceAtLeast(0))
+                val skipped = resolved.count(Result<Track>::isFailure)
+                mutableState.update {
+                    it.copy(
+                        isLocalPlaylistLoading = false,
+                        message = if (skipped > 0) "$skipped 首失效曲目已跳过" else null,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update {
+                    it.copy(
+                        isLocalPlaylistLoading = false,
+                        message = error.userMessage("歌单播放地址解析失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun resolveLocalPlaylistItem(item: LocalPlaylistItemEntity): Track {
+        val stored = item.toStoredTrack()
+        val source = stored.source
+        return if (source != null) {
+            repository.resolveTrack(source, stored.title, stored.artist, stored.artworkUrl)
+        } else {
+            require(stored.streamUrl.isNotBlank()) { "本地文件已失效" }
+            stored
         }
     }
 

@@ -175,6 +175,87 @@ class BilibiliRepository(
         )
     }
 
+    suspend fun creatorCollectionPage(
+        creator: BilibiliCreator,
+        page: Int = 1,
+    ): BilibiliCreatorCollectionPage {
+        require(creator.mid > 0L) { "UP 主 mid 无效" }
+        val normalizedPage = page.coerceAtLeast(1)
+        val data = request(
+            path = "/x/polymer/web-space/seasons_series_list",
+            parameters = mapOf(
+                "mid" to creator.mid,
+                "page_num" to normalizedPage,
+                "page_size" to CREATOR_COLLECTION_PAGE_SIZE,
+                "web_location" to "0.0",
+            ),
+        ).requireSuccess().optJSONObject("data") ?: JSONObject()
+        val lists = data.optJSONObject("items_lists") ?: JSONObject()
+        val seasons = lists.optJSONArray("seasons_list").toObjects().mapNotNull { item ->
+            parseCreatorCollection(item, creator, BilibiliCreatorCollectionType.SEASON)
+        }
+        val series = lists.optJSONArray("series_list").toObjects().mapNotNull { item ->
+            parseCreatorCollection(item, creator, BilibiliCreatorCollectionType.SERIES)
+        }
+        val total = lists.optJSONObject("page")?.optInt("total", 0)?.coerceAtLeast(0)
+        val collections = (seasons + series).sortedByDescending { it.publishedAtEpochSeconds ?: 0L }
+        return BilibiliCreatorCollectionPage(
+            collections = collections,
+            page = normalizedPage,
+            hasMore = if (total != null) {
+                normalizedPage * CREATOR_COLLECTION_PAGE_SIZE < total && collections.isNotEmpty()
+            } else {
+                collections.size >= CREATOR_COLLECTION_PAGE_SIZE
+            },
+            total = total,
+        )
+    }
+
+    suspend fun creatorCollectionVideoPage(
+        collection: BilibiliCreatorCollection,
+        page: Int = 1,
+    ): BilibiliCreatorCollectionVideoPage {
+        val normalizedPage = page.coerceAtLeast(1)
+        return when (collection.type) {
+            BilibiliCreatorCollectionType.SEASON -> {
+                val result = favoriteCollectionVideoPage(collection.id, normalizedPage)
+                BilibiliCreatorCollectionVideoPage(
+                    videos = result.videos.map(BilibiliLibraryVideo::video),
+                    page = normalizedPage,
+                    hasMore = result.hasMore,
+                    total = result.mediaCount,
+                )
+            }
+            BilibiliCreatorCollectionType.SERIES -> {
+                val data = request(
+                    path = "/x/series/archives",
+                    parameters = mapOf(
+                        "mid" to collection.ownerMid,
+                        "series_id" to collection.id,
+                        "only_normal" to true,
+                        "sort" to "desc",
+                        "pn" to normalizedPage,
+                        "ps" to CREATOR_COLLECTION_VIDEO_PAGE_SIZE,
+                    ),
+                ).requireSuccess().optJSONObject("data") ?: JSONObject()
+                val videos = data.optJSONArray("archives").toObjects().mapNotNull { item ->
+                    parseCreatorCollectionVideo(item, collection)
+                }
+                val total = data.optJSONObject("page")?.optInt("total", 0)?.coerceAtLeast(0)
+                BilibiliCreatorCollectionVideoPage(
+                    videos = videos,
+                    page = normalizedPage,
+                    hasMore = if (total != null) {
+                        normalizedPage * CREATOR_COLLECTION_VIDEO_PAGE_SIZE < total && videos.isNotEmpty()
+                    } else {
+                        videos.size >= CREATOR_COLLECTION_VIDEO_PAGE_SIZE
+                    },
+                    total = total,
+                )
+            }
+        }
+    }
+
     suspend fun creatorProfile(mid: Long): BilibiliCreator {
         require(mid > 0L) { "UP 主 mid 无效" }
         val data = request(
@@ -1138,6 +1219,47 @@ class BilibiliRepository(
         )
     }
 
+    internal fun parseCreatorCollection(
+        item: JSONObject,
+        creator: BilibiliCreator,
+        type: BilibiliCreatorCollectionType,
+    ): BilibiliCreatorCollection? {
+        val meta = item.optJSONObject("meta") ?: item
+        val id = when (type) {
+            BilibiliCreatorCollectionType.SEASON -> meta.optLong("season_id", 0L)
+            BilibiliCreatorCollectionType.SERIES -> meta.optLong("series_id", 0L)
+        }.takeIf { it > 0L } ?: return null
+        val title = BilibiliText.plainTitle(meta.optString("name"))
+            .takeIf(String::isNotBlank) ?: return null
+        return BilibiliCreatorCollection(
+            id = id,
+            type = type,
+            title = title,
+            coverUrl = BilibiliText.httpsUrl(meta.optString("cover")),
+            mediaCount = meta.optInt("total", 0).coerceAtLeast(0),
+            ownerMid = meta.optLong("mid", creator.mid).takeIf { it > 0L } ?: creator.mid,
+            ownerName = creator.name,
+            publishedAtEpochSeconds = meta.optLongOrNull("ptime") ?: meta.optLongOrNull("ctime"),
+        )
+    }
+
+    internal fun parseCreatorCollectionVideo(
+        item: JSONObject,
+        collection: BilibiliCreatorCollection,
+    ): BilibiliVideo? {
+        val bvid = item.optString("bvid").takeIf(String::isNotBlank) ?: return null
+        return BilibiliVideo(
+            bvid = bvid,
+            aid = item.optLongOrNull("aid"),
+            title = BilibiliText.plainTitle(item.optString("title")),
+            author = item.optString("author").ifBlank { collection.ownerName },
+            coverUrl = BilibiliText.httpsUrl(item.optString("pic")),
+            durationSeconds = item.optIntOrNull("duration"),
+            playCount = item.optJSONObject("stat")?.optLongOrNull("view"),
+            publishedAtEpochSeconds = item.optLongOrNull("pubdate") ?: item.optLongOrNull("ctime"),
+        )
+    }
+
     internal fun parseDynamicItem(item: JSONObject): BilibiliDynamicItem? {
         if (!item.optBoolean("visible", true)) return null
         val dynamicId = item.optString("id_str").takeIf(String::isNotBlank) ?: return null
@@ -1345,6 +1467,8 @@ class BilibiliRepository(
         const val FOLLOWING_PAGE_SIZE = 50
         const val CREATOR_SEARCH_PAGE_SIZE = 20
         const val CREATOR_VIDEO_PAGE_SIZE = 30
+        const val CREATOR_COLLECTION_PAGE_SIZE = 20
+        const val CREATOR_COLLECTION_VIDEO_PAGE_SIZE = 30
         const val RECOMMENDATION_PAGE_SIZE = 20
         const val FAVORITE_FOLDER_PAGE_SIZE = 50
         const val FAVORITE_PAGE_SIZE = 20

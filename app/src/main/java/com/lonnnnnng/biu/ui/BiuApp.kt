@@ -76,6 +76,7 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DynamicFeed
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Favorite
@@ -225,6 +226,8 @@ import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
 import com.lonnnnnng.biu.data.local.LocalMediaPermissionPolicy
+import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
+import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.lyrics.LrcParser
 import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
@@ -299,6 +302,11 @@ private sealed interface PendingDownload {
     ) : PendingDownload
 }
 
+private sealed interface PendingPlaylistAddition {
+    data class VideoPage(val selection: VideoPageSelection, val pageIndex: Int) : PendingPlaylistAddition
+    data class LocalTrack(val audio: LocalAudio) : PendingPlaylistAddition
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BiuApp(viewModel: BiuViewModel = viewModel()) {
@@ -328,6 +336,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showNowPlaying by rememberSaveable { mutableStateOf(false) }
     var downloadTaskKind by remember { mutableStateOf(DownloadTaskKind.AUDIO) }
     var pendingDownload by remember { mutableStateOf<PendingDownload?>(null) }
+    var pendingPlaylistAddition by remember { mutableStateOf<PendingPlaylistAddition?>(null) }
     var mediaModeSwitching by remember { mutableStateOf(false) }
     var playbackErrorEventId by remember { mutableLongStateOf(0L) }
     var activeUpdateDownloadId by rememberSaveable {
@@ -740,11 +749,46 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     }
 
     uiState.pageSelection?.let { selection ->
+        val lastPlayed = uiState.localHistory.firstOrNull { history -> history.bvid == selection.video.bvid }
         MultiPageSelectionSheet(
             selection = selection,
+            lastPlayed = lastPlayed,
             loading = uiState.isPageQueueLoading,
             onDismiss = viewModel::dismissPageSelection,
             onPlayPage = viewModel::playPageQueue,
+            onAddPage = { pageIndex ->
+                pendingPlaylistAddition = PendingPlaylistAddition.VideoPage(selection, pageIndex)
+            },
+            onResumePage = { pageIndex, history ->
+                viewModel.resumePageQueue(pageIndex, history.lastPositionMs, history.durationMs)
+            },
+        )
+    }
+
+    pendingPlaylistAddition?.let { pending ->
+        LocalPlaylistPickerDialog(
+            playlists = uiState.localPlaylists,
+            onDismiss = { pendingPlaylistAddition = null },
+            onSelect = { playlist ->
+                pendingPlaylistAddition = null
+                when (pending) {
+                    is PendingPlaylistAddition.VideoPage -> viewModel.addPageToLocalPlaylist(
+                        playlist.playlistId,
+                        pending.selection,
+                        pending.pageIndex,
+                    )
+                    is PendingPlaylistAddition.LocalTrack -> viewModel.addLocalAudioToPlaylist(
+                        playlist.playlistId,
+                        pending.audio,
+                    )
+                }
+            },
+            onOpenLibrary = {
+                pendingPlaylistAddition = null
+                viewModel.dismissPageSelection()
+                viewModel.selectSection(MainSection.ACCOUNT)
+                viewModel.loadLibrary(AccountLibrarySection.PLAYLISTS)
+            },
         )
     }
 
@@ -1031,6 +1075,17 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onPlay = viewModel::play,
                     onPlayHistory = viewModel::play,
                     onPlayLocalAudio = viewModel::play,
+                    onAddLocalAudioToPlaylist = { audio ->
+                        pendingPlaylistAddition = PendingPlaylistAddition.LocalTrack(audio)
+                    },
+                    onCreateLocalPlaylist = viewModel::createLocalPlaylist,
+                    onRenameLocalPlaylist = viewModel::renameLocalPlaylist,
+                    onDeleteLocalPlaylist = viewModel::deleteLocalPlaylist,
+                    onOpenLocalPlaylist = viewModel::openLocalPlaylist,
+                    onCloseLocalPlaylist = viewModel::closeLocalPlaylist,
+                    onPlayLocalPlaylist = viewModel::playLocalPlaylist,
+                    onRemoveLocalPlaylistItem = viewModel::removeLocalPlaylistItem,
+                    onMoveLocalPlaylistItem = viewModel::moveLocalPlaylistItem,
                     onClearLocalHistory = viewModel::clearLocalHistory,
                     onSearchOnlineHistory = viewModel::searchOnlineHistory,
                     onLoadMoreOnlineHistory = viewModel::loadMoreOnlineHistory,
@@ -1112,6 +1167,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onLoadFollowing = viewModel::loadCreatorCenterFollowing,
             onOpenCreator = viewModel::openCreatorProfile,
             onCloseCreator = viewModel::closeCreatorProfile,
+            onProfileTabSelected = viewModel::selectCreatorProfileTab,
+            onLoadMoreCollections = viewModel::loadMoreCreatorCollections,
+            onOpenCollection = viewModel::openCreatorCollection,
+            onCloseCollection = viewModel::closeCreatorCollection,
+            onLoadMoreCollectionVideos = viewModel::loadMoreCreatorCollectionVideos,
+            onPlayCollection = viewModel::playCreatorCollection,
             onToggleRelation = viewModel::toggleCreatorRelation,
             onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
             onOpenHomeScope = {
@@ -2162,6 +2223,15 @@ private fun AccountScreen(
     onPlay: (BilibiliVideo) -> Unit,
     onPlayHistory: (PlaybackHistoryEntity) -> Unit,
     onPlayLocalAudio: (LocalAudio) -> Unit,
+    onAddLocalAudioToPlaylist: (LocalAudio) -> Unit,
+    onCreateLocalPlaylist: (String) -> Unit,
+    onRenameLocalPlaylist: (LocalPlaylistEntity, String) -> Unit,
+    onDeleteLocalPlaylist: (Long) -> Unit,
+    onOpenLocalPlaylist: (LocalPlaylistEntity) -> Unit,
+    onCloseLocalPlaylist: () -> Unit,
+    onPlayLocalPlaylist: (Int) -> Unit,
+    onRemoveLocalPlaylistItem: (String) -> Unit,
+    onMoveLocalPlaylistItem: (String, Int) -> Unit,
     onClearLocalHistory: () -> Unit,
     onSearchOnlineHistory: (String) -> Unit,
     onLoadMoreOnlineHistory: () -> Unit,
@@ -2233,6 +2303,21 @@ private fun AccountScreen(
                     onReportPlayHistoryChange = onReportPlayHistoryChange,
                     modifier = Modifier.weight(1f),
                 )
+                AccountLibrarySection.PLAYLISTS -> LocalPlaylistLibrary(
+                    playlists = state.localPlaylists,
+                    selectedPlaylist = state.selectedLocalPlaylist,
+                    items = state.localPlaylistItems,
+                    loading = state.isLocalPlaylistLoading,
+                    onCreate = onCreateLocalPlaylist,
+                    onRename = onRenameLocalPlaylist,
+                    onDelete = onDeleteLocalPlaylist,
+                    onOpen = onOpenLocalPlaylist,
+                    onClose = onCloseLocalPlaylist,
+                    onPlay = onPlayLocalPlaylist,
+                    onRemoveItem = onRemoveLocalPlaylistItem,
+                    onMoveItem = onMoveLocalPlaylistItem,
+                    modifier = Modifier.weight(1f),
+                )
                 AccountLibrarySection.LOCAL_HISTORY -> LocalHistoryList(
                     history = state.localHistory,
                     resolvingBvid = state.resolvingBvid,
@@ -2250,6 +2335,7 @@ private fun AccountScreen(
                     onClearDirectory = onClearLocalAudioDirectory,
                     onRefresh = { onLoadLibrary(AccountLibrarySection.LOCAL_MUSIC) },
                     onPlay = onPlayLocalAudio,
+                    onAddToPlaylist = onAddLocalAudioToPlaylist,
                     modifier = Modifier.weight(1f),
                 )
                 AccountLibrarySection.DOWNLOADS -> downloadContent(
@@ -2359,12 +2445,308 @@ private fun AccountLibraryNavigation(
     }
 }
 
+@Composable
+private fun LocalPlaylistLibrary(
+    playlists: List<LocalPlaylistEntity>,
+    selectedPlaylist: LocalPlaylistEntity?,
+    items: List<LocalPlaylistItemEntity>,
+    loading: Boolean,
+    onCreate: (String) -> Unit,
+    onRename: (LocalPlaylistEntity, String) -> Unit,
+    onDelete: (Long) -> Unit,
+    onOpen: (LocalPlaylistEntity) -> Unit,
+    onClose: () -> Unit,
+    onPlay: (Int) -> Unit,
+    onRemoveItem: (String) -> Unit,
+    onMoveItem: (String, Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var showEditor by remember { mutableStateOf(false) }
+    var editingPlaylist by remember { mutableStateOf<LocalPlaylistEntity?>(null) }
+    var playlistName by remember { mutableStateOf("") }
+    var pendingDelete by remember { mutableStateOf<LocalPlaylistEntity?>(null) }
+    var itemMenuId by remember { mutableStateOf<String?>(null) }
+
+    if (showEditor) {
+        AlertDialog(
+            onDismissRequest = { showEditor = false },
+            title = { Text(if (editingPlaylist == null) "新建歌单" else "重命名歌单") },
+            text = {
+                OutlinedTextField(
+                    value = playlistName,
+                    onValueChange = { playlistName = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("歌单名称") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val normalized = playlistName.trim()
+                        val editing = editingPlaylist
+                        if (editing == null) onCreate(normalized) else onRename(editing, normalized)
+                        showEditor = false
+                    },
+                    enabled = playlistName.isNotBlank(),
+                ) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { showEditor = false }) { Text("取消") } },
+        )
+    }
+    pendingDelete?.let { playlist ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除歌单？") },
+            text = { Text("将删除“${playlist.name}”和本地曲目清单，不会删除 Bilibili 收藏或本机音频文件。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDelete = null
+                        onDelete(playlist.playlistId)
+                    },
+                ) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
+    }
+
+    Column(modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (selectedPlaylist != null) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回歌单列表")
+                }
+            }
+            Text(
+                selectedPlaylist?.name ?: "本地歌单",
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            if (selectedPlaylist != null && items.isNotEmpty()) {
+                IconButton(onClick = { onPlay(0) }, enabled = !loading) {
+                    Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = "播放整个歌单")
+                }
+            }
+            IconButton(
+                onClick = {
+                    editingPlaylist = selectedPlaylist
+                    playlistName = selectedPlaylist?.name.orEmpty()
+                    showEditor = true
+                },
+            ) {
+                Icon(
+                    if (selectedPlaylist == null) Icons.Rounded.Add else Icons.Rounded.Edit,
+                    contentDescription = if (selectedPlaylist == null) "新建歌单" else "重命名歌单",
+                )
+            }
+            selectedPlaylist?.let { playlist ->
+                IconButton(onClick = { pendingDelete = playlist }) {
+                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "删除歌单")
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (selectedPlaylist == null) {
+            if (playlists.isEmpty()) {
+                BiuEmptyState(
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    title = "还没有本地歌单",
+                    message = "可以混合保存单 P、某个分 P 和本机音乐。",
+                    actionLabel = "新建歌单",
+                    onAction = {
+                        editingPlaylist = null
+                        playlistName = ""
+                        showEditor = true
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(playlists, key = LocalPlaylistEntity::playlistId) { playlist ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpen(playlist) }
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null)
+                            Text(
+                                playlist.name,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        MediaDivider(start = 52.dp)
+                    }
+                }
+            }
+        } else if (!loading && items.isEmpty()) {
+            BiuEmptyState(
+                icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                title = "歌单还是空的",
+                message = "在多 P 列表或本地音乐中选择“加入歌单”。",
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 2.dp)) {
+                itemsIndexed(items, key = { _, item -> item.mediaId }) { index, item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !loading) { onPlay(index) }
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Rounded.MusicNote, contentDescription = null)
+                            item.artworkUrl?.let { artwork ->
+                                AsyncImage(
+                                    model = artwork,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                item.pageTitle?.substringAfter(" · ")?.ifBlank { item.title } ?: item.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                item.artist,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Box {
+                            IconButton(onClick = { itemMenuId = item.mediaId }) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "编辑${item.title}")
+                            }
+                            DropdownMenu(
+                                expanded = itemMenuId == item.mediaId,
+                                onDismissRequest = { itemMenuId = null },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("上移") },
+                                    enabled = index > 0,
+                                    onClick = {
+                                        itemMenuId = null
+                                        onMoveItem(item.mediaId, -1)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("下移") },
+                                    enabled = index < items.lastIndex,
+                                    onClick = {
+                                        itemMenuId = null
+                                        onMoveItem(item.mediaId, 1)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("移出歌单") },
+                                    onClick = {
+                                        itemMenuId = null
+                                        onRemoveItem(item.mediaId)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    MediaDivider(start = 72.dp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalPlaylistPickerDialog(
+    playlists: List<LocalPlaylistEntity>,
+    onDismiss: () -> Unit,
+    onSelect: (LocalPlaylistEntity) -> Unit,
+    onOpenLibrary: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null) },
+        title = { Text("加入本地歌单") },
+        text = {
+            if (playlists.isEmpty()) {
+                Text("还没有本地歌单，请先在音乐库中创建。")
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    playlists.forEach { playlist ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable { onSelect(playlist) }
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null)
+                            Text(
+                                playlist.name,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (playlists.isEmpty()) {
+                TextButton(onClick = onOpenLibrary) { Text("去新建歌单") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
+    )
+}
+
 private enum class AccountLibraryGroup(
     val label: String,
     val sections: List<AccountLibrarySection>,
 ) {
     ONLINE("在线", listOf(AccountLibrarySection.FAVORITES, AccountLibrarySection.ONLINE_HISTORY)),
-    LOCAL("本地", listOf(AccountLibrarySection.LOCAL_HISTORY, AccountLibrarySection.LOCAL_MUSIC)),
+    LOCAL(
+        "本地",
+        listOf(AccountLibrarySection.PLAYLISTS, AccountLibrarySection.LOCAL_HISTORY, AccountLibrarySection.LOCAL_MUSIC),
+    ),
     DOWNLOADS("下载", listOf(AccountLibrarySection.DOWNLOADS)),
 }
 
@@ -2379,6 +2761,7 @@ private fun LocalAudioList(
     onClearDirectory: () -> Unit,
     onRefresh: () -> Unit,
     onPlay: (LocalAudio) -> Unit,
+    onAddToPlaylist: (LocalAudio) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val directoryFilteringSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
@@ -2523,6 +2906,9 @@ private fun LocalAudioList(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                        IconButton(onClick = { onAddToPlaylist(item) }) {
+                            Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = "将${item.title}加入歌单")
                         }
                     }
                     MediaDivider(
@@ -4283,9 +4669,12 @@ private fun FavoriteBatchDownloadSheet(
 @Composable
 private fun MultiPageSelectionSheet(
     selection: VideoPageSelection,
+    lastPlayed: PlaybackHistoryEntity?,
     loading: Boolean,
     onDismiss: () -> Unit,
     onPlayPage: (Int) -> Unit,
+    onAddPage: (Int) -> Unit,
+    onResumePage: (Int, PlaybackHistoryEntity) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -4332,6 +4721,22 @@ private fun MultiPageSelectionSheet(
                 Spacer(Modifier.width(8.dp))
                 Text(if (loading) "正在建立播放队列" else "全部播放")
             }
+            lastPlayed?.let { history ->
+                val resumeIndex = selection.detail.pages.indexOfFirst { page -> page.cid == history.cid }
+                if (resumeIndex >= 0) {
+                    TextButton(
+                        onClick = { onResumePage(resumeIndex, history) },
+                        enabled = !loading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                    ) {
+                        Icon(Icons.Rounded.History, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("从上次 P${selection.detail.pages[resumeIndex].page} 继续")
+                    }
+                }
+            }
             if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             LazyColumn(
                 modifier = Modifier
@@ -4369,9 +4774,18 @@ private fun MultiPageSelectionSheet(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Text(
-                                formatDuration(page.durationSeconds),
+                                buildString {
+                                    append(formatDuration(page.durationSeconds))
+                                    if (lastPlayed?.cid == page.cid) append(" · 上次播放")
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = { onAddPage(index) }, enabled = !loading) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.QueueMusic,
+                                contentDescription = "将 P${page.page} 加入歌单",
                             )
                         }
                         PlayAffordance(contentDescription = "从 P${page.page} 开始播放")
