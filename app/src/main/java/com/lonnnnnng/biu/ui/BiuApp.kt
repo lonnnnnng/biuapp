@@ -21,6 +21,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -76,6 +77,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.DynamicFeed
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -113,6 +115,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -909,10 +912,24 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         }
                     }
                 },
+                onReorderQueue = { mediaIds ->
+                    controller?.let { activeController ->
+                        if (activeController.reorderQueue(mediaIds)) {
+                            viewModel.reorderPlaybackQueue(mediaIds)
+                        }
+                    }
+                },
                 onRemoveQueueItem = { item ->
                     controller?.let { activeController ->
                         if (activeController.removeQueueItem(item.mediaId)) {
                             viewModel.removePlaybackQueueItem(item.mediaId)
+                        }
+                    }
+                },
+                onRemoveQueueItems = { mediaIds ->
+                    controller?.let { activeController ->
+                        if (activeController.removeQueueItems(mediaIds)) {
+                            viewModel.removePlaybackQueueItems(mediaIds)
                         }
                     }
                 },
@@ -996,10 +1013,24 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     }
                 }
             },
+            onReorderQueue = { mediaIds ->
+                controller?.let { activeController ->
+                    if (activeController.reorderQueue(mediaIds)) {
+                        viewModel.reorderPlaybackQueue(mediaIds)
+                    }
+                }
+            },
             onRemoveQueueItem = { item ->
                 controller?.let { activeController ->
                     if (activeController.removeQueueItem(item.mediaId)) {
                         viewModel.removePlaybackQueueItem(item.mediaId)
+                    }
+                }
+            },
+            onRemoveQueueItems = { mediaIds ->
+                controller?.let { activeController ->
+                    if (activeController.removeQueueItems(mediaIds)) {
+                        viewModel.removePlaybackQueueItems(mediaIds)
                     }
                 }
             },
@@ -5108,7 +5139,9 @@ private fun NowPlayingScreen(
     onSelectQueueItem: (Int) -> Unit,
     onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
     onMoveQueueItem: (PlaybackQueueItem, Int) -> Unit,
+    onReorderQueue: (List<String>) -> Unit,
     onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
+    onRemoveQueueItems: (Set<String>) -> Unit,
     onSaveQueue: () -> Unit,
     onClearQueue: () -> Unit,
     onSetSleepTimerMinutes: (Int) -> Unit,
@@ -5167,7 +5200,9 @@ private fun NowPlayingScreen(
                 onSelectQueueItem = onSelectQueueItem,
                 onMoveQueueItemNext = onMoveQueueItemNext,
                 onMoveQueueItem = onMoveQueueItem,
+                onReorderQueue = onReorderQueue,
                 onRemoveQueueItem = onRemoveQueueItem,
+                onRemoveQueueItems = onRemoveQueueItems,
                 onSaveQueue = {
                     showQueue = false
                     onSaveQueue()
@@ -6761,11 +6796,45 @@ private fun PlaybackQueue(
     onSelectQueueItem: (Int) -> Unit,
     onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
     onMoveQueueItem: (PlaybackQueueItem, Int) -> Unit,
+    onReorderQueue: (List<String>) -> Unit,
     onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
+    onRemoveQueueItems: (Set<String>) -> Unit,
     onSaveQueue: () -> Unit,
     onClearQueue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val queueIds = snapshot.queueItems.map(PlaybackQueueItem::mediaId)
+    val currentMediaId = snapshot.queueItems.getOrNull(snapshot.currentIndex)?.mediaId
+    var draftItems by remember(queueIds) { mutableStateOf(snapshot.queueItems) }
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmBatchRemoval by remember { mutableStateOf(false) }
+    var draggingMediaId by remember { mutableStateOf<String?>(null) }
+    val dragStepPx = with(LocalDensity.current) { 60.dp.toPx() }
+    val currentOnReorderQueue by rememberUpdatedState(onReorderQueue)
+    LaunchedEffect(queueIds) {
+        selectedIds = selectedIds.intersect(queueIds.toSet())
+    }
+    if (confirmBatchRemoval) {
+        AlertDialog(
+            onDismissRequest = { confirmBatchRemoval = false },
+            title = { Text("移出所选歌曲？") },
+            text = { Text("将从当前播放列表移除 ${selectedIds.size} 首，已下载文件和本地歌单不会受影响。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmBatchRemoval = false
+                        onRemoveQueueItems(selectedIds)
+                        selectedIds = emptySet()
+                        selectionMode = false
+                    },
+                ) { Text("移除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBatchRemoval = false }) { Text("取消") }
+            },
+        )
+    }
     Column(modifier) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
@@ -6773,30 +6842,86 @@ private fun PlaybackQueue(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text("播放列表 · ${snapshot.queueItems.size}", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (selectionMode) "已选 ${selectedIds.size} / ${snapshot.queueItems.size}" else "播放列表 · ${snapshot.queueItems.size}",
+                style = MaterialTheme.typography.titleMedium,
+            )
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = onSaveQueue, enabled = snapshot.queueItems.isNotEmpty()) {
-                Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = "保存为本地歌单")
-            }
-            IconButton(onClick = onClearQueue, enabled = snapshot.queueItems.isNotEmpty()) {
-                Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空播放列表")
+            if (selectionMode) {
+                IconButton(
+                    onClick = {
+                        selectedIds = if (selectedIds.size == queueIds.size) emptySet() else queueIds.toSet()
+                    },
+                    enabled = queueIds.isNotEmpty(),
+                ) {
+                    Icon(
+                        Icons.Rounded.Check,
+                        contentDescription = if (selectedIds.size == queueIds.size) "取消全选" else "全选",
+                    )
+                }
+                IconButton(onClick = { confirmBatchRemoval = true }, enabled = selectedIds.isNotEmpty()) {
+                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "移出所选歌曲")
+                }
+                IconButton(
+                    onClick = {
+                        selectionMode = false
+                        selectedIds = emptySet()
+                    },
+                ) {
+                    Icon(Icons.Rounded.Close, contentDescription = "退出批量编辑")
+                }
+            } else {
+                IconButton(onClick = onSaveQueue, enabled = snapshot.queueItems.isNotEmpty()) {
+                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = "保存为本地歌单")
+                }
+                IconButton(
+                    onClick = { selectionMode = true },
+                    enabled = snapshot.queueItems.isNotEmpty(),
+                ) {
+                    Icon(Icons.Rounded.Edit, contentDescription = "批量编辑播放列表")
+                }
+                IconButton(onClick = onClearQueue, enabled = snapshot.queueItems.isNotEmpty()) {
+                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空播放列表")
+                }
             }
         }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(snapshot.queueItems, key = PlaybackQueueItem::mediaId) { item ->
-                val isCurrent = item.index == snapshot.currentIndex
+            items(draftItems, key = PlaybackQueueItem::mediaId) { item ->
+                val isCurrent = item.mediaId == currentMediaId
+                val isSelected = item.mediaId in selectedIds
+                val isDragging = item.mediaId == draggingMediaId
                 var itemMenuExpanded by remember(item.mediaId) { mutableStateOf(false) }
+                var dragDistancePx by remember(item.mediaId) { mutableFloatStateOf(0f) }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(
-                            if (isCurrent) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            when {
+                                isDragging -> MaterialTheme.colorScheme.secondaryContainer
+                                isCurrent -> MaterialTheme.colorScheme.primaryContainer
+                                isSelected -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                else -> Color.Transparent
+                            },
                         )
-                        .clickable { onSelectQueueItem(item.index) }
+                        .clickable {
+                            if (selectionMode) {
+                                selectedIds = if (isSelected) selectedIds - item.mediaId else selectedIds + item.mediaId
+                            } else {
+                                onSelectQueueItem(item.index)
+                            }
+                        }
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    if (selectionMode) {
+                        Checkbox(
+                            checked = isSelected,
+                            onCheckedChange = { checked ->
+                                selectedIds = if (checked) selectedIds + item.mediaId else selectedIds - item.mediaId
+                            },
+                        )
+                    }
                     if (item.artworkUrl.isNullOrBlank()) {
                         Box(
                             modifier = Modifier
@@ -6840,46 +6965,89 @@ private fun PlaybackQueue(
                     if (isCurrent) {
                         Icon(Icons.Rounded.PlayArrow, contentDescription = "当前播放", tint = MaterialTheme.colorScheme.primary)
                     }
-                    Box {
-                        IconButton(onClick = { itemMenuExpanded = true }) {
-                            Icon(Icons.Rounded.MoreVert, contentDescription = "编辑${item.pageTitle ?: item.title}")
-                        }
-                        DropdownMenu(
-                            expanded = itemMenuExpanded,
-                            onDismissRequest = { itemMenuExpanded = false },
-                        ) {
-                            if (!isCurrent) {
+                    if (!selectionMode) {
+                        Icon(
+                            Icons.Rounded.DragHandle,
+                            contentDescription = "按住拖动${item.pageTitle ?: item.title}",
+                            modifier = Modifier
+                                .size(48.dp)
+                                .pointerInput(item.mediaId) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            draggingMediaId = item.mediaId
+                                            dragDistancePx = 0f
+                                        },
+                                        onDragCancel = {
+                                            draggingMediaId = null
+                                            dragDistancePx = 0f
+                                            draftItems = snapshot.queueItems
+                                        },
+                                        onDragEnd = {
+                                            draggingMediaId = null
+                                            dragDistancePx = 0f
+                                            val reorderedIds = draftItems.map(PlaybackQueueItem::mediaId)
+                                            if (reorderedIds != queueIds) currentOnReorderQueue(reorderedIds)
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragDistancePx += dragAmount.y
+                                            while (abs(dragDistancePx) >= dragStepPx) {
+                                                val currentIndex = draftItems.indexOfFirst { it.mediaId == item.mediaId }
+                                                if (currentIndex < 0) break
+                                                val direction = if (dragDistancePx > 0f) 1 else -1
+                                                val targetIndex = (currentIndex + direction).coerceIn(draftItems.indices)
+                                                if (targetIndex == currentIndex) {
+                                                    dragDistancePx = 0f
+                                                    break
+                                                }
+                                                draftItems = moveQueueDraftItem(draftItems, item.mediaId, targetIndex)
+                                                dragDistancePx -= direction * dragStepPx
+                                            }
+                                        },
+                                    )
+                                },
+                        )
+                        Box {
+                            IconButton(onClick = { itemMenuExpanded = true }) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "编辑${item.pageTitle ?: item.title}")
+                            }
+                            DropdownMenu(
+                                expanded = itemMenuExpanded,
+                                onDismissRequest = { itemMenuExpanded = false },
+                            ) {
+                                if (!isCurrent) {
+                                    DropdownMenuItem(
+                                        text = { Text("设为下一首") },
+                                        onClick = {
+                                            itemMenuExpanded = false
+                                            onMoveQueueItemNext(item)
+                                        },
+                                    )
+                                }
                                 DropdownMenuItem(
-                                    text = { Text("设为下一首") },
+                                    text = { Text("上移") },
+                                    enabled = item.index > 0,
                                     onClick = {
                                         itemMenuExpanded = false
-                                        onMoveQueueItemNext(item)
+                                        onMoveQueueItem(item, item.index - 1)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("下移") },
+                                    enabled = item.index < draftItems.lastIndex,
+                                    onClick = {
+                                        itemMenuExpanded = false
+                                        onMoveQueueItem(item, item.index + 1)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("移出播放列表") },
+                                    onClick = {
+                                        itemMenuExpanded = false
+                                        onRemoveQueueItem(item)
                                     },
                                 )
                             }
-                            DropdownMenuItem(
-                                text = { Text("上移") },
-                                enabled = item.index > 0,
-                                onClick = {
-                                    itemMenuExpanded = false
-                                    onMoveQueueItem(item, item.index - 1)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("下移") },
-                                enabled = item.index < snapshot.queueItems.lastIndex,
-                                onClick = {
-                                    itemMenuExpanded = false
-                                    onMoveQueueItem(item, item.index + 1)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("移出播放列表") },
-                                onClick = {
-                                    itemMenuExpanded = false
-                                    onRemoveQueueItem(item)
-                                },
-                            )
                         }
                     }
                 }
@@ -6887,6 +7055,20 @@ private fun PlaybackQueue(
             }
         }
     }
+}
+
+private fun moveQueueDraftItem(
+    items: List<PlaybackQueueItem>,
+    mediaId: String,
+    targetIndex: Int,
+): List<PlaybackQueueItem> {
+    val sourceIndex = items.indexOfFirst { item -> item.mediaId == mediaId }
+    if (sourceIndex < 0) return items
+    val boundedTarget = targetIndex.coerceIn(items.indices)
+    if (sourceIndex == boundedTarget) return items
+    return items.toMutableList()
+        .apply { add(boundedTarget, removeAt(sourceIndex)) }
+        .mapIndexed { index, item -> item.copy(index = index) }
 }
 
 @Composable
@@ -7529,6 +7711,30 @@ private fun MediaController.moveQueueItem(mediaId: String, targetIndex: Int): Bo
     if (sourceIndex == boundedTarget) return false
     // long: 直接使用 Media3 原生 move 保留当前媒体实例与播放位置，避免重建整条队列造成声音中断。
     moveMediaItem(sourceIndex, boundedTarget)
+    return true
+}
+
+private fun MediaController.reorderQueue(mediaIds: List<String>): Boolean {
+    val requestedIds = mediaIds.distinct()
+    val currentIds = (0 until mediaItemCount).map { index -> getMediaItemAt(index).mediaId }
+    if (requestedIds.size != currentIds.size || requestedIds.toSet() != currentIds.toSet()) return false
+    requestedIds.forEachIndexed { targetIndex, mediaId ->
+        val sourceIndex = (targetIndex until mediaItemCount)
+            .firstOrNull { index -> getMediaItemAt(index).mediaId == mediaId }
+            ?: return false
+        if (sourceIndex != targetIndex) moveMediaItem(sourceIndex, targetIndex)
+    }
+    return true
+}
+
+private fun MediaController.removeQueueItems(mediaIds: Set<String>): Boolean {
+    if (mediaIds.isEmpty()) return false
+    val indexes = (0 until mediaItemCount)
+        .filter { index -> getMediaItemAt(index).mediaId in mediaIds }
+        .sortedDescending()
+    if (indexes.isEmpty()) return false
+    // long: 从末尾删除可避免前方索引收缩；Media3 会在当前项被移除时选择后继，并继续由服务保存新锚点。
+    indexes.forEach(::removeMediaItem)
     return true
 }
 

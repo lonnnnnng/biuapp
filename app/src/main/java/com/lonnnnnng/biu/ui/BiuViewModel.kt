@@ -2895,6 +2895,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         playbackQueueSnapshots.move(mediaId, targetIndex)
     }
 
+    internal fun reorderPlaybackQueue(mediaIds: List<String>) {
+        stopProgressiveQueueForUserEdit()
+        playbackQueueSnapshots.reorder(mediaIds)
+    }
+
+    internal fun removePlaybackQueueItems(mediaIds: Set<String>) {
+        stopProgressiveQueueForUserEdit()
+        playbackQueueSnapshots.removeAll(mediaIds)
+    }
+
     internal fun clearPlaybackQueue() {
         stopProgressiveQueueForUserEdit()
         playbackQueueSnapshots.clear()

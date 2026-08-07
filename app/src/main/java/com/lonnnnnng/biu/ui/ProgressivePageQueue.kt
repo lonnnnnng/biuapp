@@ -119,6 +119,44 @@ internal class PlaybackQueueSnapshotStore<T>(
     }
 
     @Synchronized
+    fun reorder(mediaIds: List<String>): PlaybackQueueSnapshot<T>? {
+        val current = snapshot ?: return null
+        val requestedIds = mediaIds.distinct()
+        val currentById = current.items.associateBy(itemId)
+        if (requestedIds.size != current.items.size || requestedIds.toSet() != currentById.keys) return current
+        val activeId = itemId(current.items[current.startIndex])
+        val updatedItems = requestedIds.map { mediaId -> requireNotNull(currentById[mediaId]) }
+        val updatedActiveIndex = updatedItems.indexOfFirst { itemId(it) == activeId }
+        return current.copy(items = updatedItems, startIndex = updatedActiveIndex).also { snapshot = it }
+    }
+
+    @Synchronized
+    fun removeAll(mediaIds: Set<String>): PlaybackQueueSnapshot<T>? {
+        val current = snapshot ?: return null
+        if (mediaIds.isEmpty()) return current
+        val retainedItems = current.items.filterNot { item -> itemId(item) in mediaIds }
+        if (retainedItems.isEmpty()) {
+            snapshot = null
+            return null
+        }
+        val activeId = itemId(current.items[current.startIndex])
+        val retainedActiveIndex = retainedItems.indexOfFirst { itemId(it) == activeId }
+        // long: 当前歌曲也被批量移除时，播放应衔接到原队列中最靠前的未删除后继；只有后方已无歌曲才回退到剩余末项。
+        val successorId = current.items
+            .drop(current.startIndex + 1)
+            .firstOrNull { item -> itemId(item) !in mediaIds }
+            ?.let(itemId)
+        val nextStartIndex = retainedActiveIndex.takeIf { it >= 0 }
+            ?: successorId?.let { id -> retainedItems.indexOfFirst { itemId(it) == id } }?.takeIf { it >= 0 }
+            ?: retainedItems.lastIndex
+        return current.copy(
+            items = retainedItems,
+            startIndex = nextStartIndex,
+            startPositionMs = if (retainedActiveIndex >= 0) current.startPositionMs else 0L,
+        ).also { snapshot = it }
+    }
+
+    @Synchronized
     fun clear() {
         snapshot = null
     }
