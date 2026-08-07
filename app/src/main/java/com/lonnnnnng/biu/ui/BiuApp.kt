@@ -4358,7 +4358,8 @@ private fun MiniPlayer(
         modifier = Modifier
             .fillMaxWidth()
             .height(88.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerLow),
+            // long: 迷你播放器跨越内容区与底部导航，使用较高层级的语义表面色，让亮暗主题都能保持清晰但克制的区域分隔。
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
     ) {
         Row(
             modifier = Modifier
