@@ -66,8 +66,10 @@ interface PlaybackHistoryDao {
         PlaybackQueueStateEntity::class,
         PlaybackQueueItemEntity::class,
         LyricsCacheEntity::class,
+        CreatorGroupEntity::class,
+        CreatorGroupMemberEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
@@ -77,6 +79,7 @@ abstract class BiuDatabase : RoomDatabase() {
     abstract fun videoDownloadTaskDao(): VideoDownloadTaskDao
     abstract fun playbackQueueDao(): PlaybackQueueDao
     abstract fun lyricsCacheDao(): LyricsCacheDao
+    abstract fun creatorGroupDao(): CreatorGroupDao
 }
 
 object BiuDatabaseMigrations {
@@ -216,6 +219,37 @@ object BiuDatabaseMigrations {
                 )
                 """.trimIndent(),
             )
+        }
+    }
+
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: M15 只新增本地 UP 主分组和成员关系，保留旧首页范围、历史、队列及下载断点。
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `creator_groups` (
+                    `groupId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    `name` TEXT NOT NULL,
+                    `position` INTEGER NOT NULL,
+                    `createdAtEpochMs` INTEGER NOT NULL,
+                    `updatedAtEpochMs` INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `creator_group_members` (
+                    `groupId` INTEGER NOT NULL,
+                    `mid` INTEGER NOT NULL,
+                    `position` INTEGER NOT NULL,
+                    `addedAtEpochMs` INTEGER NOT NULL,
+                    PRIMARY KEY(`groupId`, `mid`),
+                    FOREIGN KEY(`groupId`) REFERENCES `creator_groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_creator_group_members_mid` ON `creator_group_members` (`mid`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_creator_group_members_groupId_position` ON `creator_group_members` (`groupId`, `position`)")
         }
     }
 }

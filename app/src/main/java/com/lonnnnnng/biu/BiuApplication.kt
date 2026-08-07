@@ -10,6 +10,7 @@ import com.lonnnnnng.biu.data.local.BiuDatabase
 import com.lonnnnnng.biu.data.local.BiuDatabaseMigrations
 import com.lonnnnnng.biu.data.local.AudioDownloadRepository
 import com.lonnnnnng.biu.data.local.CreatorSelectionRepository
+import com.lonnnnnng.biu.data.local.CreatorGroupRepository
 import com.lonnnnnng.biu.data.local.DisplayPreferenceRepository
 import com.lonnnnnng.biu.data.local.LocalAudioDirectoryRepository
 import com.lonnnnnng.biu.data.local.LocalAudioRepository
@@ -74,11 +75,13 @@ class AppContainer(context: Context) {
         BiuDatabaseMigrations.MIGRATION_3_4,
         BiuDatabaseMigrations.MIGRATION_4_5,
         BiuDatabaseMigrations.MIGRATION_5_6,
+        BiuDatabaseMigrations.MIGRATION_6_7,
     ).build()
     val playbackHistoryRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
     val playbackQueueRepository = PlaybackQueueRepository(database.playbackQueueDao())
     val lyricsCacheRepository = LyricsCacheRepository(database.lyricsCacheDao())
     val creatorSelectionRepository = CreatorSelectionRepository(database.creatorSelectionDao())
+    val creatorGroupRepository = CreatorGroupRepository(database.creatorGroupDao())
     val audioDownloadRepository = AudioDownloadRepository(database.audioDownloadTaskDao())
     val videoDownloadRepository = VideoDownloadRepository(database.videoDownloadTaskDao())
     val downloadNetworkPreferenceRepository = DownloadNetworkPreferenceRepository(context)

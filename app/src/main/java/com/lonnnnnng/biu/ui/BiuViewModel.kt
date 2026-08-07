@@ -31,6 +31,7 @@ import com.lonnnnnng.biu.data.local.AppVideoLayout
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDownloadMetadataPolicy
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
+import com.lonnnnnng.biu.data.local.CreatorGroupEntity
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.lyrics.LrcParser
@@ -71,7 +72,7 @@ import kotlinx.coroutines.sync.withPermit
 enum class MainSection(val label: String) {
     RECOMMEND("推荐"),
     DYNAMIC("动态"),
-    ACCOUNT("账号"),
+    ACCOUNT("音乐库"),
 }
 
 internal sealed interface PlaybackCommand {
@@ -123,10 +124,12 @@ data class LyricsUiState(
 enum class CreatorCenterTab(val label: String) {
     SEARCH("用户搜索"),
     FOLLOWING("我的关注"),
+    HOME_SELECTED("首页已选"),
 }
 
 data class CreatorCenterUiState(
     val tab: CreatorCenterTab = CreatorCenterTab.FOLLOWING,
+    val selectedGroupId: Long? = null,
     val searchKeyword: String = "",
     val searchResults: List<BilibiliCreator> = emptyList(),
     val searchNextPage: Int? = null,
@@ -161,6 +164,8 @@ data class BiuUiState(
     val selectedCreatorFeedMid: Long? = null,
     val followedCreators: List<BilibiliCreator> = emptyList(),
     val selectedCreators: List<BilibiliCreator> = emptyList(),
+    val creatorGroups: List<CreatorGroupEntity> = emptyList(),
+    val creatorGroupMembers: Map<Long, Set<Long>> = emptyMap(),
     val creatorCenter: CreatorCenterUiState = CreatorCenterUiState(),
     val dynamicFeed: DynamicFeedUiState = DynamicFeedUiState(),
     val searchResults: List<BilibiliVideo> = emptyList(),
@@ -282,6 +287,24 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     creatorSelectionInitialized = true
                     loadHomeFeed(selectedCreators, state.value.feed)
                 }
+            }
+        }
+        viewModelScope.launch {
+            container.creatorGroupRepository.groups.collect { groups ->
+                mutableState.update { current ->
+                    current.copy(
+                        creatorGroups = groups,
+                        creatorCenter = current.creatorCenter.copy(
+                            selectedGroupId = current.creatorCenter.selectedGroupId
+                                ?.takeIf { selectedId -> groups.any { it.groupId == selectedId } },
+                        ),
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            container.creatorGroupRepository.memberships.collect { memberships ->
+                mutableState.update { it.copy(creatorGroupMembers = memberships) }
             }
         }
         viewModelScope.launch {
@@ -771,6 +794,48 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun createCreatorGroup(name: String) {
+        val normalized = name.trim()
+        if (normalized.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                container.creatorGroupRepository.create(normalized, position = state.value.creatorGroups.size)
+            }.onFailure { error ->
+                mutableState.update { it.copy(message = error.userMessage("创建 UP 主分组失败")) }
+            }
+        }
+    }
+
+    fun renameCreatorGroup(group: CreatorGroupEntity, name: String) {
+        val normalized = name.trim()
+        if (normalized.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { container.creatorGroupRepository.rename(group, normalized) }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("重命名 UP 主分组失败")) }
+                }
+        }
+    }
+
+    fun deleteCreatorGroup(groupId: Long) {
+        viewModelScope.launch {
+            runCatching { container.creatorGroupRepository.delete(groupId) }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("删除 UP 主分组失败")) }
+                }
+        }
+    }
+
+    fun toggleCreatorGroup(groupId: Long, mid: Long) {
+        val selected = mid !in state.value.creatorGroupMembers[groupId].orEmpty()
+        viewModelScope.launch {
+            runCatching { container.creatorGroupRepository.setMembership(groupId, mid, selected) }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("更新 UP 主分组失败")) }
+                }
+        }
+    }
+
     fun selectCreatorCenterTab(tab: CreatorCenterTab) {
         if (state.value.creatorCenter.tab != tab) creatorListJob?.cancel()
         mutableState.update { current ->
@@ -784,6 +849,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (tab == CreatorCenterTab.FOLLOWING && state.value.creatorCenter.followingCreators.isEmpty()) {
             loadCreatorCenterFollowing(reset = true)
+        }
+    }
+
+    fun selectCreatorGroup(groupId: Long?) {
+        mutableState.update { current ->
+            current.copy(creatorCenter = current.creatorCenter.copy(selectedGroupId = groupId))
         }
     }
 

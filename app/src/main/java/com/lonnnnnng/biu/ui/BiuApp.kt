@@ -883,10 +883,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         return
     }
 
-    val openCreatorConfig: () -> Unit = {
-        showCreatorConfig = true
-        viewModel.loadFollowingCreators()
-    }
     val openCreatorCenter: () -> Unit = {
         showCreatorCenter = true
         viewModel.selectCreatorCenterTab(
@@ -905,7 +901,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 isAccountLoading = uiState.isAccountLoading,
                 isUpdateChecking = uiState.isUpdateChecking,
                 isDynamicLoading = uiState.dynamicFeed.isLoading,
-                onOpenCreatorConfig = openCreatorConfig,
                 onOpenCreatorCenter = openCreatorCenter,
                 onRefreshDynamic = { viewModel.loadDynamicFeed(reset = true) },
                 onShowThemeMenu = {
@@ -1100,6 +1095,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         // long: UP 主搜索与首页范围都覆盖在推荐页之上，关闭后保留列表位置和筛选状态，不打断首页浏览上下文。
         CreatorCenterScreen(
             state = uiState.creatorCenter,
+            selectedCreators = uiState.selectedCreators,
+            groups = uiState.creatorGroups,
+            groupMembers = uiState.creatorGroupMembers,
             accountLoggedIn = uiState.account.isLoggedIn,
             resolvingBvid = uiState.resolvingBvid,
             onBack = {
@@ -1107,6 +1105,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 showCreatorCenter = false
             },
             onTabSelected = viewModel::selectCreatorCenterTab,
+            onGroupSelected = viewModel::selectCreatorGroup,
             onSearch = viewModel::searchCreators,
             onClearSearch = viewModel::clearCreatorSearch,
             onLoadMoreSearch = { viewModel.searchCreators("", loadMore = true) },
@@ -1115,6 +1114,15 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onCloseCreator = viewModel::closeCreatorProfile,
             onToggleRelation = viewModel::toggleCreatorRelation,
             onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
+            onOpenHomeScope = {
+                showCreatorCenter = false
+                showCreatorConfig = true
+                viewModel.loadFollowingCreators()
+            },
+            onCreateGroup = viewModel::createCreatorGroup,
+            onRenameGroup = viewModel::renameCreatorGroup,
+            onDeleteGroup = viewModel::deleteCreatorGroup,
+            onToggleCreatorGroup = viewModel::toggleCreatorGroup,
             onPlay = viewModel::play,
             onAddFavorite = { video ->
                 if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
@@ -1177,7 +1185,6 @@ private fun BiuTopBar(
     isAccountLoading: Boolean,
     isUpdateChecking: Boolean,
     isDynamicLoading: Boolean,
-    onOpenCreatorConfig: () -> Unit,
     onOpenCreatorCenter: () -> Unit,
     onRefreshDynamic: () -> Unit,
     onShowThemeMenu: () -> Unit,
@@ -1197,11 +1204,8 @@ private fun BiuTopBar(
         },
         actions = {
             if (section == MainSection.RECOMMEND) {
-                IconButton(onClick = onOpenCreatorConfig) {
-                    Icon(Icons.Rounded.Tune, contentDescription = "设置首页内容范围")
-                }
                 IconButton(onClick = onOpenCreatorCenter) {
-                    Icon(Icons.Rounded.PersonSearch, contentDescription = "UP 主搜索和关注")
+                    Icon(Icons.Rounded.PersonSearch, contentDescription = "管理音乐来源")
                 }
             }
             if (section == MainSection.DYNAMIC) {
@@ -1567,7 +1571,7 @@ private fun BiuNavigationRail(
 private fun MainSection.icon(): ImageVector = when (this) {
     MainSection.RECOMMEND -> Icons.Rounded.Album
     MainSection.DYNAMIC -> Icons.Rounded.DynamicFeed
-    MainSection.ACCOUNT -> Icons.Rounded.AccountCircle
+    MainSection.ACCOUNT -> Icons.Rounded.LibraryMusic
 }
 
 @Composable
@@ -2263,14 +2267,15 @@ private fun AccountLibraryNavigation(
     selectedSection: AccountLibrarySection,
     onSelect: (AccountLibrarySection) -> Unit,
 ) {
-    // long: 账号音乐库是同层级内容切换，单行 Tab 比两行入口卡片更节省纵向空间，也能持续显示当前位置。
+    val selectedGroup = AccountLibraryGroup.entries.first { group -> selectedSection in group.sections }
+    // long: 在线、本地和下载先按数据来源分层，收藏与历史作为二级切换，窄屏不再挤压五个并列标签。
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(48.dp),
     ) {
-        AccountLibrarySection.entries.forEach { section ->
-            val selected = selectedSection == section
+        AccountLibraryGroup.entries.forEach { group ->
+            val selected = selectedGroup == group
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -2279,10 +2284,12 @@ private fun AccountLibraryNavigation(
                         role = Role.Tab
                         this.selected = selected
                     }
-                    .clickable { onSelect(section) },
+                    .clickable {
+                        if (!selected) onSelect(group.sections.first())
+                    },
             ) {
                 Text(
-                    text = section.label,
+                    text = group.label,
                     modifier = Modifier.align(Alignment.Center),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -2306,6 +2313,59 @@ private fun AccountLibraryNavigation(
         }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    if (selectedGroup.sections.size > 1) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+        ) {
+            selectedGroup.sections.forEach { section ->
+                val selected = selectedSection == section
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .semantics {
+                            role = Role.Tab
+                            this.selected = selected
+                        }
+                        .clickable { onSelect(section) },
+                ) {
+                    Text(
+                        text = section.label,
+                        modifier = Modifier.align(Alignment.Center),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    if (selected) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .width(56.dp)
+                                .height(2.dp)
+                                .background(MaterialTheme.colorScheme.primary),
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+private enum class AccountLibraryGroup(
+    val label: String,
+    val sections: List<AccountLibrarySection>,
+) {
+    ONLINE("在线", listOf(AccountLibrarySection.FAVORITES, AccountLibrarySection.ONLINE_HISTORY)),
+    LOCAL("本地", listOf(AccountLibrarySection.LOCAL_HISTORY, AccountLibrarySection.LOCAL_MUSIC)),
+    DOWNLOADS("下载", listOf(AccountLibrarySection.DOWNLOADS)),
 }
 
 @Composable
