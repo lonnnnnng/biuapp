@@ -27,6 +27,13 @@ data class BilibiliRecommendationPage(
     val hasMore: Boolean,
 )
 
+data class BilibiliVideoSearchPage(
+    val videos: List<BilibiliVideo>,
+    val page: Int,
+    val hasMore: Boolean,
+    val total: Int? = null,
+)
+
 data class BilibiliCreator(
     val mid: Long,
     val name: String,

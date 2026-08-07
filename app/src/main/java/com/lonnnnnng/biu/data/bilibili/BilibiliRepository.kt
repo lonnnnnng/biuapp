@@ -40,23 +40,34 @@ class BilibiliRepository(
         }
     }
 
-    suspend fun searchVideos(keyword: String, page: Int = 1): List<BilibiliVideo> {
-        val root = request(
+    suspend fun searchVideos(keyword: String, page: Int = 1): BilibiliVideoSearchPage {
+        val normalizedKeyword = keyword.trim()
+        require(normalizedKeyword.isNotBlank()) { "视频搜索关键词不能为空" }
+        val normalizedPage = page.coerceAtLeast(1)
+        val data = request(
             path = "/x/web-interface/wbi/search/type",
             parameters = mapOf(
                 "search_type" to "video",
-                "keyword" to keyword,
-                "page" to page,
-                "page_size" to 24,
+                "keyword" to normalizedKeyword,
+                "page" to normalizedPage,
+                "page_size" to VIDEO_SEARCH_PAGE_SIZE,
                 "order" to "totalrank",
                 "tids" to 3,
             ),
             useWbi = true,
-        ).requireSuccess()
-        return root.optJSONObject("data")
-            ?.optJSONArray("result")
+        ).requireSuccess().optJSONObject("data") ?: JSONObject()
+        val videos = data.optJSONArray("result")
             .toObjects()
             .mapNotNull(::parseSearchVideo)
+        val pageCount = data.optInt("numPages", 0).coerceAtLeast(0)
+        val total = data.optInt("numResults", -1).takeIf { it >= 0 }
+        return BilibiliVideoSearchPage(
+            videos = videos,
+            page = normalizedPage,
+            // long: 搜索接口偶尔不返回总页数，此时以满页作为继续请求的保守信号，避免首屏后无法加载更多。
+            hasMore = if (pageCount > 0) normalizedPage < pageCount else videos.size >= VIDEO_SEARCH_PAGE_SIZE,
+            total = total,
+        )
     }
 
     suspend fun searchCreators(keyword: String, page: Int = 1): BilibiliCreatorPage {
@@ -1465,6 +1476,7 @@ class BilibiliRepository(
     private companion object {
         const val API_BASE = "https://api.bilibili.com/"
         const val FOLLOWING_PAGE_SIZE = 50
+        const val VIDEO_SEARCH_PAGE_SIZE = 24
         const val CREATOR_SEARCH_PAGE_SIZE = 20
         const val CREATOR_VIDEO_PAGE_SIZE = 30
         const val CREATOR_COLLECTION_PAGE_SIZE = 20

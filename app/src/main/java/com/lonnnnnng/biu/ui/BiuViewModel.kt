@@ -189,6 +189,7 @@ data class BiuUiState(
     val dynamicFeed: DynamicFeedUiState = DynamicFeedUiState(),
     val searchResults: List<BilibiliVideo> = emptyList(),
     val submittedKeyword: String = "",
+    val searchHasMore: Boolean = false,
     val account: BilibiliAccount = BilibiliAccount(false, "", ""),
     val librarySection: AccountLibrarySection = AccountLibrarySection.FAVORITES,
     val createdFavoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
@@ -223,6 +224,7 @@ data class BiuUiState(
     val isCreatorConfigLoading: Boolean = false,
     val isCreatorConfigSaving: Boolean = false,
     val isSearchLoading: Boolean = false,
+    val isSearchLoadingMore: Boolean = false,
     val isAccountLoading: Boolean = true,
     val isLibraryLoading: Boolean = false,
     val isFavoriteLoadingMore: Boolean = false,
@@ -249,6 +251,9 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private val mutablePlaybackCommands = Channel<PlaybackCommand>(Channel.UNLIMITED)
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
+    private var searchJob: Job? = null
+    private var searchNextPage: Int? = null
+    private var searchGeneration: Long = 0L
     private var recommendationNextPage: Int? = null
     private var recommendationGeneration: Long = 0L
     private var favoriteBatchLoadJob: Job? = null
@@ -1429,32 +1434,99 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(message = "请输入搜索关键词") }
             return
         }
+        searchJob?.cancel()
+        searchGeneration += 1L
+        val generation = searchGeneration
+        searchNextPage = null
         mutableState.update {
             it.copy(
                 submittedKeyword = normalized,
+                searchResults = emptyList(),
+                searchHasMore = false,
                 isSearchLoading = true,
+                isSearchLoadingMore = false,
                 message = null,
             )
         }
-        viewModelScope.launch {
-            runCatching { repository.searchVideos(normalized) }
-                .onSuccess { videos ->
-                    mutableState.update { it.copy(searchResults = videos, isSearchLoading = false) }
+        searchJob = viewModelScope.launch {
+            try {
+                val result = repository.searchVideos(normalized)
+                if (generation != searchGeneration || state.value.submittedKeyword != normalized) return@launch
+                searchNextPage = if (result.hasMore) result.page + 1 else null
+                mutableState.update {
+                    it.copy(
+                        searchResults = result.videos,
+                        searchHasMore = result.hasMore,
+                        isSearchLoading = false,
+                    )
                 }
-                .onFailure { error ->
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (generation == searchGeneration && state.value.submittedKeyword == normalized) {
                     mutableState.update {
                         it.copy(isSearchLoading = false, message = error.userMessage("搜索失败"))
                     }
                 }
+            }
+        }
+    }
+
+    fun loadMoreSearchResults() {
+        val current = state.value
+        val page = searchNextPage ?: return
+        if (
+            current.submittedKeyword.isBlank() ||
+            current.isSearchLoading ||
+            current.isSearchLoadingMore ||
+            !current.searchHasMore ||
+            searchJob?.isActive == true
+        ) {
+            return
+        }
+        val keyword = current.submittedKeyword
+        val generation = searchGeneration
+        mutableState.update { it.copy(isSearchLoadingMore = true, message = null) }
+        searchJob = viewModelScope.launch {
+            try {
+                val result = repository.searchVideos(keyword, page)
+                if (generation != searchGeneration || state.value.submittedKeyword != keyword) return@launch
+                searchNextPage = if (result.hasMore) result.page + 1 else null
+                mutableState.update { latest ->
+                    latest.copy(
+                        // long: 服务端相邻页可能重复返回同一 BV，按资源身份去重可避免滚动触底后出现重复歌曲。
+                        searchResults = (latest.searchResults + result.videos).distinctBy(BilibiliVideo::bvid),
+                        searchHasMore = result.hasMore,
+                        isSearchLoadingMore = false,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (generation == searchGeneration && state.value.submittedKeyword == keyword) {
+                    mutableState.update {
+                        it.copy(
+                            isSearchLoadingMore = false,
+                            message = error.userMessage("更多搜索结果加载失败"),
+                        )
+                    }
+                }
+            }
         }
     }
 
     fun clearSearch() {
+        searchJob?.cancel()
+        searchJob = null
+        searchGeneration += 1L
+        searchNextPage = null
         mutableState.update {
             it.copy(
                 submittedKeyword = "",
                 searchResults = emptyList(),
+                searchHasMore = false,
                 isSearchLoading = false,
+                isSearchLoadingMore = false,
             )
         }
     }

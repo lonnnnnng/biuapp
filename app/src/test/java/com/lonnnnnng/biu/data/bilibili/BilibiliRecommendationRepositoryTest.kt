@@ -154,6 +154,81 @@ class BilibiliRecommendationRepositoryTest {
         assertNull(request.requestUrl?.queryParameter("ps"))
     }
 
+    @Test
+    fun `视频搜索返回服务端分页信息并规范化请求参数`() = runBlocking {
+        server.enqueue(wbiKeyResponse())
+        server.enqueue(
+            jsonResponse(
+                """
+                {
+                  "code": 0,
+                  "data": {
+                    "numPages": 3,
+                    "numResults": 50,
+                    "result": [
+                      {
+                        "aid": 88,
+                        "bvid": "BV1SEARCH",
+                        "title": "<em class=\"keyword\">测试</em>歌曲",
+                        "author": "测试UP",
+                        "pic": "//i0.hdslb.com/search.jpg",
+                        "duration": "03:25",
+                        "play": 123,
+                        "pubdate": 1700000200
+                      }
+                    ]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val result = repository.searchVideos("  测试歌曲  ", page = 2)
+
+        assertEquals(2, result.page)
+        assertTrue(result.hasMore)
+        assertEquals(50, result.total)
+        assertEquals("BV1SEARCH", result.videos.single().bvid)
+        assertEquals("测试歌曲", result.videos.single().title)
+        server.takeRequest() // WBI key
+        val request = server.takeRequest()
+        assertEquals("/x/web-interface/wbi/search/type", request.requestUrl?.encodedPath)
+        assertEquals("测试歌曲", request.requestUrl?.queryParameter("keyword"))
+        assertEquals("2", request.requestUrl?.queryParameter("page"))
+        assertEquals("24", request.requestUrl?.queryParameter("page_size"))
+    }
+
+    @Test
+    fun `视频搜索缺少总页数时以满页判断是否继续`() = runBlocking {
+        val videos = (1..24).joinToString(",") { index ->
+            """{"aid":$index,"bvid":"BVS$index","title":"歌曲$index","author":"UP$index","pic":"","duration":"01:00","play":$index}"""
+        }
+        server.enqueue(wbiKeyResponse())
+        server.enqueue(jsonResponse("""{"code":0,"data":{"result":[$videos]}}"""))
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        val result = repository.searchVideos("歌曲")
+
+        assertTrue(result.hasMore)
+        assertNull(result.total)
+        assertEquals(24, result.videos.size)
+    }
+
+    private fun wbiKeyResponse(): MockResponse = jsonResponse(
+        """
+        {
+          "code": 0,
+          "data": {
+            "wbi_img": {
+              "img_url": "https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz123456.png",
+              "sub_url": "https://i0.hdslb.com/bfs/wbi/123456abcdefghijklmnopqrstuvwxyz.png"
+            }
+          }
+        }
+        """.trimIndent(),
+    )
+
     private fun jsonResponse(body: String): MockResponse {
         return MockResponse()
             .setHeader("Content-Type", "application/json")

@@ -107,6 +107,8 @@ import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -330,6 +332,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showDisplaySettings by rememberSaveable { mutableStateOf(false) }
     var showCreatorConfig by remember { mutableStateOf(false) }
     var showCreatorCenter by rememberSaveable { mutableStateOf(false) }
+    var showQuickQueue by rememberSaveable { mutableStateOf(false) }
+    var confirmClearQuickQueue by remember { mutableStateOf(false) }
     var favoritePickerVideo by remember { mutableStateOf<BilibiliVideo?>(null) }
     var tripleConfirmation by remember { mutableStateOf<BilibiliDynamicItem?>(null) }
     // long: 视频全屏期间横竖屏切换会重建 Activity；保存页面开关，避免重建后意外退回首页而中断控制链路。
@@ -873,6 +877,63 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         )
     }
 
+    if (showQuickQueue && playback.mediaId.isNotBlank()) {
+        ModalBottomSheet(
+            onDismissRequest = { showQuickQueue = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            PlaybackQueue(
+                snapshot = playback,
+                onSelectQueueItem = { index ->
+                    controller?.seekToDefaultPosition(index)
+                    controller?.play()
+                },
+                onMoveQueueItemNext = { item ->
+                    controller?.let { activeController ->
+                        val currentMediaId = activeController.currentMediaItem?.mediaId.orEmpty()
+                        if (activeController.moveQueueItemNext(item.mediaId)) {
+                            viewModel.movePlaybackQueueItemNext(item.mediaId, currentMediaId)
+                        }
+                    }
+                },
+                onRemoveQueueItem = { item ->
+                    controller?.let { activeController ->
+                        if (activeController.removeQueueItem(item.mediaId)) {
+                            viewModel.removePlaybackQueueItem(item.mediaId)
+                        }
+                    }
+                },
+                onClearQueue = { confirmClearQuickQueue = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 640.dp),
+            )
+        }
+    }
+    if (confirmClearQuickQueue) {
+        AlertDialog(
+            onDismissRequest = { confirmClearQuickQueue = false },
+            title = { Text("清空播放列表？") },
+            text = { Text("当前播放会停止，列表中的所有内容都会移除。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClearQuickQueue = false
+                        showQuickQueue = false
+                        controller?.let { activeController ->
+                            viewModel.clearPlaybackQueue()
+                            activeController.stop()
+                            activeController.clearMediaItems()
+                        }
+                    },
+                ) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClearQuickQueue = false }) { Text("取消") }
+            },
+        )
+    }
+
     if (showNowPlaying && playback.mediaId.isNotBlank()) {
         BackHandler { showNowPlaying = false }
         NowPlayingScreen(
@@ -1007,6 +1068,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 onNext = { controller?.seekToNextMediaItem() },
                 onSeek = { positionMs -> controller?.seekTo(positionMs) },
                 onOpenNowPlaying = { showNowPlaying = true },
+                onOpenQueue = { showQuickQueue = true },
                 onSectionSelected = viewModel::selectSection,
             )
         },
@@ -1025,6 +1087,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     loadingMore = uiState.isFeedLoadingMore,
                     hasMore = uiState.recommendationHasMore,
                     searchLoading = uiState.isSearchLoading,
+                    searchLoadingMore = uiState.isSearchLoadingMore,
+                    searchHasMore = uiState.searchHasMore,
                     resolvingBvid = uiState.resolvingBvid,
                     videoLayout = uiState.videoLayout,
                     onFeedChange = viewModel::loadRecommendations,
@@ -1032,6 +1096,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onRefresh = { viewModel.loadRecommendations() },
                     onLoadMore = viewModel::loadMoreRecommendations,
                     onSearch = viewModel::search,
+                    onLoadMoreSearch = viewModel::loadMoreSearchResults,
                     onClearSearch = viewModel::clearSearch,
                     onPlay = viewModel::play,
                     onAddFavorite = { video ->
@@ -1569,6 +1634,7 @@ private fun BiuBottomBar(
     onNext: () -> Unit,
     onSeek: (Long) -> Unit,
     onOpenNowPlaying: () -> Unit,
+    onOpenQueue: () -> Unit,
     onSectionSelected: (MainSection) -> Unit,
 ) {
     Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
@@ -1581,6 +1647,7 @@ private fun BiuBottomBar(
                 onNext = onNext,
                 onSeek = onSeek,
                 onOpenNowPlaying = onOpenNowPlaying,
+                onOpenQueue = onOpenQueue,
             )
         }
         if (showNavigation) {
@@ -1658,6 +1725,8 @@ private fun RecommendationScreen(
     loadingMore: Boolean,
     hasMore: Boolean,
     searchLoading: Boolean,
+    searchLoadingMore: Boolean,
+    searchHasMore: Boolean,
     resolvingBvid: String?,
     videoLayout: AppVideoLayout,
     onFeedChange: (RecommendFeed) -> Unit,
@@ -1665,6 +1734,7 @@ private fun RecommendationScreen(
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onSearch: (String) -> Unit,
+    onLoadMoreSearch: () -> Unit,
     onClearSearch: () -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
@@ -1768,9 +1838,9 @@ private fun RecommendationScreen(
                     videoLayout = videoLayout,
                     onPlay = onPlay,
                     onAddFavorite = onAddFavorite,
-                    onLoadMore = if (showingSearchResults) null else onLoadMore,
-                    hasMore = !showingSearchResults && recommendationHasMore,
-                    loadingMore = !showingSearchResults && recommendationLoadingMore,
+                    onLoadMore = if (showingSearchResults) onLoadMoreSearch else onLoadMore,
+                    hasMore = if (showingSearchResults) searchHasMore else recommendationHasMore,
+                    loadingMore = if (showingSearchResults) searchLoadingMore else recommendationLoadingMore,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -4819,6 +4889,7 @@ private fun MiniPlayer(
     onNext: () -> Unit,
     onSeek: (Long) -> Unit,
     onOpenNowPlaying: () -> Unit,
+    onOpenQueue: () -> Unit,
 ) {
     var isDragging by remember(snapshot.mediaId) { mutableStateOf(false) }
     var dragFraction by remember(snapshot.mediaId) { mutableFloatStateOf(0f) }
@@ -4900,6 +4971,23 @@ private fun MiniPlayer(
                             },
                         )
                     }
+                }
+            }
+            IconButton(onClick = onOpenQueue, enabled = snapshot.queueItems.isNotEmpty()) {
+                BadgedBox(
+                    badge = {
+                        Badge {
+                            Text(
+                                if (snapshot.queueItems.size > 99) "99+" else snapshot.queueItems.size.toString(),
+                            )
+                        }
+                    },
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.QueueMusic,
+                        contentDescription = "播放列表，共 ${snapshot.queueItems.size} 首",
+                        modifier = Modifier.size(25.dp),
+                    )
                 }
             }
             IconButton(onClick = onPrevious, enabled = controllerReady && snapshot.hasPrevious) {
