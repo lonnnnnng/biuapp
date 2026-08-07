@@ -74,6 +74,8 @@ class PlaybackService : MediaSessionService() {
     private var progressPersistenceJob: Job? = null
     private var queuePersistenceJob: Job? = null
     private var playbackPreferencesPersistenceJob: Job? = null
+    private var sleepTimerJob: Job? = null
+    private var sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF
     private var reportPlayHistoryEnabled = true
     private var activeHeartbeatSession: ActiveHeartbeatSession? = null
     private val heartbeatMutex = Mutex()
@@ -167,6 +169,7 @@ class PlaybackService : MediaSessionService() {
             }
             // long: 同一媒体项内的 seek 也要立即保存队列位置，否则强制停止后会回到拖动前的时间点。
             persistPlaybackQueueNow()
+            maybeFinishSleepTimerAfterTransition(oldPosition, reason)
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -260,6 +263,9 @@ class PlaybackService : MediaSessionService() {
                         positionMs = player?.currentPosition ?: 0L,
                         durationMs = player?.duration ?: C.TIME_UNSET,
                     )
+                }
+                if (SleepTimerPolicy.shouldFinishOnPlaybackEnded(sleepTimerMode)) {
+                    finishSleepTimer()
                 }
             }
         }
@@ -359,6 +365,8 @@ class PlaybackService : MediaSessionService() {
         queuePersistenceJob = null
         playbackPreferencesPersistenceJob?.cancel()
         playbackPreferencesPersistenceJob = null
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
         serviceScope.cancel()
         player?.removeListener(playerListener)
         mediaSession?.release()
@@ -878,7 +886,57 @@ class PlaybackService : MediaSessionService() {
                 if (!preferences.reportPlayHistory) {
                     heartbeatMutex.withLock { activeHeartbeatSession = null }
                 }
+                applySleepTimer(preferences.sleepTimerMode, preferences.sleepTimerDeadlineEpochMs)
             }
+        }
+    }
+
+    private fun applySleepTimer(mode: SleepTimerMode, deadlineEpochMs: Long) {
+        sleepTimerMode = mode
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        if (mode != SleepTimerMode.DEADLINE) return
+        val remainingMs = SleepTimerPolicy.remainingMs(deadlineEpochMs, System.currentTimeMillis())
+        if (remainingMs <= 0L) {
+            finishSleepTimer()
+            return
+        }
+        sleepTimerJob = serviceScope.launch {
+            delay(remainingMs)
+            finishSleepTimer()
+        }
+    }
+
+    private fun maybeFinishSleepTimerAfterTransition(
+        oldPosition: Player.PositionInfo,
+        reason: Int,
+    ) {
+        if (reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) return
+        val finalQueueIndex = (player?.mediaItemCount ?: 0) - 1
+        // long: 列表循环时 Media3 不进入 ENDED；识别最后一项的自然切换，确保“队列结束”仍能覆盖循环模式。
+        if (
+            SleepTimerPolicy.shouldFinishAfterAutoTransition(
+                mode = sleepTimerMode,
+                completedMediaItemIndex = oldPosition.mediaItemIndex,
+                lastQueueIndex = finalQueueIndex,
+            )
+        ) {
+            finishSleepTimer()
+        }
+    }
+
+    private fun finishSleepTimer() {
+        if (sleepTimerMode == SleepTimerMode.OFF) return
+        sleepTimerMode = SleepTimerMode.OFF
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        // long: 到点后暂停而非清空队列，既立即停止声音，也保留用户醒来后的歌曲、进度和离线恢复上下文。
+        player?.pause()
+        persistCurrentProgress()
+        persistPlaybackQueueNow()
+        serviceScope.launch {
+            runCatching { appContainer.playbackPreferenceRepository.clearSleepTimer() }
+                .onFailure { error -> Log.w(LOG_TAG, "Clearing sleep timer failed", error) }
         }
     }
 

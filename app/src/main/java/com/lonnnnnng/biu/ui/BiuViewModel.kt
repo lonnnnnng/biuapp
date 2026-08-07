@@ -57,6 +57,8 @@ import com.lonnnnnng.biu.download.FavoriteDownloadPage
 import com.lonnnnnng.biu.download.VideoDownloadRequest
 import com.lonnnnnng.biu.download.VideoDownloadService
 import com.lonnnnnng.biu.download.VideoDownloadStatus
+import com.lonnnnnng.biu.playback.SleepTimerMode
+import com.lonnnnnng.biu.playback.SleepTimerPolicy
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -219,6 +221,8 @@ data class BiuUiState(
     val textScale: AppTextScale = AppTextScale.STANDARD,
     val videoLayout: AppVideoLayout = AppVideoLayout.LIST,
     val reportPlayHistory: Boolean = true,
+    val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
+    val sleepTimerDeadlineEpochMs: Long = 0L,
     val isFeedLoading: Boolean = true,
     val isFeedLoadingMore: Boolean = false,
     val isCreatorConfigLoading: Boolean = false,
@@ -372,7 +376,13 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             container.playbackPreferenceRepository.preferences.collect { preferences ->
-                mutableState.update { it.copy(reportPlayHistory = preferences.reportPlayHistory) }
+                mutableState.update {
+                    it.copy(
+                        reportPlayHistory = preferences.reportPlayHistory,
+                        sleepTimerMode = preferences.sleepTimerMode,
+                        sleepTimerDeadlineEpochMs = preferences.sleepTimerDeadlineEpochMs,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -1708,6 +1718,23 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun savePlaybackQueueToPlaylist(playlistId: Long) {
+        val tracks = playbackQueueSnapshots.current()?.items.orEmpty()
+        if (tracks.isEmpty()) {
+            mutableState.update { it.copy(message = "当前播放列表为空") }
+            return
+        }
+        viewModelScope.launch {
+            runCatching { container.localPlaylistRepository.addTracks(playlistId, tracks) }
+                .onSuccess {
+                    mutableState.update { it.copy(message = "已将 ${tracks.distinctBy(Track::id).size} 首加入本地歌单") }
+                }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("保存播放列表失败")) }
+                }
+        }
+    }
+
     fun dismissPageSelection() {
         if (state.value.isPageQueueLoading) return
         mutableState.update { it.copy(pageSelection = null) }
@@ -1830,6 +1857,31 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     mutableState.update {
                         it.copy(reportPlayHistory = !enabled, message = error.userMessage("保存播放历史设置失败"))
                     }
+                }
+        }
+    }
+
+    fun setSleepTimerMinutes(minutes: Int) {
+        val deadline = runCatching {
+            SleepTimerPolicy.deadlineAfterMinutes(System.currentTimeMillis(), minutes)
+        }.getOrElse { error ->
+            mutableState.update { it.copy(message = error.userMessage("睡眠定时设置失败")) }
+            return
+        }
+        saveSleepTimer(SleepTimerMode.DEADLINE, deadline)
+    }
+
+    fun setSleepTimerAtTrackEnd() = saveSleepTimer(SleepTimerMode.TRACK_END)
+
+    fun setSleepTimerAtQueueEnd() = saveSleepTimer(SleepTimerMode.QUEUE_END)
+
+    fun cancelSleepTimer() = saveSleepTimer(SleepTimerMode.OFF)
+
+    private fun saveSleepTimer(mode: SleepTimerMode, deadlineEpochMs: Long = 0L) {
+        viewModelScope.launch {
+            runCatching { container.playbackPreferenceRepository.saveSleepTimer(mode, deadlineEpochMs) }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("睡眠定时设置失败")) }
                 }
         }
     }
@@ -2836,6 +2888,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     internal fun movePlaybackQueueItemNext(mediaId: String, currentMediaId: String) {
         stopProgressiveQueueForUserEdit()
         playbackQueueSnapshots.moveNext(mediaId, currentMediaId)
+    }
+
+    internal fun movePlaybackQueueItem(mediaId: String, targetIndex: Int) {
+        stopProgressiveQueueForUserEdit()
+        playbackQueueSnapshots.move(mediaId, targetIndex)
     }
 
     internal fun clearPlaybackQueue() {

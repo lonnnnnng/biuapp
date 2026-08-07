@@ -101,9 +101,21 @@ class ProgressivePageQueueLoaderTest {
     }
 
     @Test
+    fun `任意排序后仍按媒体身份保留当前项和进度`() {
+        val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
+        store.replace(queueId = 12L, items = listOf(0, 1, 2, 3), startIndex = 2, startPositionMs = 9_000L)
+
+        val updated = store.move(mediaId = "0", targetIndex = 3)
+
+        assertEquals(listOf(1, 2, 3, 0), updated?.items)
+        assertEquals(1, updated?.startIndex)
+        assertEquals(9_000L, updated?.startPositionMs)
+    }
+
+    @Test
     fun `清空队列后不再返回旧快照`() {
         val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
-        store.replace(queueId = 12L, items = listOf(0, 1), startIndex = 0, startPositionMs = 0L)
+        store.replace(queueId = 13L, items = listOf(0, 1), startIndex = 0, startPositionMs = 0L)
 
         store.clear()
 

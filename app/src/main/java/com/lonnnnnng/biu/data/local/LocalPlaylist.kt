@@ -163,6 +163,11 @@ class LocalPlaylistRepository(
         )
     }
 
+    suspend fun addTracks(playlistId: Long, tracks: List<Track>) {
+        // long: 同一媒体在队列中只保存一次，按当前队列顺序逐项追加，确保多 P 与本地音乐混合歌单的顺序可预测。
+        tracks.distinctBy(Track::id).forEach { track -> addTrack(playlistId, track) }
+    }
+
     suspend fun remove(playlistId: Long, mediaId: String) = dao.deleteItem(playlistId, mediaId)
 
     suspend fun reorder(playlistId: Long, mediaIds: List<String>) {

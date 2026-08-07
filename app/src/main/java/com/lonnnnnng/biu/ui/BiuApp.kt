@@ -65,6 +65,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
@@ -103,6 +104,7 @@ import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Bolt
@@ -245,6 +247,8 @@ import com.lonnnnnng.biu.playback.PlaybackService
 import com.lonnnnnng.biu.playback.PlaybackMode
 import com.lonnnnnng.biu.playback.PlaybackSessionCommands
 import com.lonnnnnng.biu.playback.PlaybackSpeedPolicy
+import com.lonnnnnng.biu.playback.SleepTimerMode
+import com.lonnnnnng.biu.playback.SleepTimerPolicy
 import com.lonnnnnng.biu.playback.applyPlaybackMode
 import com.lonnnnnng.biu.update.AppUpdateInstaller
 import java.time.Instant
@@ -307,6 +311,7 @@ private sealed interface PendingDownload {
 private sealed interface PendingPlaylistAddition {
     data class VideoPage(val selection: VideoPageSelection, val pageIndex: Int) : PendingPlaylistAddition
     data class LocalTrack(val audio: LocalAudio) : PendingPlaylistAddition
+    data object CurrentQueue : PendingPlaylistAddition
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -793,6 +798,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         playlist.playlistId,
                         pending.audio,
                     )
+                    PendingPlaylistAddition.CurrentQueue -> viewModel.savePlaybackQueueToPlaylist(playlist.playlistId)
                 }
             },
             onOpenLibrary = {
@@ -896,12 +902,23 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         }
                     }
                 },
+                onMoveQueueItem = { item, targetIndex ->
+                    controller?.let { activeController ->
+                        if (activeController.moveQueueItem(item.mediaId, targetIndex)) {
+                            viewModel.movePlaybackQueueItem(item.mediaId, targetIndex)
+                        }
+                    }
+                },
                 onRemoveQueueItem = { item ->
                     controller?.let { activeController ->
                         if (activeController.removeQueueItem(item.mediaId)) {
                             viewModel.removePlaybackQueueItem(item.mediaId)
                         }
                     }
+                },
+                onSaveQueue = {
+                    showQuickQueue = false
+                    pendingPlaylistAddition = PendingPlaylistAddition.CurrentQueue
                 },
                 onClearQueue = { confirmClearQuickQueue = true },
                 modifier = Modifier
@@ -942,6 +959,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             player = controller,
             controllerReady = controller != null,
             mediaModeSwitching = mediaModeSwitching,
+            sleepTimerMode = uiState.sleepTimerMode,
+            sleepTimerDeadlineEpochMs = uiState.sleepTimerDeadlineEpochMs,
             snackbarHostState = snackbarHostState,
             onBack = { showNowPlaying = false },
             onPrevious = { controller?.seekToPreviousMediaItem() },
@@ -970,12 +989,22 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     }
                 }
             },
+            onMoveQueueItem = { item, targetIndex ->
+                controller?.let { activeController ->
+                    if (activeController.moveQueueItem(item.mediaId, targetIndex)) {
+                        viewModel.movePlaybackQueueItem(item.mediaId, targetIndex)
+                    }
+                }
+            },
             onRemoveQueueItem = { item ->
                 controller?.let { activeController ->
                     if (activeController.removeQueueItem(item.mediaId)) {
                         viewModel.removePlaybackQueueItem(item.mediaId)
                     }
                 }
+            },
+            onSaveQueue = {
+                pendingPlaylistAddition = PendingPlaylistAddition.CurrentQueue
             },
             onClearQueue = {
                 controller?.let { activeController ->
@@ -984,6 +1013,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     activeController.clearMediaItems()
                 }
             },
+            onSetSleepTimerMinutes = viewModel::setSleepTimerMinutes,
+            onSetSleepTimerAtTrackEnd = viewModel::setSleepTimerAtTrackEnd,
+            onSetSleepTimerAtQueueEnd = viewModel::setSleepTimerAtQueueEnd,
+            onCancelSleepTimer = viewModel::cancelSleepTimer,
             onPrepareLyrics = {
                 viewModel.prepareLyrics(
                     source = playback.bilibiliSource,
@@ -5058,6 +5091,8 @@ private fun NowPlayingScreen(
     player: Player?,
     controllerReady: Boolean,
     mediaModeSwitching: Boolean,
+    sleepTimerMode: SleepTimerMode,
+    sleepTimerDeadlineEpochMs: Long,
     snackbarHostState: SnackbarHostState,
     onBack: () -> Unit,
     onPrevious: () -> Unit,
@@ -5072,8 +5107,14 @@ private fun NowPlayingScreen(
     onVideoDownload: () -> Unit,
     onSelectQueueItem: (Int) -> Unit,
     onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
+    onMoveQueueItem: (PlaybackQueueItem, Int) -> Unit,
     onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
+    onSaveQueue: () -> Unit,
     onClearQueue: () -> Unit,
+    onSetSleepTimerMinutes: (Int) -> Unit,
+    onSetSleepTimerAtTrackEnd: () -> Unit,
+    onSetSleepTimerAtQueueEnd: () -> Unit,
+    onCancelSleepTimer: () -> Unit,
     onPrepareLyrics: () -> Unit,
     onSearchLyrics: (String) -> Unit,
     onSelectLyrics: (LyricsSearchResult) -> Unit,
@@ -5082,6 +5123,7 @@ private fun NowPlayingScreen(
     var showQueue by remember { mutableStateOf(false) }
     var showLyrics by rememberSaveable { mutableStateOf(false) }
     var showLyricsSearch by remember { mutableStateOf(false) }
+    var showSleepTimer by remember { mutableStateOf(false) }
     val lyricsDefaults = lyricsSearchDefaults(snapshot.title, snapshot.pageTitle, snapshot.artist)
     val defaultLyricsQuery = listOf(lyricsDefaults.trackName, lyricsDefaults.artistName)
         .map(String::trim)
@@ -5124,7 +5166,12 @@ private fun NowPlayingScreen(
                 snapshot = snapshot,
                 onSelectQueueItem = onSelectQueueItem,
                 onMoveQueueItemNext = onMoveQueueItemNext,
+                onMoveQueueItem = onMoveQueueItem,
                 onRemoveQueueItem = onRemoveQueueItem,
+                onSaveQueue = {
+                    showQueue = false
+                    onSaveQueue()
+                },
                 onClearQueue = { confirmClearQueue = true },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5150,6 +5197,34 @@ private fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 360.dp, max = 640.dp),
+            )
+        }
+    }
+    if (showSleepTimer) {
+        ModalBottomSheet(
+            onDismissRequest = { showSleepTimer = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            SleepTimerSheet(
+                mode = sleepTimerMode,
+                deadlineEpochMs = sleepTimerDeadlineEpochMs,
+                onSetMinutes = { minutes ->
+                    onSetSleepTimerMinutes(minutes)
+                    showSleepTimer = false
+                },
+                onSetTrackEnd = {
+                    onSetSleepTimerAtTrackEnd()
+                    showSleepTimer = false
+                },
+                onSetQueueEnd = {
+                    onSetSleepTimerAtQueueEnd()
+                    showSleepTimer = false
+                },
+                onCancel = {
+                    onCancelSleepTimer()
+                    showSleepTimer = false
+                },
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
@@ -5202,6 +5277,17 @@ private fun NowPlayingScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showSleepTimer = true }) {
+                        Icon(
+                            Icons.Rounded.Timer,
+                            contentDescription = sleepTimerStatusLabel(sleepTimerMode, sleepTimerDeadlineEpochMs),
+                            tint = if (sleepTimerMode == SleepTimerMode.OFF) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    }
                     if (snapshot.bilibiliSource != null) {
                         IconButton(
                             onClick = {
@@ -5315,6 +5401,82 @@ private fun NowPlayingScreen(
                     .fillMaxSize()
                     .padding(padding),
             )
+        }
+    }
+}
+
+@Composable
+private fun SleepTimerSheet(
+    mode: SleepTimerMode,
+    deadlineEpochMs: Long,
+    onSetMinutes: (Int) -> Unit,
+    onSetTrackEnd: () -> Unit,
+    onSetQueueEnd: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.padding(bottom = 24.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.Timer, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("睡眠定时", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    sleepTimerStatusLabel(mode, deadlineEpochMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        SleepTimerPolicy.minuteOptions.forEach { minutes ->
+            DropdownMenuItem(
+                text = { Text("$minutes 分钟后") },
+                leadingIcon = { Icon(Icons.Rounded.Timer, contentDescription = null) },
+                onClick = { onSetMinutes(minutes) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        DropdownMenuItem(
+            text = { Text("当前歌曲结束后") },
+            leadingIcon = { Icon(Icons.Rounded.MusicNote, contentDescription = null) },
+            onClick = onSetTrackEnd,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        DropdownMenuItem(
+            text = { Text("当前队列结束后") },
+            leadingIcon = { Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null) },
+            onClick = onSetQueueEnd,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (mode != SleepTimerMode.OFF) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            DropdownMenuItem(
+                text = { Text("取消睡眠定时", color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(Icons.Rounded.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                },
+                onClick = onCancel,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+private fun sleepTimerStatusLabel(mode: SleepTimerMode, deadlineEpochMs: Long): String {
+    return when (mode) {
+        SleepTimerMode.OFF -> "睡眠定时"
+        SleepTimerMode.TRACK_END -> "当前歌曲结束后停止"
+        SleepTimerMode.QUEUE_END -> "当前队列结束后停止"
+        SleepTimerMode.DEADLINE -> {
+            val remainingMinutes =
+                (SleepTimerPolicy.remainingMs(deadlineEpochMs, System.currentTimeMillis()) + 59_999L) / 60_000L
+            "约 $remainingMinutes 分钟后停止"
         }
     }
 }
@@ -6598,7 +6760,9 @@ private fun PlaybackQueue(
     snapshot: PlaybackSnapshot,
     onSelectQueueItem: (Int) -> Unit,
     onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
+    onMoveQueueItem: (PlaybackQueueItem, Int) -> Unit,
     onRemoveQueueItem: (PlaybackQueueItem) -> Unit,
+    onSaveQueue: () -> Unit,
     onClearQueue: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -6611,13 +6775,17 @@ private fun PlaybackQueue(
             Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Text("播放列表 · ${snapshot.queueItems.size}", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.weight(1f))
+            IconButton(onClick = onSaveQueue, enabled = snapshot.queueItems.isNotEmpty()) {
+                Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = "保存为本地歌单")
+            }
             IconButton(onClick = onClearQueue, enabled = snapshot.queueItems.isNotEmpty()) {
                 Icon(Icons.Rounded.DeleteOutline, contentDescription = "清空播放列表")
             }
         }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(snapshot.queueItems, key = { item -> "${item.index}:${item.mediaId}" }) { item ->
+            items(snapshot.queueItems, key = PlaybackQueueItem::mediaId) { item ->
                 val isCurrent = item.index == snapshot.currentIndex
+                var itemMenuExpanded by remember(item.mediaId) { mutableStateOf(false) }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -6671,13 +6839,48 @@ private fun PlaybackQueue(
                     }
                     if (isCurrent) {
                         Icon(Icons.Rounded.PlayArrow, contentDescription = "当前播放", tint = MaterialTheme.colorScheme.primary)
-                    } else {
-                        IconButton(onClick = { onMoveQueueItemNext(item) }) {
-                            Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = "设为下一首")
-                        }
                     }
-                    IconButton(onClick = { onRemoveQueueItem(item) }) {
-                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "从播放列表移除")
+                    Box {
+                        IconButton(onClick = { itemMenuExpanded = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = "编辑${item.pageTitle ?: item.title}")
+                        }
+                        DropdownMenu(
+                            expanded = itemMenuExpanded,
+                            onDismissRequest = { itemMenuExpanded = false },
+                        ) {
+                            if (!isCurrent) {
+                                DropdownMenuItem(
+                                    text = { Text("设为下一首") },
+                                    onClick = {
+                                        itemMenuExpanded = false
+                                        onMoveQueueItemNext(item)
+                                    },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("上移") },
+                                enabled = item.index > 0,
+                                onClick = {
+                                    itemMenuExpanded = false
+                                    onMoveQueueItem(item, item.index - 1)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("下移") },
+                                enabled = item.index < snapshot.queueItems.lastIndex,
+                                onClick = {
+                                    itemMenuExpanded = false
+                                    onMoveQueueItem(item, item.index + 1)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("移出播放列表") },
+                                onClick = {
+                                    itemMenuExpanded = false
+                                    onRemoveQueueItem(item)
+                                },
+                            )
+                        }
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -7317,6 +7520,15 @@ private fun MediaController.moveQueueItemNext(mediaId: String): Boolean {
     val insertionIndex = if (targetIndex < activeIndex) activeIndex else activeIndex + 1
     removeMediaItem(targetIndex)
     addMediaItem(insertionIndex.coerceAtMost(mediaItemCount), target)
+    return true
+}
+
+private fun MediaController.moveQueueItem(mediaId: String, targetIndex: Int): Boolean {
+    val sourceIndex = (0 until mediaItemCount).firstOrNull { getMediaItemAt(it).mediaId == mediaId } ?: return false
+    val boundedTarget = targetIndex.coerceIn(0, mediaItemCount - 1)
+    if (sourceIndex == boundedTarget) return false
+    // long: 直接使用 Media3 原生 move 保留当前媒体实例与播放位置，避免重建整条队列造成声音中断。
+    moveMediaItem(sourceIndex, boundedTarget)
     return true
 }
 

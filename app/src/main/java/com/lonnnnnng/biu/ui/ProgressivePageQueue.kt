@@ -102,6 +102,23 @@ internal class PlaybackQueueSnapshotStore<T>(
     }
 
     @Synchronized
+    fun move(mediaId: String, targetIndex: Int): PlaybackQueueSnapshot<T>? {
+        val current = snapshot ?: return null
+        val sourceIndex = current.items.indexOfFirst { itemId(it) == mediaId }
+        if (sourceIndex < 0) return current
+        val boundedTarget = targetIndex.coerceIn(current.items.indices)
+        if (sourceIndex == boundedTarget) return current
+
+        val activeId = itemId(current.items[current.startIndex])
+        val updatedItems = current.items.toMutableList()
+        val movingItem = updatedItems.removeAt(sourceIndex)
+        updatedItems.add(boundedTarget.coerceAtMost(updatedItems.size), movingItem)
+        // long: 调整顺序不能把恢复锚点留在旧索引；始终按当前媒体 ID 重算，后台落盘后仍恢复同一首和同一进度。
+        val updatedActiveIndex = updatedItems.indexOfFirst { itemId(it) == activeId }
+        return current.copy(items = updatedItems, startIndex = updatedActiveIndex).also { snapshot = it }
+    }
+
+    @Synchronized
     fun clear() {
         snapshot = null
     }

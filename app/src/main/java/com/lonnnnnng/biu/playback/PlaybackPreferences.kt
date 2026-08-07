@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.media3.common.Player
@@ -35,11 +36,49 @@ enum class PlaybackMode(val label: String) {
     }
 }
 
+enum class SleepTimerMode(val label: String) {
+    OFF("未开启"),
+    DEADLINE("定时停止"),
+    TRACK_END("当前歌曲结束"),
+    QUEUE_END("当前队列结束"),
+}
+
 data class PlaybackPreferences(
     val mode: PlaybackMode = PlaybackMode.SEQUENTIAL,
     val speed: Float = PlaybackSpeedPolicy.DEFAULT,
     val reportPlayHistory: Boolean = true,
+    val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
+    val sleepTimerDeadlineEpochMs: Long = 0L,
 )
+
+object SleepTimerPolicy {
+    val minuteOptions = listOf(15, 30, 60)
+
+    fun deadlineAfterMinutes(nowEpochMs: Long, minutes: Int): Long {
+        require(minutes in minuteOptions) { "不支持的睡眠定时时长" }
+        return nowEpochMs + minutes * 60_000L
+    }
+
+    fun remainingMs(deadlineEpochMs: Long, nowEpochMs: Long): Long =
+        (deadlineEpochMs - nowEpochMs).coerceAtLeast(0L)
+
+    fun shouldFinishAfterAutoTransition(
+        mode: SleepTimerMode,
+        completedMediaItemIndex: Int,
+        lastQueueIndex: Int,
+    ): Boolean {
+        return when (mode) {
+            SleepTimerMode.TRACK_END -> true
+            SleepTimerMode.QUEUE_END -> lastQueueIndex >= 0 && completedMediaItemIndex == lastQueueIndex
+            SleepTimerMode.OFF,
+            SleepTimerMode.DEADLINE,
+            -> false
+        }
+    }
+
+    fun shouldFinishOnPlaybackEnded(mode: SleepTimerMode): Boolean =
+        mode == SleepTimerMode.TRACK_END || mode == SleepTimerMode.QUEUE_END
+}
 
 object PlaybackSpeedPolicy {
     const val DEFAULT = 1f
@@ -61,6 +100,10 @@ class PlaybackPreferenceRepository(context: Context) {
                 ?: PlaybackMode.SEQUENTIAL,
             speed = PlaybackSpeedPolicy.normalize(values[KEY_SPEED] ?: PlaybackSpeedPolicy.DEFAULT),
             reportPlayHistory = values[KEY_REPORT_PLAY_HISTORY] ?: true,
+            sleepTimerMode = values[KEY_SLEEP_TIMER_MODE]
+                ?.let { stored -> SleepTimerMode.entries.firstOrNull { it.name == stored } }
+                ?: SleepTimerMode.OFF,
+            sleepTimerDeadlineEpochMs = values[KEY_SLEEP_TIMER_DEADLINE_EPOCH_MS] ?: 0L,
         )
     }
 
@@ -77,10 +120,22 @@ class PlaybackPreferenceRepository(context: Context) {
         dataStore.edit { values -> values[KEY_REPORT_PLAY_HISTORY] = enabled }
     }
 
+    suspend fun saveSleepTimer(mode: SleepTimerMode, deadlineEpochMs: Long = 0L) {
+        require(mode != SleepTimerMode.DEADLINE || deadlineEpochMs > 0L) { "定时停止缺少截止时间" }
+        dataStore.edit { values ->
+            values[KEY_SLEEP_TIMER_MODE] = mode.name
+            values[KEY_SLEEP_TIMER_DEADLINE_EPOCH_MS] = if (mode == SleepTimerMode.DEADLINE) deadlineEpochMs else 0L
+        }
+    }
+
+    suspend fun clearSleepTimer() = saveSleepTimer(SleepTimerMode.OFF)
+
     private companion object {
         val KEY_MODE = stringPreferencesKey("mode")
         val KEY_SPEED = floatPreferencesKey("speed")
         val KEY_REPORT_PLAY_HISTORY = booleanPreferencesKey("report_play_history")
+        val KEY_SLEEP_TIMER_MODE = stringPreferencesKey("sleep_timer_mode")
+        val KEY_SLEEP_TIMER_DEADLINE_EPOCH_MS = longPreferencesKey("sleep_timer_deadline_epoch_ms")
     }
 }
 

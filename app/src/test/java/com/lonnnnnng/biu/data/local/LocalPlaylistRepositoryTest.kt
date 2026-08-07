@@ -27,6 +27,22 @@ class LocalPlaylistRepositoryTest {
         assertNull(items.first().streamUrl)
     }
 
+    @Test
+    fun `保存整条队列时按顺序去重并丢弃在线临时地址`() = runBlocking {
+        val dao = FakeLocalPlaylistDao()
+        val repository = LocalPlaylistRepository(dao, nowEpochMs = { 2_000L })
+        val playlistId = repository.create("当前队列", 0)
+        val first = biliTrack(cid = 21L, page = "P1 · 第一首")
+        val second = biliTrack(cid = 22L, page = "P2 · 第二首")
+
+        repository.addTracks(playlistId, listOf(first, second, first))
+
+        val items = repository.items(playlistId).first()
+        assertEquals(listOf(first.id, second.id), items.map(LocalPlaylistItemEntity::mediaId))
+        assertEquals(listOf(0, 1), items.map(LocalPlaylistItemEntity::position))
+        assertEquals(listOf(null, null), items.map(LocalPlaylistItemEntity::streamUrl))
+    }
+
     private fun biliTrack(cid: Long, page: String) = Track(
         id = "BV1TEST:$cid",
         title = "测试合集 · ${page.substringAfter(" · ")}",

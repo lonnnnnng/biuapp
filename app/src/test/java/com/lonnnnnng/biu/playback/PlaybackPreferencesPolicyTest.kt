@@ -31,4 +31,30 @@ class PlaybackPreferencesPolicyTest {
         assertEquals(1.25f, PlaybackSpeedPolicy.normalize(1.3f))
         assertEquals(PlaybackSpeedPolicy.DEFAULT, PlaybackSpeedPolicy.normalize(Float.NaN))
     }
+
+    @Test
+    fun sleepTimerDefaultsToOffAndBuildsPersistentDeadline() {
+        assertEquals(SleepTimerMode.OFF, PlaybackPreferences().sleepTimerMode)
+        assertEquals(1_900_000L, SleepTimerPolicy.deadlineAfterMinutes(1_000_000L, 15))
+        assertEquals(500L, SleepTimerPolicy.remainingMs(1_500L, 1_000L))
+        assertEquals(0L, SleepTimerPolicy.remainingMs(500L, 1_000L))
+    }
+
+    @Test
+    fun sleepTimerEndModesCoverNaturalEndAndRepeatTransition() {
+        assertEquals(true, SleepTimerPolicy.shouldFinishOnPlaybackEnded(SleepTimerMode.TRACK_END))
+        assertEquals(true, SleepTimerPolicy.shouldFinishOnPlaybackEnded(SleepTimerMode.QUEUE_END))
+        assertEquals(
+            true,
+            SleepTimerPolicy.shouldFinishAfterAutoTransition(SleepTimerMode.TRACK_END, 1, 3),
+        )
+        assertEquals(
+            false,
+            SleepTimerPolicy.shouldFinishAfterAutoTransition(SleepTimerMode.QUEUE_END, 1, 3),
+        )
+        assertEquals(
+            true,
+            SleepTimerPolicy.shouldFinishAfterAutoTransition(SleepTimerMode.QUEUE_END, 3, 3),
+        )
+    }
 }
