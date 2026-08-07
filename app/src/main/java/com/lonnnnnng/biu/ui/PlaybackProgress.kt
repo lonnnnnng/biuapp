@@ -51,6 +51,15 @@ internal object PlaybackProgressPolicy {
  * long: 点击轨道仍由界面直接定位；真正拖动时按灵敏度缩小位移，避免长视频里手指轻微移动就跨越大量内容。
  */
 internal object PlaybackSliderDragPolicy {
+    fun dragAnchorFraction(
+        currentFraction: Float,
+        touchFraction: Float,
+        isDragging: Boolean,
+    ): Float {
+        // long: 连续拖动必须从当前播放点开始，轻点则仍定位到手指落点，避免两种交互互相影响。
+        return (if (isDragging) currentFraction else touchFraction).coerceIn(0f, 1f)
+    }
+
     fun adjustedFraction(
         startFraction: Float,
         dragDistancePx: Float,

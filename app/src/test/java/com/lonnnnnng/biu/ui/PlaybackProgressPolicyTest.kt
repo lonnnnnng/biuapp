@@ -71,6 +71,19 @@ class PlaybackProgressPolicyTest {
     }
 
     @Test
+    fun `视频进度条拖动从当前播放位置开始而不是触点位置`() {
+        assertEquals(
+            0.4f,
+            PlaybackSliderDragPolicy.dragAnchorFraction(
+                currentFraction = 0.4f,
+                touchFraction = 0.8f,
+                isDragging = true,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test
     fun `视频横滑按画面宽度快进和快退`() {
         assertEquals(
             90_000L,

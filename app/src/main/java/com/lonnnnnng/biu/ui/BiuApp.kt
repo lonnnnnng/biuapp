@@ -150,6 +150,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -6427,6 +6428,9 @@ private fun BiuPlaybackSlider(
     modifier: Modifier = Modifier,
 ) {
     val normalizedValue = value.coerceIn(0f, 1f)
+    val latestValue = rememberUpdatedState(normalizedValue)
+    val latestOnValueChange = rememberUpdatedState(onValueChange)
+    val latestOnValueChangeFinished = rememberUpdatedState(onValueChangeFinished)
     val normalizedBuffered = bufferedValue.coerceIn(normalizedValue, 1f)
     val activeColor = MaterialTheme.colorScheme.primary
     val bufferedColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
@@ -6459,6 +6463,7 @@ private fun BiuPlaybackSlider(
                         0f
                     }
                     var finalValue = startFraction
+                    var dragAnchorFraction = startFraction
                     var dragStarted = false
                     var valueCommitted = false
                     var isPressed = true
@@ -6474,36 +6479,41 @@ private fun BiuPlaybackSlider(
                             if (!dragStarted && horizontalDrag) {
                                 // long: 只有横向位移越过系统触控阈值才进入拖动，按下时的轻微抖动不会改变播放位置。
                                 dragStarted = true
-                                onValueChange(startFraction)
+                                dragAnchorFraction = PlaybackSliderDragPolicy.dragAnchorFraction(
+                                    currentFraction = latestValue.value,
+                                    touchFraction = startFraction,
+                                    isDragging = true,
+                                )
+                                latestOnValueChange.value(dragAnchorFraction)
                             }
                             if (dragStarted) {
                                 finalValue = PlaybackSliderDragPolicy.adjustedFraction(
-                                    startFraction = startFraction,
+                                    startFraction = dragAnchorFraction,
                                     dragDistancePx = dragDistanceX,
                                     trackWidthPx = trackWidthPx,
                                     sensitivity = dragSensitivity,
                                 )
-                                onValueChange(finalValue)
+                                latestOnValueChange.value(finalValue)
                                 change.consume()
                             }
                             if (!change.pressed) {
                                 if (dragStarted) {
-                                    onValueChangeFinished(finalValue)
+                                    latestOnValueChangeFinished.value(finalValue)
                                     valueCommitted = true
                                 } else if (
                                     abs(dragDistanceX) <= viewConfiguration.touchSlop &&
                                     abs(dragDistanceY) <= viewConfiguration.touchSlop
                                 ) {
                                     // long: 短按仍保留直接定位能力，精细倍率只影响连续拖动，不牺牲快速跳转效率。
-                                    onValueChange(startFraction)
-                                    onValueChangeFinished(startFraction)
+                                    latestOnValueChange.value(startFraction)
+                                    latestOnValueChangeFinished.value(startFraction)
                                     valueCommitted = true
                                 }
                             }
                         } while (isPressed)
                     } finally {
                         // long: 系统手势或窗口切换取消触控时也结束拖动，避免界面持续显示已取消的预览位置。
-                        if (dragStarted && !valueCommitted) onValueChangeFinished(finalValue)
+                        if (dragStarted && !valueCommitted) latestOnValueChangeFinished.value(finalValue)
                     }
                 }
             },
