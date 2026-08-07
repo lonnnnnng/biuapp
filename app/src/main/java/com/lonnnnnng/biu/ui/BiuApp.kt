@@ -339,6 +339,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var pendingPlaylistAddition by remember { mutableStateOf<PendingPlaylistAddition?>(null) }
     var mediaModeSwitching by remember { mutableStateOf(false) }
     var playbackErrorEventId by remember { mutableLongStateOf(0L) }
+    var playbackErrorCode by remember { mutableStateOf<Int?>(null) }
     var activeUpdateDownloadId by rememberSaveable {
         mutableLongStateOf(updateInstaller.pendingDownloadId())
     }
@@ -621,6 +622,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             override fun onEvents(player: Player, events: Player.Events) = publishSnapshot()
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                playbackErrorCode = error.errorCode
                 playbackErrorEventId += 1
             }
         }
@@ -705,9 +707,15 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     LaunchedEffect(playbackErrorEventId) {
         if (playbackErrorEventId == 0L) return@LaunchedEffect
         // long: 首次 CDN 失败会由服务自动换址；延迟确认可避免备用地址已经恢复时仍向用户误报失败。
-        delay(1_500)
+        delay(5_000)
         if (controller?.playerError != null) {
-            snackbarHostState.showSnackbar("播放失败，请重新选择内容重试")
+            snackbarHostState.showSnackbar(
+                if ((playbackErrorCode ?: -1) in 2000..2999) {
+                    "网络不可用且没有可用本地副本，请稍后重试"
+                } else {
+                    "媒体解码失败，请切换曲目后重试"
+                },
+            )
         }
     }
 
@@ -1108,6 +1116,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                             onResumeVideo = viewModel::resumeVideoDownload,
                             onPauseVideo = viewModel::pauseVideoDownload,
                             onCancelVideo = viewModel::cancelVideoDownload,
+                            onPlayAudio = viewModel::playDownloadedAudio,
+                            onPlayVideo = viewModel::playDownloadedVideo,
                             modifier = downloadModifier,
                         )
                     },
@@ -6604,6 +6614,8 @@ private fun DownloadTaskPanel(
     onResumeVideo: (String) -> Unit,
     onPauseVideo: (String) -> Unit,
     onCancelVideo: (String) -> Unit,
+    onPlayAudio: (AudioDownloadTaskEntity) -> Unit,
+    onPlayVideo: (VideoDownloadTaskEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
@@ -6647,6 +6659,7 @@ private fun DownloadTaskPanel(
                 onResume = onResumeAudio,
                 onPause = onPauseAudio,
                 onCancel = onCancelAudio,
+                onPlay = onPlayAudio,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -6657,6 +6670,7 @@ private fun DownloadTaskPanel(
                 onResume = onResumeVideo,
                 onPause = onPauseVideo,
                 onCancel = onCancelVideo,
+                onPlay = onPlayVideo,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -6672,6 +6686,7 @@ private fun AudioDownloadTaskList(
     onResume: (String) -> Unit,
     onPause: (String) -> Unit,
     onCancel: (String) -> Unit,
+    onPlay: (AudioDownloadTaskEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
@@ -6764,8 +6779,10 @@ private fun AudioDownloadTaskList(
                                 Icon(Icons.Rounded.PlayArrow, contentDescription = "重新下载")
                             }
                             AudioDownloadStatus.PUBLISHING,
-                            AudioDownloadStatus.COMPLETED,
                             -> Unit
+                            AudioDownloadStatus.COMPLETED -> IconButton(onClick = { onPlay(task) }) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "播放已下载音频")
+                            }
                         }
                     }
                     if (task.totalBytes > 0L && task.downloadStatus != AudioDownloadStatus.COMPLETED) {
@@ -6799,6 +6816,7 @@ private fun VideoDownloadTaskList(
     onResume: (String) -> Unit,
     onPause: (String) -> Unit,
     onCancel: (String) -> Unit,
+    onPlay: (VideoDownloadTaskEntity) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
@@ -6894,7 +6912,9 @@ private fun VideoDownloadTaskList(
                             VideoDownloadStatus.CANCELLED -> IconButton(onClick = { onResume(task.taskId) }) {
                                 Icon(Icons.Rounded.PlayArrow, contentDescription = "重新下载视频")
                             }
-                            VideoDownloadStatus.COMPLETED -> Unit
+                            VideoDownloadStatus.COMPLETED -> IconButton(onClick = { onPlay(task) }) {
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = "播放已下载视频")
+                            }
                         }
                     }
                     val totalBytes = task.videoTotalBytes + task.audioTotalBytes

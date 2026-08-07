@@ -2,6 +2,7 @@ package com.lonnnnnng.biu.playback
 
 import android.os.Bundle
 import android.os.SystemClock
+import android.net.Uri
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -66,7 +67,8 @@ class PlaybackService : MediaSessionService() {
     private var refreshInFlight = false
     private var mediaModeSwitchInFlight = false
     private var codecRecoveryInFlight = false
-    private var retryConsumedForCurrentItem = false
+    private var streamRecoveryAttempts = 0
+    private var localFallbackAttempted = false
     private val codecRecoveryPolicy = PlaybackCodecRecoveryPolicy()
     private var recordedMediaId: String? = null
     private var progressPersistenceJob: Job? = null
@@ -189,7 +191,8 @@ class PlaybackService : MediaSessionService() {
                 setVideoTrackEnabled(player, item.playbackMediaMode() == PlaybackMediaMode.VIDEO)
             }
             if (!isMediaReplacementInFlight) {
-                retryConsumedForCurrentItem = false
+                streamRecoveryAttempts = 0
+                localFallbackAttempted = false
                 codecRecoveryPolicy.resetForExternalMediaItemTransition()
             }
             val isNewPlaybackRequest =
@@ -267,8 +270,8 @@ class PlaybackService : MediaSessionService() {
                 // long: 日志只记录 CDN 主机和状态码，不输出带签名的完整 DASH URL、Cookie 或账号信息。
                 Log.w(LOG_TAG, "DASH request failed: host=${failure.host}, code=${failure.code}")
             }
-            if (error.isExpiredDashUrlError()) {
-                refreshCurrentBilibiliTrack(error.failedDashUrl())
+            if (error.isPlaybackIoFailure() && player?.currentMediaItem?.bilibiliSource() != null) {
+                recoverCurrentBilibiliTrack(error.failedDashUrl())
             } else {
                 recoverPlayerFromCodecFailure(error)
             }
@@ -493,31 +496,71 @@ class PlaybackService : MediaSessionService() {
         progressPersistenceJob = null
     }
 
-    private fun refreshCurrentBilibiliTrack(failedUrl: String?) {
+    private fun recoverCurrentBilibiliTrack(failedUrl: String?) {
         val activePlayer = player ?: return
         val currentItem = activePlayer.currentMediaItem ?: return
         val source = currentItem.bilibiliSource() ?: return
-        if (isMediaReplacementInFlight || retryConsumedForCurrentItem) return
+        if (isMediaReplacementInFlight || streamRecoveryAttempts >= PlaybackRetryPolicy.MAX_STREAM_RECOVERY_ATTEMPTS) return
 
         refreshInFlight = true
-        retryConsumedForCurrentItem = true
         val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
         serviceScope.launch {
-            runCatching {
-                resolvePlaybackStreamMetadata(
-                    mode = currentItem.playbackMediaMode(),
-                    source = source,
-                    failedUrl = failedUrl,
-                    requestedVideoQualityId = currentItem.playbackStreamMetadata()?.selectedVideoQualityId,
-                )
-            }.onSuccess { streamMetadata ->
-                // long: 网络解析期间用户可能已切歌或编辑队列；只有当前 bvid/cid 和索引仍一致时才允许替换媒体源。
-                if (target.matches(activePlayer)) {
-                    applyPlaybackStreamMetadata(activePlayer, target, streamMetadata)
+            try {
+                if (!localFallbackAttempted) {
+                    localFallbackAttempted = true
+                    val localUri = completedLocalPlaybackUri(source)
+                    if (localUri != null && target.matches(activePlayer)) {
+                        // long: 断网、超时和 CDN 异常优先回退用户已下载副本；本地 URI 继续保留 bvid/cid，队列和历史身份不变。
+                        applyPlaybackStreamMetadata(
+                            activePlayer,
+                            target,
+                            PlaybackStreamMetadata.audio(localUri, "已下载"),
+                        )
+                        Log.i(LOG_TAG, "Playback recovered with downloaded media: ${source.bvid}:${source.cid}")
+                        return@launch
+                    }
                 }
+                while (
+                    streamRecoveryAttempts < PlaybackRetryPolicy.MAX_STREAM_RECOVERY_ATTEMPTS &&
+                    target.matches(activePlayer)
+                ) {
+                    val attempt = streamRecoveryAttempts
+                    streamRecoveryAttempts += 1
+                    delay(PlaybackRetryPolicy.delayMs(attempt))
+                    val result = runCatching {
+                        resolvePlaybackStreamMetadata(
+                            mode = currentItem.playbackMediaMode(),
+                            source = source,
+                            failedUrl = failedUrl,
+                            requestedVideoQualityId = currentItem.playbackStreamMetadata()?.selectedVideoQualityId,
+                        )
+                    }
+                    val streamMetadata = result.getOrNull() ?: continue
+                    // long: 重试期间用户可能切歌或编辑队列，只有原 bvid/cid 与索引仍一致才替换媒体源。
+                    if (target.matches(activePlayer)) {
+                        applyPlaybackStreamMetadata(activePlayer, target, streamMetadata)
+                    }
+                    return@launch
+                }
+            } finally {
+                refreshInFlight = false
             }
-            refreshInFlight = false
         }
+    }
+
+    private suspend fun completedLocalPlaybackUri(source: BilibiliTrackSource): String? {
+        val uri = appContainer.audioDownloadRepository.completedUri(source.bvid, source.cid)
+            ?: appContainer.videoDownloadRepository.completedUri(source.bvid, source.cid)
+            ?: return null
+        return uri.takeIf(::isReadableLocalUri)
+    }
+
+    private fun isReadableLocalUri(uri: String): Boolean {
+        return runCatching {
+            contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { descriptor ->
+                descriptor.fileDescriptor.valid()
+            } == true
+        }.getOrDefault(false)
     }
 
     private fun switchCurrentPlaybackMediaMode(mode: PlaybackMediaMode): ListenableFuture<SessionResult> {
@@ -528,6 +571,26 @@ class PlaybackService : MediaSessionService() {
         val source = currentItem.bilibiliSource()
             ?: return immediateSessionResult(SessionError.ERROR_NOT_SUPPORTED, "本地音频不支持视频播放")
         if (currentItem.playbackMediaMode() == mode) {
+            return immediateSessionResult(SessionResult.RESULT_SUCCESS)
+        }
+        val currentUri = currentItem.playbackStreamMetadata()?.persistentAudioUrl
+            ?: currentItem.localConfiguration?.uri?.toString()
+        if (
+            currentUri?.let(Uri::parse)?.scheme == "content" &&
+            currentItem.localConfiguration?.mimeType == "video/mp4"
+        ) {
+            val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
+            val stream = if (mode == PlaybackMediaMode.VIDEO) {
+                PlaybackStreamMetadata.video(
+                    audioUrl = currentUri,
+                    videoUrl = currentUri,
+                    audioQualityLabel = "已下载视频",
+                    videoQualityLabel = "本地",
+                )
+            } else {
+                PlaybackStreamMetadata.audio(currentUri, "已下载视频")
+            }
+            applyPlaybackStreamMetadata(activePlayer, target, stream)
             return immediateSessionResult(SessionResult.RESULT_SUCCESS)
         }
         if (isMediaReplacementInFlight) {
@@ -601,7 +664,8 @@ class PlaybackService : MediaSessionService() {
                     } else {
                         // long: 切换只重建当前分 P 的媒体源，保留完整队列、进度、倍速、循环模式和用户原来的播放/暂停意图。
                         applyPlaybackStreamMetadata(activePlayer, target, streamMetadata)
-                        retryConsumedForCurrentItem = false
+                        streamRecoveryAttempts = 0
+                        localFallbackAttempted = false
                         SessionResult(SessionResult.RESULT_SUCCESS)
                     }
                 },
@@ -721,6 +785,10 @@ class PlaybackService : MediaSessionService() {
             .setMediaId("${mediaItem.mediaId}:audio-companion")
             .setUri(stream.audioUrl)
             .build()
+        if (stream.videoUrl == stream.audioUrl) {
+            // long: 下载完成的 MP4 已内含音视频轨，同一 content URI 直接交给单一媒体源，不能再把文件与自身合并。
+            return mediaSourceFactory.createMediaSource(videoItem)
+        }
         return MergingMediaSource(
             true,
             true,
@@ -770,10 +838,19 @@ class PlaybackService : MediaSessionService() {
             val activePlayer = player ?: return@launch
             // long: 数据库读取期间用户可能已选择新内容；只允许旧快照填充空播放器，不能覆盖刚创建的新队列。
             if (activePlayer.mediaItemCount > 0) return@launch
+            val restoredItems = restored.items.map { track ->
+                val source = track.source
+                val localUri = source?.let { completedLocalPlaybackUri(it) }
+                if (localUri == null) track else track.copy(
+                    streamUrl = localUri,
+                    qualityLabel = "已下载",
+                    mimeType = if (localUri.endsWith(".mp4", ignoreCase = true)) "video/mp4" else track.mimeType,
+                )
+            }
             restoringPlaybackQueue = true
             try {
                 activePlayer.setMediaItems(
-                    restored.items.map { track -> track.toMediaItem() },
+                    restoredItems.map { track -> track.toMediaItem() },
                     restored.currentIndex,
                     restored.currentPositionMs,
                 )
@@ -953,6 +1030,12 @@ private fun PlaybackException.isExpiredDashUrlError(): Boolean {
         current = current.cause
     }
     return false
+}
+
+private fun PlaybackException.isPlaybackIoFailure(): Boolean {
+    if (isExpiredDashUrlError()) return true
+    // long: Media3 2xxx 统一表示网络、HTTP、本地文件或数据源 I/O；这些错误先走地址刷新/离线回退，不能重建解码器。
+    return errorCode in 2000..2999
 }
 
 @UnstableApi

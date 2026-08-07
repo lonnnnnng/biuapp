@@ -171,6 +171,13 @@ class AudioDownloadRepository(
 
     suspend fun find(taskId: String): AudioDownloadTaskEntity? = dao.find(taskId)
 
+    suspend fun completedUri(bvid: String, cid: Long): String? {
+        val task = dao.find("$bvid:$cid") ?: return null
+        return task.publishedUri?.takeIf {
+            task.downloadStatus == AudioDownloadStatus.COMPLETED && it.isNotBlank()
+        }
+    }
+
     suspend fun nextQueued(): AudioDownloadTaskEntity? = dao.nextQueued()
 
     suspend fun enqueue(request: AudioDownloadRequest, tempFilePath: String): AudioDownloadTaskEntity {

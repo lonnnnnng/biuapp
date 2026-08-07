@@ -189,6 +189,13 @@ class VideoDownloadRepository(
 
     suspend fun find(taskId: String): VideoDownloadTaskEntity? = dao.find(taskId)
 
+    suspend fun completedUri(bvid: String, cid: Long): String? {
+        val task = dao.find("$bvid:$cid") ?: return null
+        return task.publishedUri?.takeIf {
+            task.downloadStatus == VideoDownloadStatus.COMPLETED && it.isNotBlank()
+        }
+    }
+
     suspend fun nextQueued(): VideoDownloadTaskEntity? = dao.nextQueued()
 
     suspend fun enqueue(

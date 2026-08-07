@@ -36,6 +36,7 @@ import com.lonnnnnng.biu.data.local.CreatorGroupEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
+import com.lonnnnnng.biu.data.local.DownloadedMediaPolicy
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.lyrics.LrcParser
 import com.lonnnnnng.biu.data.lyrics.LyricsDocument
@@ -2196,6 +2197,45 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun playDownloadedAudio(task: AudioDownloadTaskEntity) {
+        val uri = task.publishedUri?.takeIf(String::isNotBlank)
+        if (task.downloadStatus != AudioDownloadStatus.COMPLETED || uri == null) return
+        publishPlaybackRequest(
+            listOf(
+                Track(
+                    id = task.taskId,
+                    title = task.title,
+                    artist = task.artist,
+                    streamUrl = uri,
+                    artworkUrl = task.artworkUrl,
+                    qualityLabel = "已下载",
+                    mimeType = "audio/mp4",
+                    source = BilibiliTrackSource(task.bvid, task.cid),
+                ),
+            ),
+        )
+    }
+
+    fun playDownloadedVideo(task: VideoDownloadTaskEntity) {
+        val uri = task.publishedUri?.takeIf(String::isNotBlank)
+        if (task.downloadStatus != VideoDownloadStatus.COMPLETED || uri == null) return
+        // long: 下载视频从听歌模式进入时先只启用本地音轨，用户切换视频模式后再按正常视频链路显示画面。
+        publishPlaybackRequest(
+            listOf(
+                Track(
+                    id = task.taskId,
+                    title = task.title,
+                    artist = task.artist,
+                    streamUrl = uri,
+                    artworkUrl = task.artworkUrl,
+                    qualityLabel = "已下载视频",
+                    mimeType = "video/mp4",
+                    source = BilibiliTrackSource(task.bvid, task.cid),
+                ),
+            ),
+        )
+    }
+
     fun resumeAudioDownload(taskId: String) {
         AudioDownloadService.resume(getApplication<Application>().applicationContext, taskId)
     }
@@ -2736,13 +2776,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         startIndex: Int = 0,
         startPositionMs: Long = 0L,
     ): Long {
-        tracks.getOrNull(startIndex) ?: error("播放起始索引越界")
+        val playbackTracks = tracks.map { track ->
+            DownloadedMediaPolicy.preferLocal(track, state.value.audioDownloads, state.value.videoDownloads)
+        }
+        playbackTracks.getOrNull(startIndex) ?: error("播放起始索引越界")
         val queueId = playbackEventIds.incrementAndGet()
-        playbackQueueSnapshots.replace(queueId, tracks, startIndex, startPositionMs)
+        playbackQueueSnapshots.replace(queueId, playbackTracks, startIndex, startPositionMs)
         mutablePlaybackCommands.trySend(
             PlaybackCommand.Replace(
                 queueId = queueId,
-                tracks = tracks,
+                tracks = playbackTracks,
                 startIndex = startIndex,
                 startPositionMs = startPositionMs,
             ),
