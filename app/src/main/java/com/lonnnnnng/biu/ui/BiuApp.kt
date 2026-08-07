@@ -4982,27 +4982,28 @@ private fun VideoPlaybackSurface(
             bottomControlHeight = if (fullscreen) 128.dp else 64.dp,
             onTap = { controlsVisible = !controlsVisible },
             onSwipeSeekStart = {
+                val gestureStartPositionMs = progress.positionMs
                 controlsVisible = true
                 isSwipeSeeking = true
                 dragFraction = progress.fraction
-                swipeStartPositionMs = progress.positionMs
+                swipeStartPositionMs = gestureStartPositionMs
+                gestureStartPositionMs
             },
-            onSwipeSeekDrag = { dragDistancePx, surfaceWidthPx ->
+            onSwipeSeekDrag = { gestureStartPositionMs, dragDistancePx, surfaceWidthPx ->
                 VideoSwipeSeekPolicy.targetPositionMs(
-                    startPositionMs = swipeStartPositionMs,
+                    startPositionMs = gestureStartPositionMs,
                     durationMs = progress.durationMs,
                     isSeekable = progress.isSeekable,
                     dragDistancePx = dragDistancePx,
                     surfaceWidthPx = surfaceWidthPx,
                 )?.let { targetPositionMs ->
                     dragFraction = targetPositionMs.toFloat() / progress.durationMs.toFloat()
+                    targetPositionMs
                 }
             },
-            onSwipeSeekFinished = {
-                if (isSwipeSeeking) {
-                    onSeek(PlaybackProgressPolicy.seekPositionMs(dragFraction, progress.durationMs))
-                    isSwipeSeeking = false
-                }
+            onSwipeSeekFinished = { targetPositionMs ->
+                targetPositionMs?.let(onSeek)
+                isSwipeSeeking = false
             },
             onSwipeSeekCancelled = { isSwipeSeeking = false },
             modifier = Modifier.fillMaxSize(),
@@ -5547,12 +5548,21 @@ private fun VideoPlaybackGestureLayer(
     swipeSeekEnabled: Boolean,
     bottomControlHeight: androidx.compose.ui.unit.Dp,
     onTap: () -> Unit,
-    onSwipeSeekStart: () -> Unit,
-    onSwipeSeekDrag: (dragDistancePx: Float, surfaceWidthPx: Float) -> Unit,
-    onSwipeSeekFinished: () -> Unit,
+    onSwipeSeekStart: () -> Long,
+    onSwipeSeekDrag: (
+        startPositionMs: Long,
+        dragDistancePx: Float,
+        surfaceWidthPx: Float,
+    ) -> Long?,
+    onSwipeSeekFinished: (targetPositionMs: Long?) -> Unit,
     onSwipeSeekCancelled: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val latestOnTap = rememberUpdatedState(onTap)
+    val latestOnSwipeSeekStart = rememberUpdatedState(onSwipeSeekStart)
+    val latestOnSwipeSeekDrag = rememberUpdatedState(onSwipeSeekDrag)
+    val latestOnSwipeSeekFinished = rememberUpdatedState(onSwipeSeekFinished)
+    val latestOnSwipeSeekCancelled = rememberUpdatedState(onSwipeSeekCancelled)
     Box(
         modifier = modifier.pointerInput(swipeSeekEnabled, bottomControlHeight) {
             val bottomControlHeightPx = bottomControlHeight.toPx()
@@ -5567,6 +5577,8 @@ private fun VideoPlaybackGestureLayer(
                     return@awaitEachGesture
                 }
                 val startPosition = down.position
+                var gestureStartPositionMs = 0L
+                var targetPositionMs: Long? = null
                 var swipeStarted = false
                 var isPressed = true
                 try {
@@ -5585,24 +5597,30 @@ private fun VideoPlaybackGestureLayer(
                             abs(dragDistanceX) > abs(dragDistanceY)
                         ) {
                             swipeStarted = true
-                            onSwipeSeekStart()
+                            // long: 起点属于当前这次手势，必须在协程内锁定；Compose 状态更新晚于同一触摸事件，不能作为 seek 计算来源。
+                            gestureStartPositionMs = latestOnSwipeSeekStart.value()
                         }
                         if (swipeStarted) {
                             // long: 手势层位于 PlayerView 之上、控件之下，先消费水平滑动以免原生播放器抢走事件，按钮仍保留正常点击。
-                            onSwipeSeekDrag(dragDistanceX, size.width.toFloat())
+                            targetPositionMs = latestOnSwipeSeekDrag.value(
+                                gestureStartPositionMs,
+                                dragDistanceX,
+                                size.width.toFloat(),
+                            )
                             change.consume()
                         }
                         if (!change.pressed) {
                             if (swipeStarted) {
                                 swipeStarted = false
-                                onSwipeSeekFinished()
+                                // long: 松手时直接提交本次手势最后计算的目标，避免读取尚未完成重组的预览状态。
+                                latestOnSwipeSeekFinished.value(targetPositionMs)
                             } else if (!movementExceedsSlop) {
-                                onTap()
+                                latestOnTap.value()
                             }
                         }
                     } while (isPressed)
                 } finally {
-                    if (swipeStarted) onSwipeSeekCancelled()
+                    if (swipeStarted) latestOnSwipeSeekCancelled.value()
                 }
             }
         },

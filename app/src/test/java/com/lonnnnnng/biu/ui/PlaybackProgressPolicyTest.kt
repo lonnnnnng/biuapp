@@ -126,6 +126,22 @@ class PlaybackProgressPolicyTest {
     }
 
     @Test
+    fun `视频画面横滑使用本次手势锁定的播放起点`() {
+        val gestureStartPositionMs = 279_629L
+
+        assertEquals(
+            350_925L,
+            VideoSwipeSeekPolicy.targetPositionMs(
+                startPositionMs = gestureStartPositionMs,
+                durationMs = 770_000L,
+                isSeekable = true,
+                dragDistancePx = 100f,
+                surfaceWidthPx = 1_080f,
+            ),
+        )
+    }
+
+    @Test
     fun `视频横滑定位限制在媒体边界并拒绝不可定位媒体`() {
         assertEquals(
             120_000L,
