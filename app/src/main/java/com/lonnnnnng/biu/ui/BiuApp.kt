@@ -4357,14 +4357,14 @@ private fun MiniPlayer(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(108.dp)
+            .height(88.dp)
             .background(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(60.dp)
-                .padding(horizontal = 8.dp, vertical = 5.dp),
+                .height(52.dp)
+                .padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
@@ -4378,7 +4378,7 @@ private fun MiniPlayer(
                 if (snapshot.artworkUrl.isNullOrBlank()) {
                     Box(
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(44.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(MaterialTheme.colorScheme.primaryContainer),
                         contentAlignment = Alignment.Center,
@@ -4390,7 +4390,7 @@ private fun MiniPlayer(
                         model = snapshot.artworkUrl,
                         contentDescription = snapshot.title,
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(44.dp)
                             .clip(RoundedCornerShape(8.dp)),
                         contentScale = ContentScale.Crop,
                     )
@@ -4443,7 +4443,7 @@ private fun MiniPlayer(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .height(36.dp)
                 .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -4465,6 +4465,7 @@ private fun MiniPlayer(
                     isDragging = false
                 },
                 modifier = Modifier.weight(1f),
+                height = 36.dp,
                 enabled = controllerReady && progress.isSeekable,
             )
             Text(
@@ -6454,6 +6455,7 @@ private fun BiuPlaybackSlider(
     onValueChangeFinished: (Float) -> Unit,
     enabled: Boolean,
     dragSensitivity: Float = 1f,
+    height: androidx.compose.ui.unit.Dp = 48.dp,
     modifier: Modifier = Modifier,
 ) {
     val normalizedValue = value.coerceIn(0f, 1f)
@@ -6467,7 +6469,7 @@ private fun BiuPlaybackSlider(
     val disabledColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f)
     Canvas(
         modifier = modifier
-            .height(48.dp)
+            .height(height)
             .semantics {
                 progressBarRangeInfo = ProgressBarRangeInfo(normalizedValue, 0f..1f)
                 contentDescription = "播放进度"
