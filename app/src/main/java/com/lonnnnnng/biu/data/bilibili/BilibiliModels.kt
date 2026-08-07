@@ -27,6 +27,11 @@ data class BilibiliRecommendationPage(
     val hasMore: Boolean,
 )
 
+enum class BilibiliVideoSearchOrder(val label: String, val apiValue: String) {
+    RELEVANCE("综合排序", "totalrank"),
+    PUBLISHED_AT("最新发布", "pubdate"),
+}
+
 data class BilibiliVideoSearchPage(
     val videos: List<BilibiliVideo>,
     val page: Int,

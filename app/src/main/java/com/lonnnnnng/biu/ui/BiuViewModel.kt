@@ -21,6 +21,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliOnlineHistoryCursor
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideoDetail
+import com.lonnnnnng.biu.data.bilibili.BilibiliVideoSearchOrder
 import com.lonnnnnng.biu.data.bilibili.CreatorFeedPolicy
 import com.lonnnnnng.biu.data.bilibili.CreatorFeedTabState
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
@@ -194,8 +195,16 @@ data class BiuUiState(
     val creatorCenter: CreatorCenterUiState = CreatorCenterUiState(),
     val dynamicFeed: DynamicFeedUiState = DynamicFeedUiState(),
     val searchResults: List<BilibiliVideo> = emptyList(),
+    val searchCreators: List<BilibiliCreator> = emptyList(),
+    val searchCollections: List<BilibiliCreatorCollection> = emptyList(),
+    val searchPlaylists: List<LocalPlaylistEntity> = emptyList(),
+    val searchType: UnifiedSearchType = UnifiedSearchType.VIDEOS,
+    val searchVideoOrder: BilibiliVideoSearchOrder = BilibiliVideoSearchOrder.RELEVANCE,
+    val searchHistory: List<String> = emptyList(),
+    val loadedSearchTypes: Set<UnifiedSearchType> = emptySet(),
     val submittedKeyword: String = "",
-    val searchHasMore: Boolean = false,
+    val searchVideoHasMore: Boolean = false,
+    val searchCreatorHasMore: Boolean = false,
     val account: BilibiliAccount = BilibiliAccount(false, "", ""),
     val librarySection: AccountLibrarySection = AccountLibrarySection.FAVORITES,
     val createdFavoriteFolders: List<BilibiliFavoriteFolder> = emptyList(),
@@ -260,7 +269,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var pageQueueJob: Job? = null
     private var recommendationsJob: Job? = null
     private var searchJob: Job? = null
-    private var searchNextPage: Int? = null
+    private var searchVideoNextPage: Int? = null
+    private var searchCreatorNextPage: Int? = null
     private var searchGeneration: Long = 0L
     private var recommendationNextPage: Int? = null
     private var recommendationGeneration: Long = 0L
@@ -323,6 +333,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             groups = current.creatorGroups,
                             memberships = current.creatorGroupMembers,
                         ),
+                        searchCollections = if (changed) emptyList() else current.searchCollections,
+                        loadedSearchTypes = if (changed) {
+                            current.loadedSearchTypes - UnifiedSearchType.COLLECTIONS
+                        } else {
+                            current.loadedSearchTypes
+                        },
                         isCreatorConfigSaving = false,
                     )
                 }
@@ -330,6 +346,13 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 if (!creatorSelectionInitialized || changed) {
                     creatorSelectionInitialized = true
                     loadHomeFeed(selectedCreators, state.value.feed)
+                }
+                if (
+                    changed &&
+                    state.value.submittedKeyword.isNotBlank() &&
+                    state.value.searchType == UnifiedSearchType.COLLECTIONS
+                ) {
+                    loadSearchType(UnifiedSearchType.COLLECTIONS)
                 }
             }
         }
@@ -381,8 +404,21 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         localPlaylists = playlists,
                         selectedLocalPlaylist = selected,
                         localPlaylistItems = if (selected == null) emptyList() else current.localPlaylistItems,
+                        searchPlaylists = if (
+                            current.submittedKeyword.isNotBlank() &&
+                            UnifiedSearchType.PLAYLISTS in current.loadedSearchTypes
+                        ) {
+                            UnifiedSearchPolicy.filterPlaylists(playlists, current.submittedKeyword)
+                        } else {
+                            current.searchPlaylists
+                        },
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            container.searchHistoryRepository.history.collect { history ->
+                mutableState.update { it.copy(searchHistory = history) }
             }
         }
         viewModelScope.launch {
@@ -1490,74 +1526,122 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         searchJob?.cancel()
         searchGeneration += 1L
-        val generation = searchGeneration
-        searchNextPage = null
+        searchVideoNextPage = null
+        searchCreatorNextPage = null
         mutableState.update {
             it.copy(
                 submittedKeyword = normalized,
                 searchResults = emptyList(),
-                searchHasMore = false,
-                isSearchLoading = true,
+                searchCreators = emptyList(),
+                searchCollections = emptyList(),
+                searchPlaylists = emptyList(),
+                loadedSearchTypes = emptySet(),
+                searchVideoHasMore = false,
+                searchCreatorHasMore = false,
+                isSearchLoading = false,
                 isSearchLoadingMore = false,
                 message = null,
             )
         }
-        searchJob = viewModelScope.launch {
-            try {
-                val result = repository.searchVideos(normalized)
-                if (generation != searchGeneration || state.value.submittedKeyword != normalized) return@launch
-                searchNextPage = if (result.hasMore) result.page + 1 else null
-                mutableState.update {
-                    it.copy(
-                        searchResults = result.videos,
-                        searchHasMore = result.hasMore,
-                        isSearchLoading = false,
-                    )
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                if (generation == searchGeneration && state.value.submittedKeyword == normalized) {
-                    mutableState.update {
-                        it.copy(isSearchLoading = false, message = error.userMessage("搜索失败"))
-                    }
-                }
+        viewModelScope.launch {
+            runCatching { container.searchHistoryRepository.record(normalized) }
+        }
+        loadSearchType(state.value.searchType)
+    }
+
+    fun selectSearchType(type: UnifiedSearchType) {
+        val current = state.value
+        if (current.searchType != type) {
+            searchJob?.cancel()
+            searchGeneration += 1L
+            mutableState.update {
+                it.copy(
+                    searchType = type,
+                    isSearchLoading = false,
+                    isSearchLoadingMore = false,
+                    message = null,
+                )
             }
+        }
+        val latest = state.value
+        if (
+            latest.submittedKeyword.isNotBlank() &&
+            type !in latest.loadedSearchTypes &&
+            !latest.isSearchLoading
+        ) {
+            loadSearchType(type)
+        }
+    }
+
+    fun selectSearchVideoOrder(order: BilibiliVideoSearchOrder) {
+        if (state.value.searchVideoOrder == order) return
+        searchJob?.cancel()
+        searchGeneration += 1L
+        searchVideoNextPage = null
+        mutableState.update { current ->
+            current.copy(
+                searchVideoOrder = order,
+                searchResults = emptyList(),
+                searchVideoHasMore = false,
+                loadedSearchTypes = current.loadedSearchTypes - UnifiedSearchType.VIDEOS,
+                isSearchLoading = false,
+                isSearchLoadingMore = false,
+                message = null,
+            )
+        }
+        if (state.value.submittedKeyword.isNotBlank() && state.value.searchType == UnifiedSearchType.VIDEOS) {
+            loadSearchType(UnifiedSearchType.VIDEOS)
         }
     }
 
     fun loadMoreSearchResults() {
         val current = state.value
-        val page = searchNextPage ?: return
+        when (current.searchType) {
+            UnifiedSearchType.VIDEOS -> loadMoreSearchVideos(current)
+            UnifiedSearchType.CREATORS -> loadMoreSearchCreators(current)
+            UnifiedSearchType.COLLECTIONS,
+            UnifiedSearchType.PLAYLISTS,
+            -> Unit
+        }
+    }
+
+    private fun loadMoreSearchVideos(current: BiuUiState) {
+        val page = searchVideoNextPage ?: return
         if (
             current.submittedKeyword.isBlank() ||
             current.isSearchLoading ||
             current.isSearchLoadingMore ||
-            !current.searchHasMore ||
+            !current.searchVideoHasMore ||
             searchJob?.isActive == true
         ) {
             return
         }
         val keyword = current.submittedKeyword
+        val order = current.searchVideoOrder
         val generation = searchGeneration
         mutableState.update { it.copy(isSearchLoadingMore = true, message = null) }
         searchJob = viewModelScope.launch {
             try {
-                val result = repository.searchVideos(keyword, page)
-                if (generation != searchGeneration || state.value.submittedKeyword != keyword) return@launch
-                searchNextPage = if (result.hasMore) result.page + 1 else null
+                val result = repository.searchVideos(keyword, page, order)
+                if (
+                    !isCurrentSearch(generation, keyword, UnifiedSearchType.VIDEOS) ||
+                    state.value.searchVideoOrder != order
+                ) {
+                    return@launch
+                }
+                searchVideoNextPage = if (result.hasMore) result.page + 1 else null
                 mutableState.update { latest ->
                     latest.copy(
                         // long: 服务端相邻页可能重复返回同一 BV，按资源身份去重可避免滚动触底后出现重复歌曲。
                         searchResults = (latest.searchResults + result.videos).distinctBy(BilibiliVideo::bvid),
-                        searchHasMore = result.hasMore,
+                        searchVideoHasMore = result.hasMore,
                         isSearchLoadingMore = false,
                     )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                if (generation == searchGeneration && state.value.submittedKeyword == keyword) {
+                if (isCurrentSearch(generation, keyword, UnifiedSearchType.VIDEOS)) {
                     mutableState.update {
                         it.copy(
                             isSearchLoadingMore = false,
@@ -1569,19 +1653,221 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun loadMoreSearchCreators(current: BiuUiState) {
+        val page = searchCreatorNextPage ?: return
+        if (
+            current.submittedKeyword.isBlank() ||
+            current.isSearchLoading ||
+            current.isSearchLoadingMore ||
+            !current.searchCreatorHasMore ||
+            searchJob?.isActive == true
+        ) {
+            return
+        }
+        val keyword = current.submittedKeyword
+        val generation = searchGeneration
+        mutableState.update { it.copy(isSearchLoadingMore = true, message = null) }
+        searchJob = viewModelScope.launch {
+            try {
+                val result = repository.searchCreators(keyword, page)
+                if (!isCurrentSearch(generation, keyword, UnifiedSearchType.CREATORS)) return@launch
+                searchCreatorNextPage = if (result.hasMore) result.page + 1 else null
+                mutableState.update { latest ->
+                    latest.copy(
+                        searchCreators = (latest.searchCreators + result.creators).distinctBy(BilibiliCreator::mid),
+                        searchCreatorHasMore = result.hasMore,
+                        isSearchLoadingMore = false,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (isCurrentSearch(generation, keyword, UnifiedSearchType.CREATORS)) {
+                    mutableState.update {
+                        it.copy(
+                            isSearchLoadingMore = false,
+                            message = error.userMessage("更多 UP 主加载失败"),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun loadSearchType(type: UnifiedSearchType) {
+        val snapshot = state.value
+        val keyword = snapshot.submittedKeyword
+        if (keyword.isBlank() || type in snapshot.loadedSearchTypes) return
+        searchJob?.cancel()
+        searchGeneration += 1L
+        val generation = searchGeneration
+        val videoOrder = snapshot.searchVideoOrder
+        val selectedCreators = snapshot.selectedCreators
+        val localPlaylists = snapshot.localPlaylists
+        mutableState.update {
+            it.copy(
+                searchType = type,
+                isSearchLoading = true,
+                isSearchLoadingMore = false,
+                message = null,
+            )
+        }
+        searchJob = viewModelScope.launch {
+            try {
+                when (type) {
+                    UnifiedSearchType.VIDEOS -> {
+                        val result = repository.searchVideos(keyword, page = 1, order = videoOrder)
+                        if (
+                            !isCurrentSearch(generation, keyword, type) ||
+                            state.value.searchVideoOrder != videoOrder
+                        ) {
+                            return@launch
+                        }
+                        searchVideoNextPage = if (result.hasMore) result.page + 1 else null
+                        mutableState.update { current ->
+                            current.copy(
+                                searchResults = result.videos.distinctBy(BilibiliVideo::bvid),
+                                searchVideoHasMore = result.hasMore,
+                                loadedSearchTypes = current.loadedSearchTypes + type,
+                                isSearchLoading = false,
+                            )
+                        }
+                    }
+
+                    UnifiedSearchType.CREATORS -> {
+                        val result = repository.searchCreators(keyword, page = 1)
+                        if (!isCurrentSearch(generation, keyword, type)) return@launch
+                        searchCreatorNextPage = if (result.hasMore) result.page + 1 else null
+                        mutableState.update { current ->
+                            current.copy(
+                                searchCreators = result.creators.distinctBy(BilibiliCreator::mid),
+                                searchCreatorHasMore = result.hasMore,
+                                loadedSearchTypes = current.loadedSearchTypes + type,
+                                isSearchLoading = false,
+                            )
+                        }
+                    }
+
+                    UnifiedSearchType.COLLECTIONS -> {
+                        val semaphore = Semaphore(3)
+                        val results = coroutineScope {
+                            selectedCreators.map { creator ->
+                                async {
+                                    try {
+                                        Result.success(
+                                            semaphore.withPermit { loadAllCreatorCollections(creator) },
+                                        )
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (error: Throwable) {
+                                        Result.failure(error)
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                        if (!isCurrentSearch(generation, keyword, type)) return@launch
+                        val failures = results.count { it.isFailure }
+                        val collections = UnifiedSearchPolicy.filterCollections(
+                            collections = results.flatMap { it.getOrNull().orEmpty() },
+                            keyword = keyword,
+                        )
+                        mutableState.update { current ->
+                            current.copy(
+                                searchCollections = collections,
+                                loadedSearchTypes = if (failures == 0) {
+                                    current.loadedSearchTypes + type
+                                } else {
+                                    current.loadedSearchTypes - type
+                                },
+                                isSearchLoading = false,
+                                message = if (failures > 0) "部分 UP 主合集读取失败，可稍后重试" else current.message,
+                            )
+                        }
+                    }
+
+                    UnifiedSearchType.PLAYLISTS -> {
+                        if (!isCurrentSearch(generation, keyword, type)) return@launch
+                        mutableState.update { current ->
+                            current.copy(
+                                searchPlaylists = UnifiedSearchPolicy.filterPlaylists(localPlaylists, keyword),
+                                loadedSearchTypes = current.loadedSearchTypes + type,
+                                isSearchLoading = false,
+                            )
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (isCurrentSearch(generation, keyword, type)) {
+                    mutableState.update {
+                        it.copy(
+                            isSearchLoading = false,
+                            message = error.userMessage(
+                                when (type) {
+                                    UnifiedSearchType.VIDEOS -> "视频搜索失败"
+                                    UnifiedSearchType.CREATORS -> "UP 主搜索失败"
+                                    UnifiedSearchType.COLLECTIONS -> "合集搜索失败"
+                                    UnifiedSearchType.PLAYLISTS -> "歌单搜索失败"
+                                },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun loadAllCreatorCollections(
+        creator: BilibiliCreator,
+    ): List<BilibiliCreatorCollection> {
+        val collections = mutableListOf<BilibiliCreatorCollection>()
+        var pageNumber = 1
+        while (true) {
+            val page = repository.creatorCollectionPage(creator, pageNumber)
+            collections += page.collections
+            if (!page.hasMore) break
+            pageNumber = page.page + 1
+        }
+        return collections.distinctBy { it.type to it.id }
+    }
+
+    private fun isCurrentSearch(
+        generation: Long,
+        keyword: String,
+        type: UnifiedSearchType,
+    ): Boolean = generation == searchGeneration &&
+        state.value.submittedKeyword == keyword &&
+        state.value.searchType == type
+
     fun clearSearch() {
         searchJob?.cancel()
         searchJob = null
         searchGeneration += 1L
-        searchNextPage = null
+        searchVideoNextPage = null
+        searchCreatorNextPage = null
         mutableState.update {
             it.copy(
                 submittedKeyword = "",
                 searchResults = emptyList(),
-                searchHasMore = false,
+                searchCreators = emptyList(),
+                searchCollections = emptyList(),
+                searchPlaylists = emptyList(),
+                loadedSearchTypes = emptySet(),
+                searchVideoHasMore = false,
+                searchCreatorHasMore = false,
                 isSearchLoading = false,
                 isSearchLoadingMore = false,
             )
+        }
+    }
+
+    fun clearSearchHistory() {
+        viewModelScope.launch {
+            runCatching { container.searchHistoryRepository.clear() }
+                .onFailure { error ->
+                    mutableState.update { it.copy(message = error.userMessage("清空搜索历史失败")) }
+                }
         }
     }
 

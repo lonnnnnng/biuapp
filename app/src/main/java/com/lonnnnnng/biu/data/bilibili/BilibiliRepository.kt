@@ -40,7 +40,11 @@ class BilibiliRepository(
         }
     }
 
-    suspend fun searchVideos(keyword: String, page: Int = 1): BilibiliVideoSearchPage {
+    suspend fun searchVideos(
+        keyword: String,
+        page: Int = 1,
+        order: BilibiliVideoSearchOrder = BilibiliVideoSearchOrder.RELEVANCE,
+    ): BilibiliVideoSearchPage {
         val normalizedKeyword = keyword.trim()
         require(normalizedKeyword.isNotBlank()) { "视频搜索关键词不能为空" }
         val normalizedPage = page.coerceAtLeast(1)
@@ -51,7 +55,7 @@ class BilibiliRepository(
                 "keyword" to normalizedKeyword,
                 "page" to normalizedPage,
                 "page_size" to VIDEO_SEARCH_PAGE_SIZE,
-                "order" to "totalrank",
+                "order" to order.apiValue,
                 "tids" to 3,
             ),
             useWbi = true,

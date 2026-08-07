@@ -45,11 +45,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -219,9 +221,11 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolder
 import com.lonnnnnng.biu.data.bilibili.BilibiliFavoriteFolderType
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorCollection
 import com.lonnnnnng.biu.data.bilibili.BilibiliDynamicItem
 import com.lonnnnnng.biu.data.bilibili.BilibiliLibraryVideo
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
+import com.lonnnnnng.biu.data.bilibili.BilibiliVideoSearchOrder
 import com.lonnnnnng.biu.data.bilibili.CreatorFeedTabState
 import com.lonnnnnng.biu.data.bilibili.RecommendFeed
 import com.lonnnnnng.biu.data.local.AudioDownloadTaskEntity
@@ -1145,6 +1149,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 MainSection.RECOMMEND -> RecommendationScreen(
                     videos = uiState.recommendations,
                     searchResults = uiState.searchResults,
+                    searchCreators = uiState.searchCreators,
+                    searchCollections = uiState.searchCollections,
+                    searchPlaylists = uiState.searchPlaylists,
+                    searchType = uiState.searchType,
+                    searchVideoOrder = uiState.searchVideoOrder,
+                    searchHistory = uiState.searchHistory,
                     submittedKeyword = uiState.submittedKeyword,
                     feed = uiState.feed,
                     creatorFeedTabs = uiState.creatorFeedTabs,
@@ -1159,7 +1169,13 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     hasMore = uiState.recommendationHasMore,
                     searchLoading = uiState.isSearchLoading,
                     searchLoadingMore = uiState.isSearchLoadingMore,
-                    searchHasMore = uiState.searchHasMore,
+                    searchHasMore = when (uiState.searchType) {
+                        UnifiedSearchType.VIDEOS -> uiState.searchVideoHasMore
+                        UnifiedSearchType.CREATORS -> uiState.searchCreatorHasMore
+                        UnifiedSearchType.COLLECTIONS,
+                        UnifiedSearchType.PLAYLISTS,
+                        -> false
+                    },
                     resolvingBvid = uiState.resolvingBvid,
                     videoLayout = uiState.videoLayout,
                     onFeedChange = viewModel::loadRecommendations,
@@ -1168,8 +1184,33 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onRefresh = { viewModel.loadRecommendations() },
                     onLoadMore = viewModel::loadMoreRecommendations,
                     onSearch = viewModel::search,
+                    onSearchTypeSelected = viewModel::selectSearchType,
+                    onSearchVideoOrderSelected = viewModel::selectSearchVideoOrder,
                     onLoadMoreSearch = viewModel::loadMoreSearchResults,
                     onClearSearch = viewModel::clearSearch,
+                    onClearSearchHistory = viewModel::clearSearchHistory,
+                    onManageSources = openCreatorCenter,
+                    onOpenSearchCreator = { creator ->
+                        showCreatorCenter = true
+                        viewModel.openCreatorProfile(creator)
+                    },
+                    onOpenSearchCollection = { collection ->
+                        showCreatorCenter = true
+                        viewModel.openCreatorProfile(
+                            BilibiliCreator(
+                                mid = collection.ownerMid,
+                                name = collection.ownerName,
+                                faceUrl = "",
+                            ),
+                        )
+                        viewModel.selectCreatorProfileTab(CreatorProfileTab.COLLECTIONS)
+                        viewModel.openCreatorCollection(collection)
+                    },
+                    onOpenSearchPlaylist = { playlist ->
+                        viewModel.selectSection(MainSection.ACCOUNT)
+                        viewModel.loadLibrary(AccountLibrarySection.PLAYLISTS)
+                        viewModel.openLocalPlaylist(playlist)
+                    },
                     onPlay = viewModel::play,
                     onAddFavorite = { video ->
                         if (uiState.account.isLoggedIn) favoritePickerVideo = video else showLogin = true
@@ -1790,6 +1831,12 @@ private fun MainSection.icon(): ImageVector = when (this) {
 private fun RecommendationScreen(
     videos: List<BilibiliVideo>,
     searchResults: List<BilibiliVideo>,
+    searchCreators: List<BilibiliCreator>,
+    searchCollections: List<BilibiliCreatorCollection>,
+    searchPlaylists: List<LocalPlaylistEntity>,
+    searchType: UnifiedSearchType,
+    searchVideoOrder: BilibiliVideoSearchOrder,
+    searchHistory: List<String>,
     submittedKeyword: String,
     feed: RecommendFeed,
     creatorFeedTabs: List<CreatorFeedTabState>,
@@ -1813,8 +1860,15 @@ private fun RecommendationScreen(
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onSearch: (String) -> Unit,
+    onSearchTypeSelected: (UnifiedSearchType) -> Unit,
+    onSearchVideoOrderSelected: (BilibiliVideoSearchOrder) -> Unit,
     onLoadMoreSearch: () -> Unit,
     onClearSearch: () -> Unit,
+    onClearSearchHistory: () -> Unit,
+    onManageSources: () -> Unit,
+    onOpenSearchCreator: (BilibiliCreator) -> Unit,
+    onOpenSearchCollection: (BilibiliCreatorCollection) -> Unit,
+    onOpenSearchPlaylist: (LocalPlaylistEntity) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier = Modifier,
@@ -1822,6 +1876,29 @@ private fun RecommendationScreen(
     var keyword by remember(submittedKeyword) { mutableStateOf(submittedKeyword) }
     val focusManager = LocalFocusManager.current
     val showingSearchResults = submittedKeyword.isNotBlank()
+    // long: 推荐与搜索使用独立滚动状态，关闭搜索后才能回到原推荐位置，而不是继承搜索结果的索引。
+    val recommendationListState = rememberLazyListState()
+    val recommendationGridState = rememberLazyGridState()
+    val searchVideoListState = rememberLazyListState()
+    val searchVideoGridState = rememberLazyGridState()
+    val searchCreatorListState = rememberLazyListState()
+    val searchCollectionListState = rememberLazyListState()
+    val searchPlaylistListState = rememberLazyListState()
+    LaunchedEffect(submittedKeyword) {
+        if (submittedKeyword.isNotBlank()) {
+            searchVideoListState.scrollToItem(0)
+            searchVideoGridState.scrollToItem(0)
+            searchCreatorListState.scrollToItem(0)
+            searchCollectionListState.scrollToItem(0)
+            searchPlaylistListState.scrollToItem(0)
+        }
+    }
+    LaunchedEffect(searchVideoOrder) {
+        if (submittedKeyword.isNotBlank()) {
+            searchVideoListState.scrollToItem(0)
+            searchVideoGridState.scrollToItem(0)
+        }
+    }
     val submitSearch = {
         focusManager.clearFocus()
         onSearch(keyword)
@@ -1864,9 +1941,20 @@ private fun RecommendationScreen(
                     keyword = ""
                     onClearSearch()
                 },
-                placeholder = "搜索标题或 UP 主",
+                placeholder = "搜索视频、UP 主、合集或歌单",
                 loading = searchLoading,
                 modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (!showingSearchResults && keyword.isBlank() && searchHistory.isNotEmpty()) {
+            SearchHistoryRow(
+                history = searchHistory,
+                onSelect = { historyKeyword ->
+                    keyword = historyKeyword
+                    focusManager.clearFocus()
+                    onSearch(historyKeyword)
+                },
+                onClear = onClearSearchHistory,
             )
         }
         if (showingSearchResults) {
@@ -1891,6 +1979,31 @@ private fun RecommendationScreen(
                     },
                 ) { Text("返回推荐") }
             }
+            UnifiedSearchTabs(
+                selectedType = searchType,
+                onSelected = onSearchTypeSelected,
+            )
+            when (searchType) {
+                UnifiedSearchType.VIDEOS -> SearchVideoOrderTabs(
+                    selectedOrder = searchVideoOrder,
+                    onSelected = onSearchVideoOrderSelected,
+                )
+
+                UnifiedSearchType.COLLECTIONS -> Text(
+                    text = if (selectedCreators.isEmpty()) {
+                        "合集搜索范围：尚未配置首页音乐来源"
+                    } else {
+                        "合集搜索范围：已配置的 ${selectedCreators.size} 位 UP 主"
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                UnifiedSearchType.CREATORS,
+                UnifiedSearchType.PLAYLISTS,
+                -> Unit
+            }
         } else {
             RecommendationTabs(
                 selectedFeed = feed,
@@ -1907,41 +2020,98 @@ private fun RecommendationScreen(
         val recommendationLoadingMore = if (usingCreatorSources) discovery.isLoadingMore else loadingMore
         val recommendationHasMore = if (usingCreatorSources) discovery.hasMore else hasMore
         val recommendationPaginationKey = if (usingCreatorSources) discovery.paginationKey else recommendationVideos.size
-        val activeLoading = if (showingSearchResults) searchLoading else recommendationLoading
-        val activeVideos = if (showingSearchResults) searchResults else recommendationVideos
         PullToRefreshBox(
-            isRefreshing = activeLoading,
+            isRefreshing = if (showingSearchResults) searchLoading else recommendationLoading,
             onRefresh = {
                 if (showingSearchResults) onSearch(submittedKeyword) else onRefresh()
             },
             modifier = Modifier.weight(1f),
         ) {
-            if (!activeLoading && activeVideos.isEmpty()) {
+            if (showingSearchResults) {
+                when (searchType) {
+                    UnifiedSearchType.VIDEOS -> {
+                        if (!searchLoading && searchResults.isEmpty()) {
+                            SearchEmptyState(
+                                title = "没有找到视频",
+                                onBack = {
+                                    keyword = ""
+                                    onClearSearch()
+                                },
+                            )
+                        } else {
+                            VideoList(
+                                videos = searchResults,
+                                resolvingBvid = resolvingBvid,
+                                videoLayout = videoLayout,
+                                onPlay = onPlay,
+                                onAddFavorite = onAddFavorite,
+                                onLoadMore = onLoadMoreSearch,
+                                hasMore = searchHasMore,
+                                loadingMore = searchLoadingMore,
+                                paginationKey = searchResults.size,
+                                listState = searchVideoListState,
+                                gridState = searchVideoGridState,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+
+                    UnifiedSearchType.CREATORS -> SearchCreatorList(
+                        creators = searchCreators,
+                        loading = searchLoading,
+                        loadingMore = searchLoadingMore,
+                        hasMore = searchHasMore,
+                        listState = searchCreatorListState,
+                        onLoadMore = onLoadMoreSearch,
+                        onOpen = onOpenSearchCreator,
+                        onBack = {
+                            keyword = ""
+                            onClearSearch()
+                        },
+                    )
+
+                    UnifiedSearchType.COLLECTIONS -> SearchCollectionList(
+                        collections = searchCollections,
+                        loading = searchLoading,
+                        sourcesConfigured = selectedCreators.isNotEmpty(),
+                        listState = searchCollectionListState,
+                        onOpen = onOpenSearchCollection,
+                        onManageSources = onManageSources,
+                        onBack = {
+                            keyword = ""
+                            onClearSearch()
+                        },
+                    )
+
+                    UnifiedSearchType.PLAYLISTS -> SearchPlaylistList(
+                        playlists = searchPlaylists,
+                        loading = searchLoading,
+                        listState = searchPlaylistListState,
+                        onOpen = onOpenSearchPlaylist,
+                        onBack = {
+                            keyword = ""
+                            onClearSearch()
+                        },
+                    )
+                }
+            } else if (!recommendationLoading && recommendationVideos.isEmpty()) {
                 val canContinueDiscovery = !showingSearchResults && usingCreatorSources && recommendationHasMore
                 BiuEmptyState(
-                    icon = if (showingSearchResults) Icons.Rounded.Search else Icons.Rounded.LibraryMusic,
+                    icon = Icons.Rounded.LibraryMusic,
                     title = when {
-                        showingSearchResults -> "没有找到结果"
                         usingCreatorSources && homeDiscoveryMode == HomeDiscoveryMode.UNPLAYED -> "当前范围没有未播放投稿"
                         usingCreatorSources && homeDiscoveryMode == HomeDiscoveryMode.RECENT -> "当前范围没有最近播放投稿"
                         else -> "暂时没有推荐"
                     },
                     message = when {
-                        showingSearchResults -> "换一个关键词再试试"
                         canContinueDiscovery -> "可以继续读取更早的 UP 主投稿"
                         else -> null
                     },
                     actionLabel = when {
-                        showingSearchResults -> "返回推荐"
                         canContinueDiscovery -> "继续查找"
                         else -> "重新加载"
                     },
-                    onAction = if (showingSearchResults) {
-                        {
-                            keyword = ""
-                            onClearSearch()
-                        }
-                    } else if (canContinueDiscovery) {
+                    onAction = if (canContinueDiscovery) {
                         onLoadMore
                     } else {
                         onRefresh
@@ -1950,19 +2120,355 @@ private fun RecommendationScreen(
                 )
             } else {
                 VideoList(
-                    videos = activeVideos,
+                    videos = recommendationVideos,
                     resolvingBvid = resolvingBvid,
                     videoLayout = videoLayout,
                     onPlay = onPlay,
                     onAddFavorite = onAddFavorite,
-                    onLoadMore = if (showingSearchResults) onLoadMoreSearch else onLoadMore,
-                    hasMore = if (showingSearchResults) searchHasMore else recommendationHasMore,
-                    loadingMore = if (showingSearchResults) searchLoadingMore else recommendationLoadingMore,
-                    paginationKey = if (showingSearchResults) searchResults.size else recommendationPaginationKey,
+                    onLoadMore = onLoadMore,
+                    hasMore = recommendationHasMore,
+                    loadingMore = recommendationLoadingMore,
+                    paginationKey = recommendationPaginationKey,
+                    listState = recommendationListState,
+                    gridState = recommendationGridState,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SearchHistoryRow(
+    history: List<String>,
+    onSelect: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(36.dp)
+                .padding(start = 16.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "最近搜索",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onClear) { Text("清空") }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            history.forEach { item ->
+                FilterChip(
+                    selected = false,
+                    onClick = { onSelect(item) },
+                    label = {
+                        Text(item, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnifiedSearchTabs(
+    selectedType: UnifiedSearchType,
+    onSelected: (UnifiedSearchType) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp),
+    ) {
+        UnifiedSearchType.entries.forEach { type ->
+            RecommendationTab(
+                label = type.label,
+                selected = selectedType == type,
+                onClick = { onSelected(type) },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+            )
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+private fun SearchVideoOrderTabs(
+    selectedOrder: BilibiliVideoSearchOrder,
+    onSelected: (BilibiliVideoSearchOrder) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(40.dp),
+    ) {
+        BilibiliVideoSearchOrder.entries.forEach { order ->
+            RecommendationTab(
+                label = order.label,
+                selected = selectedOrder == order,
+                onClick = { onSelected(order) },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+            )
+        }
+    }
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+@Composable
+private fun SearchEmptyState(
+    title: String,
+    onBack: () -> Unit,
+    message: String = "换一个关键词再试试",
+) {
+    BiuEmptyState(
+        icon = Icons.Rounded.Search,
+        title = title,
+        message = message,
+        actionLabel = "返回推荐",
+        onAction = onBack,
+        modifier = Modifier.fillMaxSize(),
+    )
+}
+
+@Composable
+private fun SearchCreatorList(
+    creators: List<BilibiliCreator>,
+    loading: Boolean,
+    loadingMore: Boolean,
+    hasMore: Boolean,
+    listState: LazyListState,
+    onLoadMore: () -> Unit,
+    onOpen: (BilibiliCreator) -> Unit,
+    onBack: () -> Unit,
+) {
+    val shouldLoadMore by remember(listState, creators.size, hasMore) {
+        derivedStateOf {
+            val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            hasMore && creators.isNotEmpty() && lastVisibleIndex >= creators.lastIndex - 3
+        }
+    }
+    LaunchedEffect(shouldLoadMore, creators.size, hasMore) {
+        if (shouldLoadMore && !loadingMore) onLoadMore()
+    }
+    if (!loading && creators.isEmpty()) {
+        SearchEmptyState(title = "没有找到 UP 主", onBack = onBack)
+        return
+    }
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        items(creators, key = BilibiliCreator::mid) { creator ->
+            SearchCreatorRow(creator = creator, onClick = { onOpen(creator) })
+            MediaDivider(start = 76.dp)
+        }
+        if (loadingMore) item(key = "search-creators-loading") { ListLoadingFooter() }
+    }
+}
+
+@Composable
+private fun SearchCreatorRow(
+    creator: BilibiliCreator,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AsyncImage(
+            model = creator.faceUrl,
+            contentDescription = creator.name,
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentScale = ContentScale.Crop,
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                creator.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                creator.officialTitle.ifBlank { creator.signature.ifBlank { "查看空间、投稿与合集" } },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SearchCollectionList(
+    collections: List<BilibiliCreatorCollection>,
+    loading: Boolean,
+    sourcesConfigured: Boolean,
+    listState: LazyListState,
+    onOpen: (BilibiliCreatorCollection) -> Unit,
+    onManageSources: () -> Unit,
+    onBack: () -> Unit,
+) {
+    if (!loading && collections.isEmpty()) {
+        if (!sourcesConfigured) {
+            BiuEmptyState(
+                icon = Icons.Rounded.Folder,
+                title = "先配置音乐来源",
+                message = "合集搜索只覆盖首页已选 UP 主，不伪装成全站合集搜索",
+                actionLabel = "管理音乐来源",
+                onAction = onManageSources,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            SearchEmptyState(title = "没有找到合集", onBack = onBack)
+        }
+        return
+    }
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        items(collections, key = { collection -> "${collection.type}:${collection.id}" }) { collection ->
+            SearchCollectionRow(collection = collection, onClick = { onOpen(collection) })
+            MediaDivider(start = 124.dp)
+        }
+    }
+}
+
+@Composable
+private fun SearchCollectionRow(
+    collection: BilibiliCreatorCollection,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        AsyncImage(
+            model = collection.coverUrl,
+            contentDescription = collection.title,
+            modifier = Modifier
+                .size(width = 98.dp, height = 55.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentScale = ContentScale.Crop,
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                collection.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "${collection.type.label} · ${collection.ownerName}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "${collection.mediaCount} 个视频 · ${formatPublishedDateTime(collection.publishedAtEpochSeconds)}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchPlaylistList(
+    playlists: List<LocalPlaylistEntity>,
+    loading: Boolean,
+    listState: LazyListState,
+    onOpen: (LocalPlaylistEntity) -> Unit,
+    onBack: () -> Unit,
+) {
+    if (!loading && playlists.isEmpty()) {
+        SearchEmptyState(
+            title = "没有找到本地歌单",
+            message = "歌单按本机名称搜索",
+            onBack = onBack,
+        )
+        return
+    }
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        items(playlists, key = LocalPlaylistEntity::playlistId) { playlist ->
+            SearchPlaylistRow(playlist = playlist, onClick = { onOpen(playlist) })
+            MediaDivider(start = 68.dp)
+        }
+    }
+}
+
+@Composable
+private fun SearchPlaylistRow(
+    playlist: LocalPlaylistEntity,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Surface(
+            modifier = Modifier.size(40.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = null)
+            }
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                playlist.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "本地歌单 · 更新于 ${formatPublishedDateTime(playlist.updatedAtEpochMs / 1_000L)}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -4468,6 +4974,8 @@ private fun VideoList(
     hasMore: Boolean,
     loadingMore: Boolean,
     paginationKey: Int,
+    listState: LazyListState,
+    gridState: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
     when (videoLayout) {
@@ -4480,6 +4988,7 @@ private fun VideoList(
             hasMore = hasMore,
             loadingMore = loadingMore,
             paginationKey = paginationKey,
+            listState = listState,
             modifier = modifier,
         )
         AppVideoLayout.GRID -> VideoGrid(
@@ -4491,6 +5000,7 @@ private fun VideoList(
             hasMore = hasMore,
             loadingMore = loadingMore,
             paginationKey = paginationKey,
+            gridState = gridState,
             modifier = modifier,
         )
     }
@@ -4506,9 +5016,9 @@ private fun VideoRowList(
     hasMore: Boolean,
     loadingMore: Boolean,
     paginationKey: Int,
+    listState: LazyListState,
     modifier: Modifier,
 ) {
-    val listState = rememberLazyListState()
     val listMetrics = LocalBiuListDensity.current
     val shouldLoadMore by remember(listState, paginationKey, hasMore) {
         derivedStateOf {
@@ -4555,9 +5065,9 @@ private fun VideoGrid(
     hasMore: Boolean,
     loadingMore: Boolean,
     paginationKey: Int,
+    gridState: LazyGridState,
     modifier: Modifier,
 ) {
-    val gridState = rememberLazyGridState()
     val listMetrics = LocalBiuListDensity.current
     val shouldLoadMore by remember(gridState, paginationKey, hasMore) {
         derivedStateOf {

@@ -197,6 +197,20 @@ class BilibiliRecommendationRepositoryTest {
         assertEquals("测试歌曲", request.requestUrl?.queryParameter("keyword"))
         assertEquals("2", request.requestUrl?.queryParameter("page"))
         assertEquals("24", request.requestUrl?.queryParameter("page_size"))
+        assertEquals("totalrank", request.requestUrl?.queryParameter("order"))
+    }
+
+    @Test
+    fun `视频搜索可按最新发布时间排序`() = runBlocking {
+        server.enqueue(wbiKeyResponse())
+        server.enqueue(jsonResponse("""{"code":0,"data":{"result":[],"numPages":1}}"""))
+        val repository = BilibiliRepository(OkHttpClient(), apiBase = server.url("/"))
+
+        repository.searchVideos("新歌", order = BilibiliVideoSearchOrder.PUBLISHED_AT)
+
+        server.takeRequest()
+        val request = server.takeRequest()
+        assertEquals("pubdate", request.requestUrl?.queryParameter("order"))
     }
 
     @Test
