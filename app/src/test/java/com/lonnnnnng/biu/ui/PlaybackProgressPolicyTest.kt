@@ -84,6 +84,24 @@ class PlaybackProgressPolicyTest {
     }
 
     @Test
+    fun `底部控制区触摸不启动视频画面横滑`() {
+        assertFalse(
+            VideoPlaybackTouchPolicy.shouldHandleSurfaceSwipe(
+                touchY = 960f,
+                surfaceHeight = 1000f,
+                bottomControlHeight = 96f,
+            ),
+        )
+        assertTrue(
+            VideoPlaybackTouchPolicy.shouldHandleSurfaceSwipe(
+                touchY = 800f,
+                surfaceHeight = 1000f,
+                bottomControlHeight = 96f,
+            ),
+        )
+    }
+
+    @Test
     fun `视频横滑按画面宽度快进和快退`() {
         assertEquals(
             90_000L,

@@ -72,6 +72,17 @@ internal object PlaybackSliderDragPolicy {
     }
 }
 
+internal object VideoPlaybackTouchPolicy {
+    fun shouldHandleSurfaceSwipe(
+        touchY: Float,
+        surfaceHeight: Float,
+        bottomControlHeight: Float,
+    ): Boolean {
+        // long: 底部控制区由进度条和工具按钮独占，画面横滑层不能覆盖处理，否则一次拖动会触发两次 seek。
+        return touchY < (surfaceHeight - bottomControlHeight).coerceAtLeast(0f)
+    }
+}
+
 /**
  * 视频画面横向滑动的定位换算。
  *

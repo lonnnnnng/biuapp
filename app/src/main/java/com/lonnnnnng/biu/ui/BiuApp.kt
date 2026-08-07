@@ -4979,6 +4979,7 @@ private fun VideoPlaybackSurface(
 
         VideoPlaybackGestureLayer(
             swipeSeekEnabled = controllerReady && progress.isSeekable,
+            bottomControlHeight = if (fullscreen) 128.dp else 64.dp,
             onTap = { controlsVisible = !controlsVisible },
             onSwipeSeekStart = {
                 controlsVisible = true
@@ -5544,6 +5545,7 @@ private fun NowPlayingVideo(player: Player, modifier: Modifier = Modifier) {
 @Composable
 private fun VideoPlaybackGestureLayer(
     swipeSeekEnabled: Boolean,
+    bottomControlHeight: androidx.compose.ui.unit.Dp,
     onTap: () -> Unit,
     onSwipeSeekStart: () -> Unit,
     onSwipeSeekDrag: (dragDistancePx: Float, surfaceWidthPx: Float) -> Unit,
@@ -5552,9 +5554,18 @@ private fun VideoPlaybackGestureLayer(
     modifier: Modifier = Modifier,
 ) {
     Box(
-        modifier = modifier.pointerInput(swipeSeekEnabled) {
+        modifier = modifier.pointerInput(swipeSeekEnabled, bottomControlHeight) {
+            val bottomControlHeightPx = bottomControlHeight.toPx()
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
+                if (!VideoPlaybackTouchPolicy.shouldHandleSurfaceSwipe(
+                        touchY = down.position.y,
+                        surfaceHeight = size.height.toFloat(),
+                        bottomControlHeight = bottomControlHeightPx,
+                    )
+                ) {
+                    return@awaitEachGesture
+                }
                 val startPosition = down.position
                 var swipeStarted = false
                 var isPressed = true
