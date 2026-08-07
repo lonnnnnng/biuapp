@@ -12,6 +12,7 @@ import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
 import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreator
+import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorVideoPage
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
 import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorCollection
 import com.lonnnnnng.biu.data.bilibili.BilibiliDynamicItem
@@ -184,7 +185,8 @@ data class BiuUiState(
     val recommendations: List<BilibiliVideo> = emptyList(),
     val recommendationHasMore: Boolean = false,
     val creatorFeedTabs: List<CreatorFeedTabState> = emptyList(),
-    val selectedCreatorFeedMid: Long? = null,
+    val homeDiscoveryScope: HomeDiscoveryScope = HomeDiscoveryScope.All,
+    val homeDiscoveryMode: HomeDiscoveryMode = HomeDiscoveryMode.LATEST,
     val followedCreators: List<BilibiliCreator> = emptyList(),
     val selectedCreators: List<BilibiliCreator> = emptyList(),
     val creatorGroups: List<CreatorGroupEntity> = emptyList(),
@@ -312,9 +314,15 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.creatorSelectionRepository.selected.collect { selectedCreators ->
                 val changed = state.value.selectedCreators != selectedCreators
-                mutableState.update {
-                    it.copy(
+                mutableState.update { current ->
+                    current.copy(
                         selectedCreators = selectedCreators,
+                        homeDiscoveryScope = HomeDiscoveryPolicy.normalizeScope(
+                            scope = current.homeDiscoveryScope,
+                            creators = selectedCreators,
+                            groups = current.creatorGroups,
+                            memberships = current.creatorGroupMembers,
+                        ),
                         isCreatorConfigSaving = false,
                     )
                 }
@@ -330,6 +338,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 mutableState.update { current ->
                     current.copy(
                         creatorGroups = groups,
+                        homeDiscoveryScope = HomeDiscoveryPolicy.normalizeScope(
+                            scope = current.homeDiscoveryScope,
+                            creators = current.selectedCreators,
+                            groups = groups,
+                            memberships = current.creatorGroupMembers,
+                        ),
                         creatorCenter = current.creatorCenter.copy(
                             selectedGroupId = current.creatorCenter.selectedGroupId
                                 ?.takeIf { selectedId -> groups.any { it.groupId == selectedId } },
@@ -340,7 +354,17 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             container.creatorGroupRepository.memberships.collect { memberships ->
-                mutableState.update { it.copy(creatorGroupMembers = memberships) }
+                mutableState.update { current ->
+                    current.copy(
+                        creatorGroupMembers = memberships,
+                        homeDiscoveryScope = HomeDiscoveryPolicy.normalizeScope(
+                            scope = current.homeDiscoveryScope,
+                            creators = current.selectedCreators,
+                            groups = current.creatorGroups,
+                            memberships = memberships,
+                        ),
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -738,14 +762,23 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 preserveCurrentVideos = feed == current.feed && current.recommendations.isNotEmpty(),
             )
         } else {
-            current.selectedCreatorFeedMid?.let { mid -> loadCreatorFeedTab(mid, append = false) }
+            loadCreatorFeedScope(
+                scope = current.homeDiscoveryScope,
+                append = false,
+                forceRefresh = true,
+            )
         }
     }
 
-    fun selectCreatorFeed(mid: Long) {
+    fun selectHomeDiscoveryScope(scope: HomeDiscoveryScope) {
         val current = state.value
-        if (current.selectedCreatorFeedMid == mid) return
-        val tab = current.creatorFeedTabs.firstOrNull { item -> item.creator.mid == mid } ?: return
+        val normalizedScope = HomeDiscoveryPolicy.normalizeScope(
+            scope = scope,
+            creators = current.selectedCreators,
+            groups = current.creatorGroups,
+            memberships = current.creatorGroupMembers,
+        )
+        if (current.homeDiscoveryScope == normalizedScope) return
         if (recommendationsJob?.isActive == true) {
             recommendationsJob?.cancel()
             recommendationsJob = null
@@ -753,24 +786,33 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         mutableState.update {
             it.copy(
-                selectedCreatorFeedMid = mid,
+                homeDiscoveryScope = normalizedScope,
                 creatorFeedTabs = it.creatorFeedTabs.map { item ->
                     item.copy(isLoading = false, isLoadingMore = false)
                 },
             )
         }
-        if (!tab.hasLoaded) {
-            loadCreatorFeedTab(mid, append = false)
+        if (
+            HomeDiscoveryPolicy.midsNeedingInitialLoad(
+                tabs = state.value.creatorFeedTabs,
+                scope = normalizedScope,
+                creators = state.value.selectedCreators,
+                memberships = state.value.creatorGroupMembers,
+            ).isNotEmpty()
+        ) {
+            loadCreatorFeedScope(normalizedScope, append = false)
         }
+    }
+
+    fun selectHomeDiscoveryMode(mode: HomeDiscoveryMode) {
+        mutableState.update { it.copy(homeDiscoveryMode = mode) }
     }
 
     fun loadMoreRecommendations() {
         val current = state.value
         if (current.selectedCreators.isNotEmpty()) {
-            val mid = current.selectedCreatorFeedMid ?: return
-            val tab = current.creatorFeedTabs.firstOrNull { item -> item.creator.mid == mid } ?: return
-            if (!tab.hasMore || tab.isLoading || tab.isLoadingMore || recommendationsJob?.isActive == true) return
-            loadCreatorFeedTab(mid, append = true)
+            if (recommendationsJob?.isActive == true) return
+            loadCreatorFeedScope(current.homeDiscoveryScope, append = true)
             return
         }
         if (
@@ -3198,35 +3240,44 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         // long: 切换来源或手动刷新时取消旧请求，防止较慢的旧响应覆盖用户刚保存的新范围。
         recommendationsJob?.cancel()
         recommendationGeneration += 1L
-        val generation = recommendationGeneration
         if (!preserveCurrentVideos) recommendationNextPage = null
         if (selectedCreators.isNotEmpty()) {
             val tabs = CreatorFeedPolicy.reconcileTabs(state.value.creatorFeedTabs, selectedCreators)
-            val selectedMid = state.value.selectedCreatorFeedMid
-                ?.takeIf { mid -> tabs.any { tab -> tab.creator.mid == mid } }
-                ?: tabs.firstOrNull()?.creator?.mid
-            mutableState.update {
-                it.copy(
+            val scope = HomeDiscoveryPolicy.normalizeScope(
+                scope = state.value.homeDiscoveryScope,
+                creators = selectedCreators,
+                groups = state.value.creatorGroups,
+                memberships = state.value.creatorGroupMembers,
+            )
+            mutableState.update { current ->
+                current.copy(
                     creatorFeedTabs = tabs,
-                    selectedCreatorFeedMid = selectedMid,
+                    homeDiscoveryScope = scope,
                     isFeedLoading = false,
                     isFeedLoadingMore = false,
                     message = null,
                 )
             }
-            val selectedTab = tabs.firstOrNull { tab -> tab.creator.mid == selectedMid }
-            if (selectedTab != null && !selectedTab.hasLoaded) {
-                loadCreatorFeedTab(selectedTab.creator.mid, append = false)
+            if (
+                HomeDiscoveryPolicy.midsNeedingInitialLoad(
+                    tabs = tabs,
+                    scope = scope,
+                    creators = selectedCreators,
+                    memberships = state.value.creatorGroupMembers,
+                ).isNotEmpty()
+            ) {
+                loadCreatorFeedScope(scope, append = false)
             }
             return
         }
+        val generation = recommendationGeneration
         mutableState.update {
             it.copy(
                 feed = feed,
                 recommendations = if (preserveCurrentVideos) it.recommendations else emptyList(),
                 recommendationHasMore = if (preserveCurrentVideos) it.recommendationHasMore else false,
                 creatorFeedTabs = emptyList(),
-                selectedCreatorFeedMid = null,
+                homeDiscoveryScope = HomeDiscoveryScope.All,
                 isFeedLoading = true,
                 isFeedLoadingMore = false,
                 message = null,
@@ -3256,23 +3307,59 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadCreatorFeedTab(mid: Long, append: Boolean) {
-        val tab = state.value.creatorFeedTabs.firstOrNull { item -> item.creator.mid == mid } ?: return
-        val page = if (append) tab.nextPage ?: return else 1
+    private fun loadCreatorFeedScope(
+        scope: HomeDiscoveryScope,
+        append: Boolean,
+        forceRefresh: Boolean = false,
+    ) {
+        val current = state.value
+        val normalizedScope = HomeDiscoveryPolicy.normalizeScope(
+            scope = scope,
+            creators = current.selectedCreators,
+            groups = current.creatorGroups,
+            memberships = current.creatorGroupMembers,
+        )
+        val targetMids = when {
+            append -> listOfNotNull(
+                HomeDiscoveryPolicy.nextAppendMid(
+                    tabs = current.creatorFeedTabs,
+                    scope = normalizedScope,
+                    creators = current.selectedCreators,
+                    memberships = current.creatorGroupMembers,
+                ),
+            )
+            forceRefresh -> HomeDiscoveryPolicy.includedMids(
+                scope = normalizedScope,
+                creators = current.selectedCreators,
+                memberships = current.creatorGroupMembers,
+            ).toList()
+            else -> HomeDiscoveryPolicy.midsNeedingInitialLoad(
+                tabs = current.creatorFeedTabs,
+                scope = normalizedScope,
+                creators = current.selectedCreators,
+                memberships = current.creatorGroupMembers,
+            )
+        }
+        val targetPages = current.creatorFeedTabs.mapNotNull { tab ->
+            if (tab.creator.mid !in targetMids) return@mapNotNull null
+            val page = if (append) tab.nextPage ?: return@mapNotNull null else 1
+            tab.creator.mid to page
+        }.toMap()
+        if (targetPages.isEmpty()) return
         recommendationsJob?.cancel()
         recommendationGeneration += 1L
         val generation = recommendationGeneration
-        mutableState.update { current ->
-            current.copy(
-                creatorFeedTabs = current.creatorFeedTabs.map { item ->
-                    when (item.creator.mid) {
-                        mid -> item.copy(
-                            videos = item.videos,
-                            nextPage = item.nextPage,
+        mutableState.update { latest ->
+            latest.copy(
+                homeDiscoveryScope = normalizedScope,
+                creatorFeedTabs = latest.creatorFeedTabs.map { item ->
+                    if (item.creator.mid in targetPages) {
+                        item.copy(
                             isLoading = !append,
                             isLoadingMore = append,
                         )
-                        else -> item.copy(isLoading = false, isLoadingMore = false)
+                    } else {
+                        item.copy(isLoading = false, isLoadingMore = false)
                     }
                 },
                 message = null,
@@ -3280,31 +3367,60 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         recommendationsJob = viewModelScope.launch {
             try {
-                val result = repository.creatorVideoPage(tab.creator, page)
-                if (generation != recommendationGeneration) return@launch
-                mutableState.update { current ->
-                    current.copy(
-                        creatorFeedTabs = current.creatorFeedTabs.map { item ->
-                            if (item.creator.mid == mid) {
-                                CreatorFeedPolicy.applyPage(item, result, append)
-                            } else {
-                                item
+                val semaphore = Semaphore(CREATOR_FEED_PARALLELISM)
+                val results: List<Pair<Long, Result<BilibiliCreatorVideoPage>>> = coroutineScope {
+                    state.value.creatorFeedTabs.mapNotNull { tab ->
+                        val page = targetPages[tab.creator.mid] ?: return@mapNotNull null
+                        async {
+                            semaphore.withPermit {
+                                val result = try {
+                                    Result.success(repository.creatorVideoPage(tab.creator, page))
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (error: Throwable) {
+                                    Result.failure(error)
+                                }
+                                if (generation == recommendationGeneration) {
+                                    mutableState.update { latest ->
+                                        latest.copy(
+                                            // long: 多来源首屏按单个 UP 完成即发布，避免关注范围较大时必须等待全部请求结束才看到第一条歌曲。
+                                            creatorFeedTabs = latest.creatorFeedTabs.map { item ->
+                                                if (item.creator.mid == tab.creator.mid) {
+                                                    result.fold(
+                                                        onSuccess = { loaded ->
+                                                            CreatorFeedPolicy.applyPage(item, loaded, append)
+                                                        },
+                                                        onFailure = {
+                                                            item.copy(isLoading = false, isLoadingMore = false)
+                                                        },
+                                                    )
+                                                } else item
+                                            },
+                                        )
+                                    }
+                                }
+                                tab.creator.mid to result
                             }
-                        },
+                        }
+                    }.awaitAll()
+                }
+                if (generation != recommendationGeneration) return@launch
+                val failedCount = results.count { (_, result) -> result.isFailure }
+                mutableState.update { latest ->
+                    latest.copy(
+                        message = failedCount.takeIf { it > 0 }?.let { "$it 个 UP 主投稿加载失败，可下拉重试" },
                     )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
                 if (generation == recommendationGeneration) {
-                    mutableState.update { current ->
-                        current.copy(
-                            creatorFeedTabs = current.creatorFeedTabs.map { item ->
-                                if (item.creator.mid == mid) {
+                    mutableState.update { latest ->
+                        latest.copy(
+                            creatorFeedTabs = latest.creatorFeedTabs.map { item ->
+                                if (item.creator.mid in targetPages) {
                                     item.copy(isLoading = false, isLoadingMore = false)
-                                } else {
-                                    item
-                                }
+                                } else item
                             },
                             message = error.userMessage(if (append) "更多投稿加载失败" else "UP 主投稿加载失败"),
                         )
@@ -3413,3 +3529,4 @@ private val VIDEO_ACTIVE_DOWNLOAD_STATUSES = setOf(
 )
 
 private const val MAX_EMPTY_FAVORITE_PAGES = 100
+private const val CREATOR_FEED_PARALLELISM = 3

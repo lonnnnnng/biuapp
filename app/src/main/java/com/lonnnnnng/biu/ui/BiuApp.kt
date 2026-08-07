@@ -229,6 +229,7 @@ import com.lonnnnnng.biu.data.local.AppListDensity
 import com.lonnnnnng.biu.data.local.AppTextScale
 import com.lonnnnnng.biu.data.local.AppThemeMode
 import com.lonnnnnng.biu.data.local.AppVideoLayout
+import com.lonnnnnng.biu.data.local.CreatorGroupEntity
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
@@ -1147,7 +1148,12 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     submittedKeyword = uiState.submittedKeyword,
                     feed = uiState.feed,
                     creatorFeedTabs = uiState.creatorFeedTabs,
-                    selectedCreatorFeedMid = uiState.selectedCreatorFeedMid,
+                    selectedCreators = uiState.selectedCreators,
+                    creatorGroups = uiState.creatorGroups,
+                    creatorGroupMembers = uiState.creatorGroupMembers,
+                    localHistory = uiState.localHistory,
+                    homeDiscoveryScope = uiState.homeDiscoveryScope,
+                    homeDiscoveryMode = uiState.homeDiscoveryMode,
                     loading = uiState.isFeedLoading,
                     loadingMore = uiState.isFeedLoadingMore,
                     hasMore = uiState.recommendationHasMore,
@@ -1157,7 +1163,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     resolvingBvid = uiState.resolvingBvid,
                     videoLayout = uiState.videoLayout,
                     onFeedChange = viewModel::loadRecommendations,
-                    onCreatorFeedChange = viewModel::selectCreatorFeed,
+                    onHomeDiscoveryScopeChange = viewModel::selectHomeDiscoveryScope,
+                    onHomeDiscoveryModeChange = viewModel::selectHomeDiscoveryMode,
                     onRefresh = { viewModel.loadRecommendations() },
                     onLoadMore = viewModel::loadMoreRecommendations,
                     onSearch = viewModel::search,
@@ -1786,7 +1793,12 @@ private fun RecommendationScreen(
     submittedKeyword: String,
     feed: RecommendFeed,
     creatorFeedTabs: List<CreatorFeedTabState>,
-    selectedCreatorFeedMid: Long?,
+    selectedCreators: List<BilibiliCreator>,
+    creatorGroups: List<CreatorGroupEntity>,
+    creatorGroupMembers: Map<Long, Set<Long>>,
+    localHistory: List<PlaybackHistoryEntity>,
+    homeDiscoveryScope: HomeDiscoveryScope,
+    homeDiscoveryMode: HomeDiscoveryMode,
     loading: Boolean,
     loadingMore: Boolean,
     hasMore: Boolean,
@@ -1796,7 +1808,8 @@ private fun RecommendationScreen(
     resolvingBvid: String?,
     videoLayout: AppVideoLayout,
     onFeedChange: (RecommendFeed) -> Unit,
-    onCreatorFeedChange: (Long) -> Unit,
+    onHomeDiscoveryScopeChange: (HomeDiscoveryScope) -> Unit,
+    onHomeDiscoveryModeChange: (HomeDiscoveryMode) -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onSearch: (String) -> Unit,
@@ -1813,6 +1826,26 @@ private fun RecommendationScreen(
         focusManager.clearFocus()
         onSearch(keyword)
     }
+    val scopeOptions = HomeDiscoveryPolicy.scopeOptions(
+        creators = selectedCreators,
+        groups = creatorGroups,
+        memberships = creatorGroupMembers,
+    )
+    val activeScope = HomeDiscoveryPolicy.normalizeScope(
+        scope = homeDiscoveryScope,
+        creators = selectedCreators,
+        groups = creatorGroups,
+        memberships = creatorGroupMembers,
+    )
+    val discovery = HomeDiscoveryPolicy.snapshot(
+        tabs = creatorFeedTabs,
+        scope = activeScope,
+        mode = homeDiscoveryMode,
+        creators = selectedCreators,
+        memberships = creatorGroupMembers,
+        history = localHistory,
+    )
+    val usingCreatorSources = selectedCreators.isNotEmpty()
     Column(modifier = modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -1861,17 +1894,19 @@ private fun RecommendationScreen(
         } else {
             RecommendationTabs(
                 selectedFeed = feed,
-                creatorTabs = creatorFeedTabs,
-                selectedCreatorMid = selectedCreatorFeedMid,
+                creatorScopes = scopeOptions,
+                selectedCreatorScope = activeScope,
+                discoveryMode = homeDiscoveryMode,
                 onFeedSelected = onFeedChange,
-                onCreatorSelected = onCreatorFeedChange,
+                onCreatorScopeSelected = onHomeDiscoveryScopeChange,
+                onDiscoveryModeSelected = onHomeDiscoveryModeChange,
             )
         }
-        val selectedCreatorTab = creatorFeedTabs.firstOrNull { tab -> tab.creator.mid == selectedCreatorFeedMid }
-        val recommendationVideos = selectedCreatorTab?.videos ?: videos
-        val recommendationLoading = selectedCreatorTab?.isLoading ?: loading
-        val recommendationLoadingMore = selectedCreatorTab?.isLoadingMore ?: loadingMore
-        val recommendationHasMore = selectedCreatorTab?.hasMore ?: hasMore
+        val recommendationVideos = if (usingCreatorSources) discovery.videos else videos
+        val recommendationLoading = if (usingCreatorSources) discovery.isLoading else loading
+        val recommendationLoadingMore = if (usingCreatorSources) discovery.isLoadingMore else loadingMore
+        val recommendationHasMore = if (usingCreatorSources) discovery.hasMore else hasMore
+        val recommendationPaginationKey = if (usingCreatorSources) discovery.paginationKey else recommendationVideos.size
         val activeLoading = if (showingSearchResults) searchLoading else recommendationLoading
         val activeVideos = if (showingSearchResults) searchResults else recommendationVideos
         PullToRefreshBox(
@@ -1882,16 +1917,32 @@ private fun RecommendationScreen(
             modifier = Modifier.weight(1f),
         ) {
             if (!activeLoading && activeVideos.isEmpty()) {
+                val canContinueDiscovery = !showingSearchResults && usingCreatorSources && recommendationHasMore
                 BiuEmptyState(
                     icon = if (showingSearchResults) Icons.Rounded.Search else Icons.Rounded.LibraryMusic,
-                    title = if (showingSearchResults) "没有找到结果" else "暂时没有推荐",
-                    message = if (showingSearchResults) "换一个关键词再试试" else null,
-                    actionLabel = if (showingSearchResults) "返回推荐" else "重新加载",
+                    title = when {
+                        showingSearchResults -> "没有找到结果"
+                        usingCreatorSources && homeDiscoveryMode == HomeDiscoveryMode.UNPLAYED -> "当前范围没有未播放投稿"
+                        usingCreatorSources && homeDiscoveryMode == HomeDiscoveryMode.RECENT -> "当前范围没有最近播放投稿"
+                        else -> "暂时没有推荐"
+                    },
+                    message = when {
+                        showingSearchResults -> "换一个关键词再试试"
+                        canContinueDiscovery -> "可以继续读取更早的 UP 主投稿"
+                        else -> null
+                    },
+                    actionLabel = when {
+                        showingSearchResults -> "返回推荐"
+                        canContinueDiscovery -> "继续查找"
+                        else -> "重新加载"
+                    },
                     onAction = if (showingSearchResults) {
                         {
                             keyword = ""
                             onClearSearch()
                         }
+                    } else if (canContinueDiscovery) {
+                        onLoadMore
                     } else {
                         onRefresh
                     },
@@ -1907,6 +1958,7 @@ private fun RecommendationScreen(
                     onLoadMore = if (showingSearchResults) onLoadMoreSearch else onLoadMore,
                     hasMore = if (showingSearchResults) searchHasMore else recommendationHasMore,
                     loadingMore = if (showingSearchResults) searchLoadingMore else recommendationLoadingMore,
+                    paginationKey = if (showingSearchResults) searchResults.size else recommendationPaginationKey,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -2187,13 +2239,15 @@ private fun DynamicAction(
 @Composable
 private fun RecommendationTabs(
     selectedFeed: RecommendFeed,
-    creatorTabs: List<CreatorFeedTabState>,
-    selectedCreatorMid: Long?,
+    creatorScopes: List<HomeDiscoveryScopeOption>,
+    selectedCreatorScope: HomeDiscoveryScope,
+    discoveryMode: HomeDiscoveryMode,
     onFeedSelected: (RecommendFeed) -> Unit,
-    onCreatorSelected: (Long) -> Unit,
+    onCreatorScopeSelected: (HomeDiscoveryScope) -> Unit,
+    onDiscoveryModeSelected: (HomeDiscoveryMode) -> Unit,
 ) {
-    // long: 推荐分类与账号音乐库保持同一套 Tab 层级；UP 数量不固定时允许横向滚动，避免压缩长名称。
-    if (creatorTabs.isEmpty()) {
+    // long: 未配置来源时继续展示 B 站热门分类；配置后先选择发现语义，再按全部、分组或单个 UP 缩小范围。
+    if (creatorScopes.size <= 1) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2214,14 +2268,31 @@ private fun RecommendationTabs(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .height(44.dp),
+        ) {
+            HomeDiscoveryMode.entries.forEach { mode ->
+                RecommendationTab(
+                    label = mode.label,
+                    selected = discoveryMode == mode,
+                    onClick = { onDiscoveryModeSelected(mode) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
                 .horizontalScroll(rememberScrollState()),
         ) {
-            creatorTabs.forEach { tab ->
+            creatorScopes.forEach { option ->
                 RecommendationTab(
-                    label = tab.creator.name.ifBlank { "UID ${tab.creator.mid}" },
-                    selected = selectedCreatorMid == tab.creator.mid,
-                    onClick = { onCreatorSelected(tab.creator.mid) },
+                    label = option.label,
+                    selected = selectedCreatorScope == option.scope,
+                    onClick = { onCreatorScopeSelected(option.scope) },
                     modifier = Modifier
                         .widthIn(min = 88.dp, max = 160.dp)
                         .fillMaxHeight(),
@@ -4396,6 +4467,7 @@ private fun VideoList(
     onLoadMore: (() -> Unit)?,
     hasMore: Boolean,
     loadingMore: Boolean,
+    paginationKey: Int,
     modifier: Modifier = Modifier,
 ) {
     when (videoLayout) {
@@ -4407,6 +4479,7 @@ private fun VideoList(
             onLoadMore = onLoadMore,
             hasMore = hasMore,
             loadingMore = loadingMore,
+            paginationKey = paginationKey,
             modifier = modifier,
         )
         AppVideoLayout.GRID -> VideoGrid(
@@ -4417,6 +4490,7 @@ private fun VideoList(
             onLoadMore = onLoadMore,
             hasMore = hasMore,
             loadingMore = loadingMore,
+            paginationKey = paginationKey,
             modifier = modifier,
         )
     }
@@ -4431,18 +4505,19 @@ private fun VideoRowList(
     onLoadMore: (() -> Unit)?,
     hasMore: Boolean,
     loadingMore: Boolean,
+    paginationKey: Int,
     modifier: Modifier,
 ) {
     val listState = rememberLazyListState()
     val listMetrics = LocalBiuListDensity.current
-    val shouldLoadMore by remember(listState, videos.size, hasMore) {
+    val shouldLoadMore by remember(listState, paginationKey, hasMore) {
         derivedStateOf {
             val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
             hasMore && videos.isNotEmpty() && lastVisibleIndex >= videos.lastIndex - 3
         }
     }
-    // long: 续页全是重复 BV 时列表长度不会变化；不把 loadingMore 作为 effect key，可避免加载结束后在同一位置连续刷接口。
-    LaunchedEffect(shouldLoadMore, videos.size, hasMore) {
+    // long: 普通列表以可见数量推进，发现筛选则传入来源游标键；始终不把 loadingMore 作为键，避免请求结束后原地重复翻页。
+    LaunchedEffect(shouldLoadMore, paginationKey, hasMore) {
         if (shouldLoadMore && !loadingMore) onLoadMore?.invoke()
     }
     LazyColumn(
@@ -4479,11 +4554,12 @@ private fun VideoGrid(
     onLoadMore: (() -> Unit)?,
     hasMore: Boolean,
     loadingMore: Boolean,
+    paginationKey: Int,
     modifier: Modifier,
 ) {
     val gridState = rememberLazyGridState()
     val listMetrics = LocalBiuListDensity.current
-    val shouldLoadMore by remember(gridState, videos.size, hasMore) {
+    val shouldLoadMore by remember(gridState, paginationKey, hasMore) {
         derivedStateOf {
             val lastVisibleIndex = gridState.layoutInfo.visibleItemsInfo
                 .lastOrNull { item -> item.index < videos.size }
@@ -4491,8 +4567,8 @@ private fun VideoGrid(
             hasMore && videos.isNotEmpty() && lastVisibleIndex >= videos.lastIndex - 3
         }
     }
-    // long: 续页指示器也会成为 Grid item；只计算真实视频索引，避免它触发重复的推荐翻页请求。
-    LaunchedEffect(shouldLoadMore, videos.size, hasMore) {
+    // long: 续页指示器也会成为 Grid item；只计算真实视频索引，并用外部分页键区分可见数量未变化的发现筛选续页。
+    LaunchedEffect(shouldLoadMore, paginationKey, hasMore) {
         if (shouldLoadMore && !loadingMore) onLoadMore?.invoke()
     }
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
