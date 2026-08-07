@@ -1225,6 +1225,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     onRemoveLocalPlaylistItem = viewModel::removeLocalPlaylistItem,
                     onMoveLocalPlaylistItem = viewModel::moveLocalPlaylistItem,
                     onClearLocalHistory = viewModel::clearLocalHistory,
+                    onClearAllHistory = viewModel::clearAllHistory,
                     onSearchOnlineHistory = viewModel::searchOnlineHistory,
                     onLoadMoreOnlineHistory = viewModel::loadMoreOnlineHistory,
                     onDeleteOnlineHistory = viewModel::deleteOnlineHistory,
@@ -2378,6 +2379,7 @@ private fun AccountScreen(
     onRemoveLocalPlaylistItem: (String) -> Unit,
     onMoveLocalPlaylistItem: (String, Int) -> Unit,
     onClearLocalHistory: () -> Unit,
+    onClearAllHistory: () -> Unit,
     onSearchOnlineHistory: (String) -> Unit,
     onLoadMoreOnlineHistory: () -> Unit,
     onDeleteOnlineHistory: (BilibiliLibraryVideo) -> Unit,
@@ -2386,32 +2388,30 @@ private fun AccountScreen(
     downloadContent: @Composable (Modifier) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val activeLibrarySection = state.librarySection.normalizedLibrarySection()
     Column(modifier = modifier.fillMaxSize()) {
         if (state.isAccountLoading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
         AccountLibraryNavigation(
-            selectedSection = state.librarySection,
+            selectedSection = activeLibrarySection,
             onSelect = onLoadLibrary,
         )
 
-        if (state.isLibraryLoading && state.librarySection != AccountLibrarySection.ONLINE_HISTORY) {
+        if (state.isLibraryLoading && activeLibrarySection != AccountLibrarySection.HISTORY) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
-        val onlineSection = state.librarySection in setOf(
-            AccountLibrarySection.FAVORITES,
-            AccountLibrarySection.ONLINE_HISTORY,
-        )
+        val onlineSection = activeLibrarySection == AccountLibrarySection.FAVORITES
         if (onlineSection && !state.account.isLoggedIn) {
             BiuEmptyState(
                 icon = Icons.Rounded.AccountCircle,
-                title = "登录后查看${state.librarySection.label}",
+                title = "登录后查看${activeLibrarySection.label}",
                 actionLabel = "登录 Bilibili",
                 onAction = onLogin,
                 modifier = Modifier.weight(1f),
             )
         } else {
-            when (state.librarySection) {
+            when (activeLibrarySection) {
                 AccountLibrarySection.FAVORITES -> FavoriteLibrary(
                     createdFolders = state.createdFavoriteFolders,
                     collectedFolders = state.collectedFavoriteFolders,
@@ -2432,19 +2432,29 @@ private fun AccountScreen(
                     onPlay = onPlay,
                     modifier = Modifier.weight(1f),
                 )
-                AccountLibrarySection.ONLINE_HISTORY -> OnlineHistoryList(
-                    videos = state.libraryVideos,
+                AccountLibrarySection.HISTORY,
+                AccountLibrarySection.ONLINE_HISTORY,
+                AccountLibrarySection.LOCAL_HISTORY,
+                -> HistoryList(
+                    onlineVideos = state.libraryVideos,
+                    localHistory = state.localHistory,
+                    accountLoggedIn = state.account.isLoggedIn,
                     resolvingBvid = state.resolvingBvid,
                     loading = state.isLibraryLoading,
                     loadingMore = state.isOnlineHistoryLoadingMore,
                     mutating = state.isOnlineHistoryMutating,
+                    hasMore = state.onlineHistoryHasMore,
                     query = state.onlineHistoryQuery,
                     reportPlayHistory = state.reportPlayHistory,
+                    onLogin = onLogin,
                     onPlay = onPlay,
+                    onPlayLocal = onPlayHistory,
                     onSearch = onSearchOnlineHistory,
                     onLoadMore = onLoadMoreOnlineHistory,
-                    onDelete = onDeleteOnlineHistory,
-                    onClear = onClearOnlineHistory,
+                    onDeleteOnline = onDeleteOnlineHistory,
+                    onClearLocal = onClearLocalHistory,
+                    onClearOnline = onClearOnlineHistory,
+                    onClearAll = onClearAllHistory,
                     onReportPlayHistoryChange = onReportPlayHistoryChange,
                     modifier = Modifier.weight(1f),
                 )
@@ -2461,13 +2471,6 @@ private fun AccountScreen(
                     onPlay = onPlayLocalPlaylist,
                     onRemoveItem = onRemoveLocalPlaylistItem,
                     onMoveItem = onMoveLocalPlaylistItem,
-                    modifier = Modifier.weight(1f),
-                )
-                AccountLibrarySection.LOCAL_HISTORY -> LocalHistoryList(
-                    history = state.localHistory,
-                    resolvingBvid = state.resolvingBvid,
-                    onPlay = onPlayHistory,
-                    onClear = onClearLocalHistory,
                     modifier = Modifier.weight(1f),
                 )
                 AccountLibrarySection.LOCAL_MUSIC -> LocalAudioList(
@@ -2498,7 +2501,8 @@ private fun AccountLibraryNavigation(
     selectedSection: AccountLibrarySection,
     onSelect: (AccountLibrarySection) -> Unit,
 ) {
-    val selectedGroup = AccountLibraryGroup.entries.first { group -> selectedSection in group.sections }
+    val activeSection = selectedSection.normalizedLibrarySection()
+    val selectedGroup = AccountLibraryGroup.entries.first { group -> activeSection in group.sections }
     // long: 在线、本地和下载先按数据来源分层，收藏与历史作为二级切换，窄屏不再挤压五个并列标签。
     Row(
         modifier = Modifier
@@ -2551,7 +2555,7 @@ private fun AccountLibraryNavigation(
                 .height(48.dp),
         ) {
             selectedGroup.sections.forEach { section ->
-                val selected = selectedSection == section
+                val selected = activeSection == section
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -2887,10 +2891,10 @@ private enum class AccountLibraryGroup(
     val label: String,
     val sections: List<AccountLibrarySection>,
 ) {
-    ONLINE("在线", listOf(AccountLibrarySection.FAVORITES, AccountLibrarySection.ONLINE_HISTORY)),
+    ONLINE("在线", listOf(AccountLibrarySection.FAVORITES, AccountLibrarySection.HISTORY)),
     LOCAL(
         "本地",
-        listOf(AccountLibrarySection.PLAYLISTS, AccountLibrarySection.LOCAL_HISTORY, AccountLibrarySection.LOCAL_MUSIC),
+        listOf(AccountLibrarySection.PLAYLISTS, AccountLibrarySection.LOCAL_MUSIC),
     ),
     DOWNLOADS("下载", listOf(AccountLibrarySection.DOWNLOADS)),
 }
@@ -3643,6 +3647,345 @@ private fun LibraryVideoList(
             item(key = "favorite-loading") {
                 ListLoadingFooter(modifier = Modifier.padding(vertical = 4.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun HistoryList(
+    onlineVideos: List<BilibiliLibraryVideo>,
+    localHistory: List<PlaybackHistoryEntity>,
+    accountLoggedIn: Boolean,
+    resolvingBvid: String?,
+    loading: Boolean,
+    loadingMore: Boolean,
+    mutating: Boolean,
+    hasMore: Boolean,
+    query: String,
+    reportPlayHistory: Boolean,
+    onLogin: () -> Unit,
+    onPlay: (BilibiliVideo) -> Unit,
+    onPlayLocal: (PlaybackHistoryEntity) -> Unit,
+    onSearch: (String) -> Unit,
+    onLoadMore: () -> Unit,
+    onDeleteOnline: (BilibiliLibraryVideo) -> Unit,
+    onClearLocal: () -> Unit,
+    onClearOnline: () -> Unit,
+    onClearAll: () -> Unit,
+    onReportPlayHistoryChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var source by rememberSaveable { mutableStateOf(HistorySourceFilter.ALL) }
+    var searchText by rememberSaveable(query) { mutableStateOf(query) }
+    var showClearChooser by remember { mutableStateOf(false) }
+    var pendingClearScope by remember { mutableStateOf<HistoryClearScope?>(null) }
+    val focusManager = LocalFocusManager.current
+    val listMetrics = LocalBiuListDensity.current
+    val entries = UnifiedHistoryPolicy.merge(
+        online = onlineVideos,
+        local = localHistory,
+        source = source,
+        query = searchText,
+    )
+    val hasVisibleSource = when (source) {
+        HistorySourceFilter.ALL -> onlineVideos.isNotEmpty() || localHistory.isNotEmpty()
+        HistorySourceFilter.ONLINE -> onlineVideos.isNotEmpty()
+        HistorySourceFilter.LOCAL -> localHistory.isNotEmpty()
+    }
+
+    if (showClearChooser && pendingClearScope == null) {
+        AlertDialog(
+            onDismissRequest = { showClearChooser = false },
+            title = { Text("选择清空范围") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "在线历史和本地历史相互独立，请先选择要影响的来源。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (accountLoggedIn) {
+                        TextButton(
+                            onClick = {
+                                showClearChooser = false
+                                pendingClearScope = HistoryClearScope.ONLINE
+                            },
+                            enabled = onlineVideos.isNotEmpty() && !mutating,
+                        ) { Text("仅清空在线历史") }
+                    }
+                    TextButton(
+                        onClick = {
+                            showClearChooser = false
+                            pendingClearScope = HistoryClearScope.LOCAL
+                        },
+                        enabled = localHistory.isNotEmpty(),
+                    ) { Text("仅清空本地历史") }
+                    TextButton(
+                        onClick = {
+                            showClearChooser = false
+                            pendingClearScope = HistoryClearScope.ALL
+                        },
+                        enabled = hasVisibleSource && (!mutating || !accountLoggedIn),
+                    ) { Text("清空全部历史") }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showClearChooser = false }) { Text("取消") }
+            },
+        )
+    }
+    pendingClearScope?.let { scope ->
+        AlertDialog(
+            onDismissRequest = { pendingClearScope = null },
+            title = { Text("确认${scope.label}") },
+            text = {
+                Text(
+                    when (scope) {
+                        HistoryClearScope.ONLINE -> "将删除 Bilibili 账号中的全部在线历史，本机播放记录不会受到影响。"
+                        HistoryClearScope.LOCAL -> "将删除本机 Room 中的全部播放记录，Bilibili 在线历史不会受到影响。"
+                        HistoryClearScope.ALL -> if (accountLoggedIn) {
+                            "将同时删除 Bilibili 在线历史和本机播放记录。"
+                        } else {
+                            "当前未登录，只会删除本机播放记录；在线历史不会受到影响。"
+                        }
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        when (scope) {
+                            HistoryClearScope.ONLINE -> onClearOnline()
+                            HistoryClearScope.LOCAL -> onClearLocal()
+                            HistoryClearScope.ALL -> onClearAll()
+                        }
+                        pendingClearScope = null
+                    },
+                ) { Text("确认清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearScope = null }) { Text("取消") }
+            },
+        )
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+        ) {
+            HistorySourceFilter.entries.forEach { candidate ->
+                val selected = source == candidate
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .semantics {
+                            role = Role.Tab
+                            this.selected = selected
+                        }
+                        .clickable { source = candidate },
+                ) {
+                    Text(
+                        candidate.label,
+                        modifier = Modifier.align(Alignment.Center),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    if (selected) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(2.dp)
+                                .background(MaterialTheme.colorScheme.primary),
+                        )
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            CompactSearchField(
+                value = searchText,
+                onValueChange = { searchText = it },
+                onSearch = {
+                    focusManager.clearFocus()
+                    if (source != HistorySourceFilter.LOCAL) onSearch(searchText)
+                },
+                onClear = {
+                    searchText = ""
+                    if (source != HistorySourceFilter.LOCAL) onSearch("")
+                },
+                placeholder = "筛选标题或作者",
+                loading = loading,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(
+                onClick = { showClearChooser = true },
+                enabled = hasVisibleSource && !mutating,
+            ) {
+                Icon(Icons.Rounded.DeleteOutline, contentDescription = "选择清空历史范围")
+            }
+        }
+        if (source != HistorySourceFilter.LOCAL && accountLoggedIn) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "记录在线播放历史",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Switch(
+                    checked = reportPlayHistory,
+                    onCheckedChange = onReportPlayHistoryChange,
+                )
+            }
+        }
+        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (source == HistorySourceFilter.ONLINE && !accountLoggedIn) {
+            BiuEmptyState(
+                icon = Icons.Rounded.AccountCircle,
+                title = "登录后查看在线历史",
+                actionLabel = "登录 Bilibili",
+                onAction = onLogin,
+                modifier = Modifier.weight(1f),
+            )
+        } else if (!loading && entries.isEmpty()) {
+            BiuEmptyState(
+                icon = Icons.Rounded.History,
+                title = if (hasVisibleSource && searchText.isNotBlank()) "没有匹配的历史" else "暂无${source.label}历史",
+                message = "播放过的内容会按来源保存在这里",
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = listMetrics.contentVerticalPadding),
+            ) {
+                items(entries, key = UnifiedHistoryItem::key) { entry ->
+                    when (entry) {
+                        is UnifiedHistoryItem.Online -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.weight(1f)) {
+                                    LibraryVideoRow(
+                                        item = entry.value,
+                                        resolving = resolvingBvid == entry.value.video.bvid,
+                                        enabled = resolvingBvid == null && !mutating,
+                                        onClick = { onPlay(entry.value.video) },
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onDeleteOnline(entry.value) },
+                                    enabled = entry.value.historyKey != null && !mutating,
+                                    modifier = Modifier.padding(end = 4.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.DeleteOutline,
+                                        contentDescription = "删除在线历史 ${entry.value.video.title}",
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                            MediaDivider(
+                                start = 16.dp + listMetrics.mediaThumbnailWidth + listMetrics.mediaRowSpacing,
+                            )
+                        }
+                        is UnifiedHistoryItem.Local -> {
+                            LocalHistoryRow(
+                                item = entry.value,
+                                resolvingBvid = resolvingBvid,
+                                onClick = { onPlayLocal(entry.value) },
+                            )
+                            MediaDivider(
+                                start = 16.dp + listMetrics.mediaThumbnailWidth + listMetrics.mediaRowSpacing,
+                            )
+                        }
+                    }
+                }
+                if (accountLoggedIn && source != HistorySourceFilter.LOCAL && hasMore) {
+                    item(key = "unified-history-load-more") {
+                        // long: 在线和本地记录按时间混排后，最后一项不一定来自在线历史；在整个列表底部触发才能稳定续页。
+                        LaunchedEffect(onlineVideos.size, query, source, hasMore) {
+                            if (!loadingMore) onLoadMore()
+                        }
+                    }
+                }
+                if (loadingMore) {
+                    item(key = "history-loading") {
+                        ListLoadingFooter(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class HistoryClearScope(val label: String) {
+    ONLINE("清空在线历史"),
+    LOCAL("清空本地历史"),
+    ALL("清空全部历史"),
+}
+
+@Composable
+private fun LocalHistoryRow(
+    item: PlaybackHistoryEntity,
+    resolvingBvid: String?,
+    onClick: () -> Unit,
+) {
+    val listMetrics = LocalBiuListDensity.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = resolvingBvid == null, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = listMetrics.rowVerticalPadding),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
+    ) {
+        AsyncImage(
+            model = item.artworkUrl,
+            contentDescription = item.title,
+            modifier = Modifier
+                .size(width = listMetrics.mediaThumbnailWidth, height = listMetrics.mediaThumbnailHeight)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentScale = ContentScale.Crop,
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+            Text(
+                formatProgress(item.lastPositionMs, item.durationMs),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                item.artist.ifBlank { "未知作者" },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (resolvingBvid == item.bvid) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         }
     }
 }

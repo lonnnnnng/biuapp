@@ -1961,20 +1961,19 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadLibrary(section: AccountLibrarySection) {
+        val activeSection = section.normalizedLibrarySection()
         mutableState.update {
             it.copy(
-                librarySection = section,
-                isLibraryLoading = section !in setOf(
-                    AccountLibrarySection.LOCAL_HISTORY,
+                librarySection = activeSection,
+                isLibraryLoading = activeSection !in setOf(
                     AccountLibrarySection.PLAYLISTS,
                     AccountLibrarySection.LOCAL_MUSIC,
                     AccountLibrarySection.DOWNLOADS,
                 ),
-                selectedFavoriteFolder = if (section == AccountLibrarySection.FAVORITES) it.selectedFavoriteFolder else null,
-                favoriteNextPage = if (section == AccountLibrarySection.FAVORITES) it.favoriteNextPage else null,
+                selectedFavoriteFolder = if (activeSection == AccountLibrarySection.FAVORITES) it.selectedFavoriteFolder else null,
+                favoriteNextPage = if (activeSection == AccountLibrarySection.FAVORITES) it.favoriteNextPage else null,
                 isFavoriteLoadingMore = false,
-                libraryVideos = if (section in setOf(
-                        AccountLibrarySection.LOCAL_HISTORY,
+                libraryVideos = if (activeSection in setOf(
                         AccountLibrarySection.PLAYLISTS,
                         AccountLibrarySection.LOCAL_MUSIC,
                         AccountLibrarySection.DOWNLOADS,
@@ -1987,14 +1986,13 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 message = null,
             )
         }
-        if (section == AccountLibrarySection.LOCAL_HISTORY) return
-        if (section == AccountLibrarySection.PLAYLISTS) return
-        if (section == AccountLibrarySection.DOWNLOADS) return
-        if (section == AccountLibrarySection.LOCAL_MUSIC) {
+        if (activeSection == AccountLibrarySection.PLAYLISTS) return
+        if (activeSection == AccountLibrarySection.DOWNLOADS) return
+        if (activeSection == AccountLibrarySection.LOCAL_MUSIC) {
             loadLocalAudio()
             return
         }
-        if (section == AccountLibrarySection.ONLINE_HISTORY) {
+        if (activeSection == AccountLibrarySection.HISTORY) {
             loadOnlineHistory(reset = true)
             return
         }
@@ -2005,7 +2003,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             runCatching<Unit> {
-                when (section) {
+                when (activeSection) {
                     AccountLibrarySection.FAVORITES -> {
                         // long: 两个收藏分组来自独立接口，并行加载可避免“我收藏的”拖慢整个账号页首屏。
                         val (createdFolders, collectedFolders) = favoriteFolders(account.mid)
@@ -2020,6 +2018,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                     }
+                    AccountLibrarySection.HISTORY -> Unit
                     AccountLibrarySection.ONLINE_HISTORY -> Unit
                     AccountLibrarySection.PLAYLISTS -> Unit
                     AccountLibrarySection.LOCAL_HISTORY -> Unit
@@ -2761,6 +2760,12 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun clearAllHistory() {
+        clearLocalHistory()
+        // long: 全部清空只在账号仍有效时触碰 B 站在线记录；退出登录后仍保证本机历史可以单独清理。
+        if (state.value.account.isLoggedIn) clearOnlineHistory()
+    }
+
     fun searchOnlineHistory(query: String) {
         val normalized = query.trim()
         mutableState.update {
@@ -2778,7 +2783,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadMoreOnlineHistory() {
         val current = state.value
-        if (current.librarySection != AccountLibrarySection.ONLINE_HISTORY ||
+        if (current.librarySection.normalizedLibrarySection() != AccountLibrarySection.HISTORY ||
             !current.onlineHistoryHasMore ||
             current.isLibraryLoading ||
             current.isOnlineHistoryLoadingMore ||
@@ -3122,7 +3127,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 mutableState.update { current ->
-                    if (current.librarySection != AccountLibrarySection.ONLINE_HISTORY ||
+                    if (current.librarySection.normalizedLibrarySection() != AccountLibrarySection.HISTORY ||
                         current.onlineHistoryQuery != query
                     ) {
                         current

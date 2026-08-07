@@ -158,6 +158,8 @@ data class BilibiliAccount(
 
 enum class AccountLibrarySection(val label: String) {
     FAVORITES("收藏夹"),
+    HISTORY("历史"),
+    // long: 保留旧枚举值让历史状态和外部调用平滑迁移；账号页导航不再分别展示在线/本地两个入口。
     ONLINE_HISTORY("在线历史"),
     PLAYLISTS("歌单"),
     LOCAL_HISTORY("本地历史"),
