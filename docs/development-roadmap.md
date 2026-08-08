@@ -394,6 +394,7 @@
 - 静态检查确认动态父级不再包裹互动按钮，续页 footer 统一复用 `ListLoadingFooter`。
 - `0.1.17` 正式 APK 使用历史 BiuApp 证书签名，`versionCode=18`、`versionName=0.1.17`，SHA-256 为 `6bb9cd66abf394ed6404f29011e493a11099b42dd230bb7d9f0ea54665d8d14b`。
 - `0.1.18` 正式 APK 继续使用同一历史证书签名，`versionCode=19`、`versionName=0.1.18`，SHA-256 为 `c81b55d11be8fad359daf919d6542d75e9a6e0c07721d169ba698fe9ccb9dcb9`。
+- `0.1.19` 正式 APK 收录 M15-M19 音乐库、合集、统一搜索与历史、队列、离线播放和歌词交互收口，继续使用同一历史证书签名；`versionCode=20`、`versionName=0.1.19`，SHA-256 为 `e821e9f45948a1f7a8405304a97966177ecbdc9a308cc32a9dd5653167293106`。
 
 ### M14：正式版质量
 
