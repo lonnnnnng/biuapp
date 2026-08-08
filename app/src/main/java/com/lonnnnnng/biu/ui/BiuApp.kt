@@ -576,6 +576,16 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     DisposableEffect(controller) {
         fun publishSnapshot() {
             playback = controller?.let { activeController ->
+                val restoredTracks = (0 until activeController.mediaItemCount)
+                    .mapNotNull { index -> activeController.getMediaItemAt(index).toTrackOrNull() }
+                if (restoredTracks.size == activeController.mediaItemCount && restoredTracks.isNotEmpty()) {
+                    // long: 服务恢复时间线可能晚于控制器连接；在实际时间线事件到达时补齐 ViewModel 镜像，追加操作才不会退化为替换。
+                    viewModel.synchronizeRestoredPlaybackQueue(
+                        tracks = restoredTracks,
+                        startIndex = activeController.currentMediaItemIndex.coerceAtLeast(0),
+                        startPositionMs = activeController.currentPosition.coerceAtLeast(0L),
+                    )
+                }
                 // long: 切换音视频或画质重建媒体源时，Media3 会短暂清空 currentMediaItem；队列仍有内容时保留旧快照，避免全屏页被误判为“没有播放内容”而卸载。
                 if (
                     activeController.currentMediaItem == null &&
@@ -711,6 +721,22 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                         QueuePlacement.APPEND -> activeController.addMediaItem(command.track.toMediaItem())
                     }
                 }
+                is PlaybackCommand.Append -> {
+                    // long: 合集解析结束前用户可能已经替换队列；只接受仍对应当前快照的追加命令，避免污染新播放列表。
+                    if (viewModel.currentPlaybackQueue(command.queueId) == null) return@collect
+                    if (appliedQueueId != command.queueId || activeController.mediaItemCount == 0) {
+                        val snapshot = viewModel.currentPlaybackQueue(command.queueId) ?: return@collect
+                        activeController.restorePlaybackQueue(snapshot)
+                        appliedQueueId = command.queueId
+                        return@collect
+                    }
+                    command.tracks.forEach { track ->
+                        if (!activeController.containsMediaId(track.id)) {
+                            activeController.addMediaItem(track.toMediaItem())
+                        }
+                    }
+                    appliedQueueId = command.queueId
+                }
             }
         }
     }
@@ -780,7 +806,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             lastPlayed = lastPlayed,
             loading = uiState.isPageQueueLoading,
             onDismiss = viewModel::dismissPageSelection,
-            onPlayPage = viewModel::playPageQueue,
+            onPlayOnlyPage = viewModel::playOnlyPage,
+            onPlayFromPage = viewModel::playPageQueue,
+            onAppendPage = viewModel::appendPageToQueue,
             onAddPage = { pageIndex ->
                 pendingPlaylistAddition = PendingPlaylistAddition.VideoPage(selection, pageIndex)
             },
@@ -1326,6 +1354,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             groupMembers = uiState.creatorGroupMembers,
             accountLoggedIn = uiState.account.isLoggedIn,
             resolvingBvid = uiState.resolvingBvid,
+            queueLoading = uiState.isPageQueueLoading,
             onBack = {
                 showCreatorCenter = false
             },
@@ -1345,7 +1374,8 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onOpenCollection = viewModel::openCreatorCollection,
             onCloseCollection = viewModel::closeCreatorCollection,
             onLoadMoreCollectionVideos = viewModel::loadMoreCreatorCollectionVideos,
-            onPlayCollection = viewModel::playCreatorCollection,
+            onPlayCollection = { viewModel.queueCreatorCollection(CreatorCollectionQueueAction.PLAY_NOW) },
+            onAppendCollection = { viewModel.queueCreatorCollection(CreatorCollectionQueueAction.ADD_TO_QUEUE) },
             onToggleRelation = viewModel::toggleCreatorRelation,
             onLoadMoreVideos = viewModel::loadMoreCreatorVideos,
             savingSources = uiState.isCreatorConfigSaving,
@@ -3022,6 +3052,7 @@ private fun AccountScreen(
                     playlists = state.localPlaylists,
                     selectedPlaylist = state.selectedLocalPlaylist,
                     items = state.localPlaylistItems,
+                    availability = state.localPlaylistItemAvailability,
                     loading = state.isLocalPlaylistLoading,
                     onCreate = onCreateLocalPlaylist,
                     onRename = onRenameLocalPlaylist,
@@ -3159,6 +3190,7 @@ private fun LocalPlaylistLibrary(
     playlists: List<LocalPlaylistEntity>,
     selectedPlaylist: LocalPlaylistEntity?,
     items: List<LocalPlaylistItemEntity>,
+    availability: Map<String, LocalPlaylistItemAvailability>,
     loading: Boolean,
     onCreate: (String) -> Unit,
     onRename: (LocalPlaylistEntity, String) -> Unit,
@@ -3241,7 +3273,12 @@ private fun LocalPlaylistLibrary(
                 style = MaterialTheme.typography.titleSmall,
             )
             if (selectedPlaylist != null && items.isNotEmpty()) {
-                IconButton(onClick = { onPlay(0) }, enabled = !loading) {
+                IconButton(
+                    onClick = { onPlay(0) },
+                    enabled = !loading && items.any { item ->
+                        availability[item.mediaId]?.preventsPlayback != true
+                    },
+                ) {
                     Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = "播放整个歌单")
                 }
             }
@@ -3313,10 +3350,14 @@ private fun LocalPlaylistLibrary(
         } else {
             LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 2.dp)) {
                 itemsIndexed(items, key = { _, item -> item.mediaId }) { index, item ->
+                    val itemAvailability = availability[item.mediaId]
+                        ?: LocalPlaylistItemAvailability.CHECKING
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = !loading) { onPlay(index) }
+                            .clickable(
+                                enabled = !loading && !itemAvailability.preventsPlayback,
+                            ) { onPlay(index) }
                             .padding(horizontal = 16.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -3352,6 +3393,36 @@ private fun LocalPlaylistLibrary(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            if (itemAvailability != LocalPlaylistItemAvailability.AVAILABLE) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    if (itemAvailability == LocalPlaylistItemAvailability.CHECKING) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(12.dp),
+                                            strokeWidth = 1.5.dp,
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = if (itemAvailability == LocalPlaylistItemAvailability.ERROR) {
+                                                Icons.Rounded.Refresh
+                                            } else {
+                                                Icons.Rounded.Close
+                                            },
+                                            contentDescription = null,
+                                            modifier = Modifier.size(12.dp),
+                                        )
+                                    }
+                                    Text(
+                                        itemAvailability.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                         Box {
                             IconButton(onClick = { itemMenuId = item.mediaId }) {
@@ -5602,11 +5673,14 @@ private fun MultiPageSelectionSheet(
     lastPlayed: PlaybackHistoryEntity?,
     loading: Boolean,
     onDismiss: () -> Unit,
-    onPlayPage: (Int) -> Unit,
+    onPlayOnlyPage: (Int) -> Unit,
+    onPlayFromPage: (Int) -> Unit,
+    onAppendPage: (Int) -> Unit,
     onAddPage: (Int) -> Unit,
     onResumePage: (Int, PlaybackHistoryEntity) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var pageMenuCid by remember(selection.detail.bvid) { mutableStateOf<Long?>(null) }
     ModalBottomSheet(
         onDismissRequest = { if (!loading) onDismiss() },
         sheetState = sheetState,
@@ -5640,7 +5714,7 @@ private fun MultiPageSelectionSheet(
                 }
             }
             FilledTonalButton(
-                onClick = { onPlayPage(0) },
+                onClick = { onPlayFromPage(0) },
                 enabled = !loading && selection.detail.pages.isNotEmpty(),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5649,7 +5723,7 @@ private fun MultiPageSelectionSheet(
             ) {
                 Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (loading) "正在建立播放队列" else "全部播放")
+                Text(if (loading) "正在建立播放队列" else "全部从头播放")
             }
             lastPlayed?.let { history ->
                 val resumeIndex = selection.detail.pages.indexOfFirst { page -> page.cid == history.cid }
@@ -5681,7 +5755,7 @@ private fun MultiPageSelectionSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = !loading) { onPlayPage(index) }
+                            .clickable(enabled = !loading) { onPlayFromPage(index) }
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -5712,11 +5786,46 @@ private fun MultiPageSelectionSheet(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        IconButton(onClick = { onAddPage(index) }, enabled = !loading) {
-                            Icon(
-                                Icons.AutoMirrored.Rounded.QueueMusic,
-                                contentDescription = "将 P${page.page} 加入歌单",
-                            )
+                        Box {
+                            IconButton(
+                                onClick = { pageMenuCid = page.cid },
+                                enabled = !loading,
+                            ) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "P${page.page} 更多操作")
+                            }
+                            DropdownMenu(
+                                expanded = pageMenuCid == page.cid,
+                                onDismissRequest = { pageMenuCid = null },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("仅播放此 P") },
+                                    onClick = {
+                                        pageMenuCid = null
+                                        onPlayOnlyPage(index)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("从此 P 开始") },
+                                    onClick = {
+                                        pageMenuCid = null
+                                        onPlayFromPage(index)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("加入播放队列") },
+                                    onClick = {
+                                        pageMenuCid = null
+                                        onAppendPage(index)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("加入本地歌单") },
+                                    onClick = {
+                                        pageMenuCid = null
+                                        onAddPage(index)
+                                    },
+                                )
+                            }
                         }
                         PlayAffordance(contentDescription = "从 P${page.page} 开始播放")
                     }

@@ -56,6 +56,15 @@ internal class PlaybackQueueSnapshotStore<T>(
     }
 
     @Synchronized
+    fun append(queueId: Long, items: List<T>): PlaybackQueueSnapshot<T>? {
+        val current = snapshot?.takeIf { it.queueId == queueId } ?: return null
+        val existingIds = current.items.mapTo(hashSetOf(), itemId)
+        val additions = items.filter { item -> existingIds.add(itemId(item)) }
+        if (additions.isEmpty()) return current
+        return current.copy(items = current.items + additions).also { snapshot = it }
+    }
+
+    @Synchronized
     fun updateResumePosition(mediaId: String, positionMs: Long) {
         val current = snapshot ?: return
         val activeIndex = current.items.indexOfFirst { itemId(it) == mediaId }
@@ -173,6 +182,7 @@ internal class ProgressivePageQueueLoader<T>(
     suspend fun load(
         pageCount: Int,
         startIndex: Int,
+        includePrevious: Boolean = true,
         onSelected: suspend (T) -> Unit,
         onExpansion: suspend (QueueExpansion<T>) -> Unit,
     ) = coroutineScope {
@@ -182,10 +192,12 @@ internal class ProgressivePageQueueLoader<T>(
         // long: 首次只等待用户选中的 P，避免 100P 视频在所有 DASH 地址解析完成前一直无法起播。
         onSelected(resolve(startIndex))
 
-        launch {
-            // long: 前置 P 从近到远解析并持续插入队首，最终顺序仍还原为详情接口的原始 pages 顺序。
-            for (pageIndex in startIndex - 1 downTo 0) {
-                onExpansion(QueueExpansion(QueuePlacement.PREPEND, resolve(pageIndex)))
+        if (includePrevious) {
+            launch {
+                // long: “全部播放”需要补回前置 P；“从此 P 开始”则跳过这条链路，避免上一曲回到用户明确排除的内容。
+                for (pageIndex in startIndex - 1 downTo 0) {
+                    onExpansion(QueueExpansion(QueuePlacement.PREPEND, resolve(pageIndex)))
+                }
             }
         }
         launch {

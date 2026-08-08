@@ -70,6 +70,7 @@ import com.lonnnnnng.biu.playback.SleepTimerPolicy
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -88,6 +89,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 
 enum class MainSection(val label: String) {
     RECOMMEND("推荐"),
@@ -114,6 +116,11 @@ internal sealed interface PlaybackCommand {
         override val queueId: Long,
         val placement: QueuePlacement,
         val track: Track,
+    ) : PlaybackCommand
+
+    data class Append(
+        override val queueId: Long,
+        val tracks: List<Track>,
     ) : PlaybackCommand
 }
 
@@ -150,6 +157,11 @@ enum class CreatorCenterTab(val label: String) {
 enum class CreatorProfileTab(val label: String) {
     WORKS("投稿"),
     COLLECTIONS("合集/系列"),
+}
+
+enum class CreatorCollectionQueueAction {
+    PLAY_NOW,
+    ADD_TO_QUEUE,
 }
 
 data class CreatorCenterUiState(
@@ -241,6 +253,7 @@ data class BiuUiState(
     val localPlaylists: List<LocalPlaylistEntity> = emptyList(),
     val selectedLocalPlaylist: LocalPlaylistEntity? = null,
     val localPlaylistItems: List<LocalPlaylistItemEntity> = emptyList(),
+    val localPlaylistItemAvailability: Map<String, LocalPlaylistItemAvailability> = emptyMap(),
     val audioDownloads: List<AudioDownloadTaskEntity> = emptyList(),
     val videoDownloads: List<VideoDownloadTaskEntity> = emptyList(),
     val downloadNetworkPreference: DownloadNetworkPreference = DownloadNetworkPreference.ANY_VALIDATED,
@@ -296,10 +309,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private var onlineHistoryJob: Job? = null
     private var localAudioJob: Job? = null
     private var localPlaylistItemsJob: Job? = null
+    private var localPlaylistAvailabilityJob: Job? = null
+    private var localPlaylistPlaybackJob: Job? = null
+    private var localPlaylistAvailabilityGeneration: Long = 0L
+    private var localPlaylistPlaybackGeneration: Long = 0L
     private var localAudioDirectoryInitializationJob: Job? = null
     private var creatorListJob: Job? = null
     private var creatorProfileJob: Job? = null
     private var creatorCollectionJob: Job? = null
+    private var creatorCollectionQueueJob: Job? = null
+    private var creatorCollectionQueueGeneration: Long = 0L
     private var creatorRelationJob: Job? = null
     private var dynamicFeedJob: Job? = null
     private var lyricsLoadJob: Job? = null
@@ -1271,6 +1290,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         initialTab: CreatorProfileTab,
     ) {
         creatorProfileJob?.cancel()
+        cancelCreatorCollectionQueueResolution()
         mutableState.update { current ->
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
@@ -1365,6 +1385,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     fun closeCreatorProfile() {
         creatorProfileJob?.cancel()
         creatorCollectionJob?.cancel()
+        cancelCreatorCollectionQueueResolution()
         creatorRelationJob?.cancel()
         mutableState.update { current ->
             current.copy(
@@ -1434,6 +1455,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openCreatorCollection(collection: BilibiliCreatorCollection) {
         creatorCollectionJob?.cancel()
+        cancelCreatorCollectionQueueResolution()
         mutableState.update { current ->
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
@@ -1474,6 +1496,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeCreatorCollection() {
         creatorCollectionJob?.cancel()
+        cancelCreatorCollectionQueueResolution()
         mutableState.update { current ->
             current.copy(
                 creatorCenter = current.creatorCenter.copy(
@@ -2034,56 +2057,178 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun playCreatorCollection(videos: List<BilibiliVideo>) {
-        if (videos.isEmpty() || state.value.isPageQueueLoading) return
+    fun queueCreatorCollection(action: CreatorCollectionQueueAction) {
+        val collection = state.value.creatorCenter.selectedCollection ?: return
+        if (state.value.isPageQueueLoading) return
+        cancelCreatorCollectionQueueResolution()
         cancelPageQueueExpansion()
+        // long: 合集全量分页和音轨解析可能持续数秒；同时锁定页面代际与播放队列版本，避免迟到结果覆盖用户后来选择的内容。
+        val generation = creatorCollectionQueueGeneration
+        val playbackGeneration = playbackEventIds.get()
         mutableState.update { it.copy(isPageQueueLoading = true, message = null) }
-        viewModelScope.launch {
+        creatorCollectionQueueJob = viewModelScope.launch {
             try {
-                val semaphore = Semaphore(3)
-                val resolved = coroutineScope {
-                    videos.map { video ->
-                        async {
-                            semaphore.withPermit {
-                                runCatching {
-                                    repository.resolveTracks(video, AudioQualityPreference.HIGHEST)
-                                }
-                            }
+                val videos = loadAllCreatorCollectionVideos(collection)
+                val resolution = resolveCollectionTracks(videos)
+                if (resolution.tracks.isEmpty()) throw BilibiliApiException(-404, "合集没有可播放曲目")
+                if (!isCurrentCreatorCollectionQueue(generation, collection)) return@launch
+                if (playbackEventIds.get() != playbackGeneration) {
+                    mutableState.update { current ->
+                        if (!isCurrentCreatorCollectionQueue(generation, collection)) current else {
+                            current.copy(
+                                isPageQueueLoading = false,
+                                message = "播放列表已变化，请重新执行合集操作",
+                            )
                         }
-                    }.awaitAll()
+                    }
+                    return@launch
                 }
-                val tracks = resolved.flatMap { it.getOrNull().orEmpty() }
-                if (tracks.isEmpty()) throw BilibiliApiException(-404, "合集没有可播放曲目")
-                publishPlaybackRequest(tracks)
-                val skipped = resolved.count(Result<List<Track>>::isFailure)
-                if (skipped > 0) {
-                    mutableState.update { it.copy(message = "$skipped 个失效视频已跳过") }
+                val addedCount = when (action) {
+                    CreatorCollectionQueueAction.PLAY_NOW -> {
+                        publishPlaybackRequest(resolution.tracks)
+                        resolution.tracks.size
+                    }
+                    CreatorCollectionQueueAction.ADD_TO_QUEUE -> appendPlaybackTracks(resolution.tracks)
+                }
+                mutableState.update { current ->
+                    if (!isCurrentCreatorCollectionQueue(generation, collection)) current else current.copy(
+                        creatorCenter = current.creatorCenter.copy(
+                            collectionVideos = videos,
+                            collectionVideosNextPage = null,
+                        ),
+                        message = collectionQueueMessage(action, addedCount, resolution),
+                    )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                mutableState.update {
-                    it.copy(
+                mutableState.update { current ->
+                    if (!isCurrentCreatorCollectionQueue(generation, collection)) current else current.copy(
                         isPageQueueLoading = false,
-                        message = error.userMessage("合集播放地址解析失败"),
+                        message = error.userMessage(
+                            if (action == CreatorCollectionQueueAction.PLAY_NOW) {
+                                "合集播放地址解析失败"
+                            } else {
+                                "合集加入队列失败"
+                            },
+                        ),
                     )
                 }
+            } finally {
+                if (creatorCollectionQueueGeneration == generation) creatorCollectionQueueJob = null
             }
         }
     }
 
+    private fun isCurrentCreatorCollectionQueue(
+        generation: Long,
+        collection: BilibiliCreatorCollection,
+    ): Boolean {
+        return creatorCollectionQueueGeneration == generation &&
+            state.value.creatorCenter.selectedCollection == collection
+    }
+
+    private fun cancelCreatorCollectionQueueResolution() {
+        creatorCollectionQueueGeneration += 1L
+        val wasRunning = creatorCollectionQueueJob?.isActive == true
+        creatorCollectionQueueJob?.cancel()
+        creatorCollectionQueueJob = null
+        if (wasRunning) {
+            mutableState.update { it.copy(isPageQueueLoading = false, resolvingBvid = null) }
+        }
+    }
+
+    private suspend fun loadAllCreatorCollectionVideos(
+        collection: BilibiliCreatorCollection,
+    ): List<BilibiliVideo> {
+        val videos = mutableListOf<BilibiliVideo>()
+        var pageNumber = 1
+        repeat(MAX_CREATOR_COLLECTION_PAGES) {
+            val page = repository.creatorCollectionVideoPage(collection, pageNumber)
+            videos += page.videos
+            if (!page.hasMore) return videos.distinctBy(BilibiliVideo::bvid)
+            pageNumber = page.page + 1
+        }
+        throw BilibiliApiException(-429, "合集分页过多，请缩小范围后重试")
+    }
+
+    private suspend fun resolveCollectionTracks(videos: List<BilibiliVideo>): CollectionTrackResolution = coroutineScope {
+        val semaphore = Semaphore(3)
+        val videoResults = videos.map { video ->
+            async {
+                semaphore.withPermit {
+                    val detail = try {
+                        repository.videoDetail(video.bvid)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Throwable) {
+                        return@withPermit CollectionVideoResolution(failedVideos = 1)
+                    }
+                    if (detail.pages.isEmpty()) return@withPermit CollectionVideoResolution(failedVideos = 1)
+                    val tracks = mutableListOf<Track>()
+                    var failedPages = 0
+                    detail.pages.indices.forEach { pageIndex ->
+                        try {
+                            tracks += repository.resolveTrack(
+                                video = video,
+                                detail = detail,
+                                pageIndex = pageIndex,
+                                qualityPreference = AudioQualityPreference.HIGHEST,
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Throwable) {
+                            failedPages += 1
+                        }
+                    }
+                    CollectionVideoResolution(tracks = tracks, failedPages = failedPages)
+                }
+            }
+        }.awaitAll()
+        CollectionTrackResolution(
+            tracks = videoResults.flatMap(CollectionVideoResolution::tracks),
+            failedVideos = videoResults.sumOf(CollectionVideoResolution::failedVideos),
+            failedPages = videoResults.sumOf(CollectionVideoResolution::failedPages),
+        )
+    }
+
+    private fun collectionQueueMessage(
+        action: CreatorCollectionQueueAction,
+        addedCount: Int,
+        resolution: CollectionTrackResolution,
+    ): String? {
+        val skipped = buildList {
+            if (resolution.failedVideos > 0) add("${resolution.failedVideos} 个失效视频")
+            if (resolution.failedPages > 0) add("${resolution.failedPages} 个失效分 P")
+        }
+        return when {
+            action == CreatorCollectionQueueAction.ADD_TO_QUEUE && addedCount == 0 -> "合集曲目已在播放列表中"
+            action == CreatorCollectionQueueAction.ADD_TO_QUEUE -> buildString {
+                append("已加入 $addedCount 首")
+                if (skipped.isNotEmpty()) append("，跳过 ${skipped.joinToString("、")}")
+            }
+            skipped.isNotEmpty() -> "已开始播放，跳过 ${skipped.joinToString("、")}"
+            else -> null
+        }
+    }
+
     fun playPageQueue(startIndex: Int) {
-        playPageQueue(startIndex, startPositionMs = 0L)
+        playPageQueue(startIndex, startPositionMs = 0L, includePrevious = false)
     }
 
     fun resumePageQueue(startIndex: Int, lastPositionMs: Long, durationMs: Long) {
         playPageQueue(
             startIndex = startIndex,
             startPositionMs = PlaybackResumePolicy.startPositionMs(lastPositionMs, durationMs),
+            includePrevious = false,
         )
     }
 
-    private fun playPageQueue(startIndex: Int, startPositionMs: Long) {
+    private fun playPageQueue(
+        startIndex: Int,
+        startPositionMs: Long,
+        includePrevious: Boolean,
+    ) {
         val selection = state.value.pageSelection ?: return
         if (state.value.isPageQueueLoading) return
         if (startIndex !in selection.detail.pages.indices) {
@@ -2114,6 +2259,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 ).load(
                     pageCount = selection.detail.pages.size,
                     startIndex = startIndex,
+                    includePrevious = includePrevious,
                     onSelected = { selectedTrack ->
                         queueId = publishPlaybackRequest(listOf(selectedTrack), startPositionMs = startPositionMs)
                         queueStarted = true
@@ -2138,6 +2284,71 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         isPageQueueLoading = false,
                         message = error.userMessage(
                             if (queueStarted) "部分分 P 加载失败，当前播放不受影响" else "分 P 播放地址解析失败",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun playOnlyPage(pageIndex: Int) {
+        resolveSinglePage(pageIndex, SinglePageQueueAction.PLAY_ONLY)
+    }
+
+    fun appendPageToQueue(pageIndex: Int) {
+        resolveSinglePage(pageIndex, SinglePageQueueAction.ADD_TO_QUEUE)
+    }
+
+    private fun resolveSinglePage(
+        pageIndex: Int,
+        action: SinglePageQueueAction,
+    ) {
+        val selection = state.value.pageSelection ?: return
+        if (state.value.isPageQueueLoading) return
+        if (pageIndex !in selection.detail.pages.indices) {
+            mutableState.update { it.copy(message = "分 P 索引无效") }
+            return
+        }
+        cancelPageQueueExpansion()
+        mutableState.update {
+            it.copy(
+                resolvingBvid = selection.video.bvid,
+                isPageQueueLoading = true,
+                message = null,
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val track = repository.resolveTrack(
+                    selection.video,
+                    selection.detail,
+                    pageIndex,
+                    AudioQualityPreference.HIGHEST,
+                )
+                when (action) {
+                    SinglePageQueueAction.PLAY_ONLY -> publishPlaybackRequest(listOf(track))
+                    SinglePageQueueAction.ADD_TO_QUEUE -> {
+                        val addedCount = appendPlaybackTracks(listOf(track))
+                        mutableState.update {
+                            it.copy(
+                                message = if (addedCount > 0) "已加入播放队列" else "该歌曲已在播放队列中",
+                            )
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update {
+                    it.copy(
+                        resolvingBvid = null,
+                        isPageQueueLoading = false,
+                        message = error.userMessage(
+                            if (action == SinglePageQueueAction.PLAY_ONLY) {
+                                "当前分 P 播放地址解析失败"
+                            } else {
+                                "当前分 P 加入队列失败"
+                            },
                         ),
                     )
                 }
@@ -2598,31 +2809,57 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openLocalPlaylist(playlist: LocalPlaylistEntity) {
         localPlaylistItemsJob?.cancel()
+        localPlaylistAvailabilityJob?.cancel()
+        localPlaylistAvailabilityGeneration += 1L
+        cancelLocalPlaylistPlaybackResolution()
         mutableState.update {
             it.copy(
                 selectedLocalPlaylist = playlist,
                 localPlaylistItems = emptyList(),
+                localPlaylistItemAvailability = emptyMap(),
                 isLocalPlaylistLoading = true,
                 message = null,
             )
         }
         localPlaylistItemsJob = viewModelScope.launch {
             container.localPlaylistRepository.items(playlist.playlistId).collect { items ->
+                val incomingMediaIds = items.map(LocalPlaylistItemEntity::mediaId)
+                if (
+                    localPlaylistPlaybackJob?.isActive == true &&
+                    state.value.localPlaylistItems.map(LocalPlaylistItemEntity::mediaId) != incomingMediaIds
+                ) {
+                    // long: 播放地址解析期间仍允许整理歌单；曲目顺序一旦变化就取消旧计划，避免索引指向已删除或移动的歌曲。
+                    cancelLocalPlaylistPlaybackResolution()
+                }
                 mutableState.update { current ->
                     if (current.selectedLocalPlaylist?.playlistId != playlist.playlistId) current else {
-                        current.copy(localPlaylistItems = items, isLocalPlaylistLoading = false)
+                        current.copy(
+                            localPlaylistItems = items,
+                            localPlaylistItemAvailability = items.associate { item ->
+                                item.mediaId to (
+                                    current.localPlaylistItemAvailability[item.mediaId]
+                                        ?: LocalPlaylistItemAvailability.CHECKING
+                                    )
+                            },
+                            isLocalPlaylistLoading = false,
+                        )
                     }
                 }
+                validateLocalPlaylistItems(playlist.playlistId, items)
             }
         }
     }
 
     fun closeLocalPlaylist() {
         localPlaylistItemsJob?.cancel()
+        localPlaylistAvailabilityJob?.cancel()
+        localPlaylistAvailabilityGeneration += 1L
+        cancelLocalPlaylistPlaybackResolution()
         mutableState.update {
             it.copy(
                 selectedLocalPlaylist = null,
                 localPlaylistItems = emptyList(),
+                localPlaylistItemAvailability = emptyMap(),
                 isLocalPlaylistLoading = false,
             )
         }
@@ -2657,42 +2894,105 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun playLocalPlaylist(startIndex: Int = 0) {
         val items = state.value.localPlaylistItems
+        val playlistId = state.value.selectedLocalPlaylist?.playlistId ?: return
         if (startIndex !in items.indices || state.value.isLocalPlaylistLoading) return
+        cancelLocalPlaylistPlaybackResolution()
+        // long: 歌单解析期间可能切换歌单或播放其他内容，完成前必须确认曲目顺序和播放代际仍与发起时一致。
+        val generation = localPlaylistPlaybackGeneration
+        val playbackGeneration = playbackEventIds.get()
+        val expectedMediaIds = items.map(LocalPlaylistItemEntity::mediaId)
+        val knownAvailability = state.value.localPlaylistItemAvailability
         mutableState.update { it.copy(isLocalPlaylistLoading = true, message = null) }
-        viewModelScope.launch {
+        localPlaylistPlaybackJob = viewModelScope.launch {
             try {
                 val semaphore = Semaphore(3)
                 val resolved = coroutineScope {
                     items.map { item ->
                         async {
                             semaphore.withPermit {
-                                runCatching { resolveLocalPlaylistItem(item) }
+                                val availability = knownAvailability[item.mediaId]
+                                if (availability?.preventsPlayback == true) {
+                                    Result.failure(LocalPlaylistItemUnavailableException(availability))
+                                } else {
+                                    try {
+                                        Result.success(resolveLocalPlaylistItem(item))
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (error: Throwable) {
+                                        Result.failure(error)
+                                    }
+                                }
                             }
                         }
                     }.awaitAll()
                 }
-                val selected = resolved[startIndex].getOrThrow()
-                val tracks = resolved.mapNotNull(Result<Track>::getOrNull)
-                val resolvedStartIndex = tracks.indexOfFirst { it.id == selected.id }
-                publishPlaybackRequest(tracks, startIndex = resolvedStartIndex.coerceAtLeast(0))
-                val skipped = resolved.count(Result<Track>::isFailure)
-                mutableState.update {
-                    it.copy(
+                val availabilityUpdates = items.zip(resolved).associate { (item, result) ->
+                    val availability = if (result.isSuccess) {
+                        LocalPlaylistItemAvailability.AVAILABLE
+                    } else {
+                        (result.exceptionOrNull() as? LocalPlaylistItemUnavailableException)?.availability
+                            ?: knownAvailability[item.mediaId]?.takeIf { availability ->
+                                availability.preventsPlayback
+                            }
+                            ?: LocalPlaylistItemAvailability.ERROR
+                    }
+                    item.mediaId to availability
+                }
+                val plan = LocalPlaylistPlaybackPolicy.plan(
+                    resolvedTracks = resolved.map(Result<Track>::getOrNull),
+                    requestedIndex = startIndex,
+                ) ?: throw BilibiliApiException(-404, "歌单中没有可播放曲目")
+                if (!isCurrentLocalPlaylistPlayback(generation, playlistId, expectedMediaIds)) return@launch
+                if (playbackEventIds.get() != playbackGeneration) {
+                    mutableState.update { current ->
+                        if (!isCurrentLocalPlaylistPlayback(generation, playlistId, expectedMediaIds)) current else {
+                            current.copy(
+                                isLocalPlaylistLoading = false,
+                                message = "播放列表已变化，请重新选择歌单曲目",
+                            )
+                        }
+                    }
+                    return@launch
+                }
+                publishPlaybackRequest(plan.tracks, startIndex = plan.startIndex)
+                mutableState.update { current ->
+                    if (!isCurrentLocalPlaylistPlayback(generation, playlistId, expectedMediaIds)) current else current.copy(
                         isLocalPlaylistLoading = false,
-                        message = if (skipped > 0) "$skipped 首失效曲目已跳过" else null,
+                        localPlaylistItemAvailability = current.localPlaylistItemAvailability + availabilityUpdates,
+                        message = if (plan.skippedCount > 0) "${plan.skippedCount} 首失效曲目已跳过" else null,
                     )
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                mutableState.update {
-                    it.copy(
+                mutableState.update { current ->
+                    if (!isCurrentLocalPlaylistPlayback(generation, playlistId, expectedMediaIds)) current else current.copy(
                         isLocalPlaylistLoading = false,
                         message = error.userMessage("歌单播放地址解析失败"),
                     )
                 }
+            } finally {
+                if (localPlaylistPlaybackGeneration == generation) localPlaylistPlaybackJob = null
             }
         }
+    }
+
+    private fun isCurrentLocalPlaylistPlayback(
+        generation: Long,
+        playlistId: Long,
+        expectedMediaIds: List<String>,
+    ): Boolean {
+        return localPlaylistPlaybackGeneration == generation &&
+            state.value.selectedLocalPlaylist?.playlistId == playlistId &&
+            state.value.localPlaylistItems.map(LocalPlaylistItemEntity::mediaId) == expectedMediaIds
+    }
+
+    private fun cancelLocalPlaylistPlaybackResolution() {
+        localPlaylistPlaybackGeneration += 1L
+        val wasRunning = localPlaylistPlaybackJob?.isActive == true
+        localPlaylistPlaybackJob?.cancel()
+        localPlaylistPlaybackJob = null
+        if (wasRunning) mutableState.update { it.copy(isLocalPlaylistLoading = false) }
     }
 
     private suspend fun resolveLocalPlaylistItem(item: LocalPlaylistItemEntity): Track {
@@ -2701,8 +3001,83 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         return if (source != null) {
             repository.resolveTrack(source, stored.title, stored.artist, stored.artworkUrl)
         } else {
-            require(stored.streamUrl.isNotBlank()) { "本地文件已失效" }
+            if (!isReadableLocalUri(stored.streamUrl)) {
+                throw LocalPlaylistItemUnavailableException(
+                    LocalPlaylistItemAvailability.LOCAL_FILE_UNAVAILABLE,
+                )
+            }
             stored
+        }
+    }
+
+    private fun validateLocalPlaylistItems(
+        playlistId: Long,
+        items: List<LocalPlaylistItemEntity>,
+    ) {
+        localPlaylistAvailabilityJob?.cancel()
+        localPlaylistAvailabilityGeneration += 1L
+        // long: 同一歌单增删或排序会触发新一轮校验；旧请求即使晚返回，也不能覆盖当前曲目的最新状态。
+        val generation = localPlaylistAvailabilityGeneration
+        if (items.isEmpty()) return
+        localPlaylistAvailabilityJob = viewModelScope.launch {
+            val semaphore = Semaphore(3)
+            coroutineScope {
+                items.map { item ->
+                    async {
+                        val availability = try {
+                            semaphore.withPermit { validateLocalPlaylistItem(item) }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Throwable) {
+                            LocalPlaylistItemAvailability.ERROR
+                        }
+                        mutableState.update { current ->
+                            if (localPlaylistAvailabilityGeneration != generation ||
+                                current.selectedLocalPlaylist?.playlistId != playlistId ||
+                                current.localPlaylistItems.none { currentItem -> currentItem.mediaId == item.mediaId }
+                            ) {
+                                current
+                            } else {
+                                current.copy(
+                                    localPlaylistItemAvailability = current.localPlaylistItemAvailability +
+                                        (item.mediaId to availability),
+                                )
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+        }
+    }
+
+    private suspend fun validateLocalPlaylistItem(
+        item: LocalPlaylistItemEntity,
+    ): LocalPlaylistItemAvailability {
+        if (!item.isBilibili) {
+            return LocalPlaylistAvailabilityPolicy.fromLocalUri(
+                readable = isReadableLocalUri(item.streamUrl.orEmpty()),
+            )
+        }
+        val detailResult = try {
+            Result.success(repository.videoDetail(requireNotNull(item.bvid)))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            Result.failure(error)
+        }
+        return LocalPlaylistAvailabilityPolicy.fromBilibiliDetail(
+            detailResult = detailResult,
+            cid = requireNotNull(item.cid),
+        )
+    }
+
+    private suspend fun isReadableLocalUri(uri: String): Boolean {
+        if (uri.isBlank()) return false
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                getApplication<Application>().contentResolver.openFileDescriptor(Uri.parse(uri), "r")
+                    ?.use { descriptor -> descriptor.fileDescriptor.valid() } == true
+            }.getOrDefault(false)
         }
     }
 
@@ -3349,6 +3724,23 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         return playbackQueueSnapshots.current(queueId)
     }
 
+    internal fun synchronizeRestoredPlaybackQueue(
+        tracks: List<Track>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ) {
+        if (tracks.isEmpty() || playbackQueueSnapshots.current() != null) return
+        val normalizedStartIndex = startIndex.coerceIn(tracks.indices)
+        val queueId = playbackEventIds.incrementAndGet()
+        // long: MediaSession 可在 Activity/ViewModel 重建前恢复 Room 队列；先镜像现有控制器时间线，后续“加入队列”才能追加而不是误替换。
+        playbackQueueSnapshots.replace(
+            queueId = queueId,
+            items = tracks,
+            startIndex = normalizedStartIndex,
+            startPositionMs = startPositionMs.coerceAtLeast(0L),
+        )
+    }
+
     internal fun updatePlaybackQueuePosition(mediaId: String, positionMs: Long) {
         playbackQueueSnapshots.updateResumePosition(mediaId, positionMs)
     }
@@ -3412,6 +3804,36 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         return queueId
+    }
+
+    private fun appendPlaybackTracks(tracks: List<Track>): Int {
+        if (tracks.isEmpty()) return 0
+        val preferredTracks = tracks.map { track ->
+            DownloadedMediaPolicy.preferLocal(track, state.value.audioDownloads, state.value.videoDownloads)
+        }
+        val current = playbackQueueSnapshots.current()
+        if (current == null) {
+            publishPlaybackRequest(preferredTracks)
+            return preferredTracks.distinctBy(Track::id).size
+        }
+        // long: 用户主动追加后停止旧的多 P 后台补齐，防止稍后到达的解析结果插入已经由用户重新组织的队列。
+        cancelPageQueueExpansion()
+        playbackEventIds.incrementAndGet()
+        val existingIds = current.items.mapTo(hashSetOf(), Track::id)
+        val additions = preferredTracks.filter { track -> existingIds.add(track.id) }
+        if (additions.isEmpty()) {
+            mutableState.update { it.copy(isPageQueueLoading = false, resolvingBvid = null) }
+            return 0
+        }
+        if (playbackQueueSnapshots.append(current.queueId, additions) == null) {
+            mutableState.update { it.copy(isPageQueueLoading = false, resolvingBvid = null) }
+            return 0
+        }
+        mutablePlaybackCommands.trySend(
+            PlaybackCommand.Append(queueId = current.queueId, tracks = additions),
+        ).getOrThrow()
+        mutableState.update { it.copy(isPageQueueLoading = false, resolvingBvid = null) }
+        return additions.size
     }
 
     private fun cancelPageQueueExpansion() {
@@ -3985,6 +4407,27 @@ private data class OnlineHistoryLoadResult(
     val hasMore: Boolean,
 )
 
+private data class CollectionVideoResolution(
+    val tracks: List<Track> = emptyList(),
+    val failedVideos: Int = 0,
+    val failedPages: Int = 0,
+)
+
+private data class CollectionTrackResolution(
+    val tracks: List<Track>,
+    val failedVideos: Int,
+    val failedPages: Int,
+)
+
+private enum class SinglePageQueueAction {
+    PLAY_ONLY,
+    ADD_TO_QUEUE,
+}
+
+private class LocalPlaylistItemUnavailableException(
+    val availability: LocalPlaylistItemAvailability,
+) : IllegalStateException(availability.label)
+
 internal object PlaybackResumePolicy {
     fun startPositionMs(lastPositionMs: Long, durationMs: Long): Long {
         if (lastPositionMs <= 0L) return 0L
@@ -4015,3 +4458,4 @@ private val VIDEO_ACTIVE_DOWNLOAD_STATUSES = setOf(
 
 private const val MAX_EMPTY_FAVORITE_PAGES = 100
 private const val CREATOR_FEED_PARALLELISM = 3
+private const val MAX_CREATOR_COLLECTION_PAGES = 100

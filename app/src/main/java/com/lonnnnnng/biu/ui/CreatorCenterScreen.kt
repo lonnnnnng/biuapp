@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
@@ -96,6 +97,7 @@ internal fun CreatorCenterScreen(
     groupMembers: Map<Long, Set<Long>>,
     accountLoggedIn: Boolean,
     resolvingBvid: String?,
+    queueLoading: Boolean,
     onBack: () -> Unit,
     onTabSelected: (CreatorCenterTab) -> Unit,
     onGroupSelected: (Long?) -> Unit,
@@ -113,7 +115,8 @@ internal fun CreatorCenterScreen(
     onOpenCollection: (BilibiliCreatorCollection) -> Unit,
     onCloseCollection: () -> Unit,
     onLoadMoreCollectionVideos: () -> Unit,
-    onPlayCollection: (List<BilibiliVideo>) -> Unit,
+    onPlayCollection: () -> Unit,
+    onAppendCollection: () -> Unit,
     savingSources: Boolean,
     onToggleSource: (BilibiliCreator) -> Unit,
     onSaveSources: () -> Unit,
@@ -213,6 +216,7 @@ internal fun CreatorCenterScreen(
                         groupMembers = groupMembers,
                         accountLoggedIn = accountLoggedIn,
                         resolvingBvid = resolvingBvid,
+                        queueLoading = queueLoading,
                         onToggleRelation = onToggleRelation,
                         onToggleSource = { onToggleSource(state.selectedCreator) },
                         onProfileTabSelected = onProfileTabSelected,
@@ -221,6 +225,7 @@ internal fun CreatorCenterScreen(
                         onOpenCollection = onOpenCollection,
                         onLoadMoreCollectionVideos = onLoadMoreCollectionVideos,
                         onPlayCollection = onPlayCollection,
+                        onAppendCollection = onAppendCollection,
                         onToggleCreatorGroup = onToggleCreatorGroup,
                         onManageGroups = { showGroupManager = true },
                         onLoadMoreVideos = onLoadMoreVideos,
@@ -893,6 +898,7 @@ private fun CreatorProfile(
     groupMembers: Map<Long, Set<Long>>,
     accountLoggedIn: Boolean,
     resolvingBvid: String?,
+    queueLoading: Boolean,
     onToggleRelation: () -> Unit,
     onToggleSource: () -> Unit,
     onProfileTabSelected: (CreatorProfileTab) -> Unit,
@@ -900,7 +906,8 @@ private fun CreatorProfile(
     onLoadMoreCollections: () -> Unit,
     onOpenCollection: (BilibiliCreatorCollection) -> Unit,
     onLoadMoreCollectionVideos: () -> Unit,
-    onPlayCollection: (List<BilibiliVideo>) -> Unit,
+    onPlayCollection: () -> Unit,
+    onAppendCollection: () -> Unit,
     onToggleCreatorGroup: (Long, Long) -> Unit,
     onManageGroups: () -> Unit,
     onLoadMoreVideos: () -> Unit,
@@ -918,8 +925,10 @@ private fun CreatorProfile(
             loadingMore = state.isCollectionVideosLoadingMore,
             hasMore = state.collectionVideosNextPage != null,
             resolvingBvid = resolvingBvid,
+            queueLoading = queueLoading,
             onLoadMore = onLoadMoreCollectionVideos,
-            onPlayAll = { onPlayCollection(state.collectionVideos) },
+            onPlayAll = onPlayCollection,
+            onAppendAll = onAppendCollection,
             listPosition = state.position(CreatorCenterListSlot.COLLECTION_VIDEOS),
             onListPositionChanged = { position ->
                 onListPositionChanged(CreatorCenterListSlot.COLLECTION_VIDEOS, position)
@@ -1240,14 +1249,18 @@ private fun CreatorCollectionVideos(
     loadingMore: Boolean,
     hasMore: Boolean,
     resolvingBvid: String?,
+    queueLoading: Boolean,
     onLoadMore: () -> Unit,
     onPlayAll: () -> Unit,
+    onAppendAll: () -> Unit,
     listPosition: PersistedListPosition,
     onListPositionChanged: (PersistedListPosition) -> Unit,
     onPlay: (BilibiliVideo) -> Unit,
     onAddFavorite: (BilibiliVideo) -> Unit,
     modifier: Modifier,
 ) {
+    // long: 首屏可能全部是失效稿件但后续分页仍有歌曲，整组操作不能仅因当前可见列表为空而被禁用。
+    val hasCollectionContent = collection.mediaCount > 0 || videos.isNotEmpty() || hasMore
     Column(modifier) {
         Row(
             modifier = Modifier
@@ -1261,13 +1274,33 @@ private fun CreatorCollectionVideos(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(onClick = onPlayAll, enabled = videos.isNotEmpty() && !loading) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("播放全部")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (queueLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+                TextButton(
+                    onClick = onPlayAll,
+                    enabled = hasCollectionContent && !loading && !queueLoading,
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("全部播放")
+                }
+                TextButton(
+                    onClick = onAppendAll,
+                    enabled = hasCollectionContent && !loading && !queueLoading,
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("加入队列")
+                }
             }
         }
-        if (loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (loading || queueLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         if (!loading && videos.isEmpty()) {
             BiuEmptyState(
                 icon = Icons.Rounded.Album,

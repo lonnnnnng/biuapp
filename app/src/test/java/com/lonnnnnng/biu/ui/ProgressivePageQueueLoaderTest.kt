@@ -32,6 +32,22 @@ class ProgressivePageQueueLoaderTest {
     }
 
     @Test
+    fun `从指定页开始时只发布当前及后续分P`() = runBlocking {
+        val queue = mutableListOf<Int>()
+        val loader = ProgressivePageQueueLoader(resolve = { pageIndex -> pageIndex })
+
+        loader.load(
+            pageCount = 5,
+            startIndex = 2,
+            includePrevious = false,
+            onSelected = queue::add,
+            onExpansion = { expansion -> queue += expansion.item },
+        )
+
+        assertEquals(listOf(2, 3, 4), queue)
+    }
+
+    @Test
     fun `队列快照保留补齐顺序和当前页进度`() {
         val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
 
@@ -62,6 +78,18 @@ class ProgressivePageQueueLoaderTest {
         store.expand(queueId = 8L, placement = QueuePlacement.APPEND, item = 3)
 
         assertEquals(listOf(2, 3), store.current()?.items)
+    }
+
+    @Test
+    fun `追加队列会去重并保留当前歌曲和进度`() {
+        val store = PlaybackQueueSnapshotStore<Int>(Int::toString)
+        store.replace(queueId = 16L, items = listOf(0, 1), startIndex = 1, startPositionMs = 6_000L)
+
+        val updated = store.append(queueId = 16L, items = listOf(1, 2, 3, 2))
+
+        assertEquals(listOf(0, 1, 2, 3), updated?.items)
+        assertEquals(1, updated?.startIndex)
+        assertEquals(6_000L, updated?.startPositionMs)
     }
 
     @Test
