@@ -51,6 +51,42 @@ class DownloadedMediaPolicyTest {
 
         assertEquals("content://video/11", local.streamUrl)
         assertEquals("已下载视频", local.qualityLabel)
+        assertEquals("video/mp4", local.mimeType)
+    }
+
+    @Test
+    fun `同一分P同时存在音频和视频成品时显示双份下载状态`() {
+        val audio = audioTask("BV1", 11L, AudioDownloadStatus.COMPLETED, "content://audio/11")
+        val video = videoTask("BV1", 11L, VideoDownloadStatus.COMPLETED, "content://video/11")
+
+        val index = DownloadedMediaPolicy.index(listOf(audio), listOf(video))
+
+        assertEquals(DownloadedMediaStatus.AUDIO_AND_VIDEO, index.status("BV1", 11L))
+        assertEquals(DownloadedMediaStatus.AUDIO_AND_VIDEO, index.status("BV1"))
+    }
+
+    @Test
+    fun `下载索引按分P精确区分并按主视频聚合`() {
+        val audioP1 = audioTask("BV1", 11L, AudioDownloadStatus.COMPLETED, "content://audio/11")
+        val videoP2 = videoTask("BV1", 12L, VideoDownloadStatus.COMPLETED, "content://video/12")
+
+        val index = DownloadedMediaPolicy.index(listOf(audioP1), listOf(videoP2))
+
+        assertEquals(DownloadedMediaStatus.AUDIO, index.status("BV1", 11L))
+        assertEquals(DownloadedMediaStatus.VIDEO, index.status("BV1", 12L))
+        assertNull(index.status("BV1", 13L))
+        assertEquals(DownloadedMediaStatus.AUDIO_AND_VIDEO, index.status("BV1"))
+    }
+
+    @Test
+    fun `下载索引忽略未完成任务和缺少MediaStore地址的伪成品`() {
+        val downloading = audioTask("BV1", 11L, AudioDownloadStatus.DOWNLOADING, "content://audio/11")
+        val missingUri = videoTask("BV1", 11L, VideoDownloadStatus.COMPLETED, null)
+
+        val index = DownloadedMediaPolicy.index(listOf(downloading), listOf(missingUri))
+
+        assertNull(index.status("BV1", 11L))
+        assertNull(index.status("BV1"))
     }
 
     private fun audioTask(

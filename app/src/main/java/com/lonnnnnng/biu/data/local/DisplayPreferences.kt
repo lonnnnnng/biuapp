@@ -1,9 +1,11 @@
 package com.lonnnnnng.biu.data.local
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.lonnnnnng.biu.data.lyrics.LyricsTextSize
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -53,6 +55,8 @@ data class AppDisplayPreferences(
     val listDensity: AppListDensity,
     val textScale: AppTextScale,
     val videoLayout: AppVideoLayout,
+    val lyricsTextSize: LyricsTextSize,
+    val showLyricsTranslation: Boolean,
 )
 
 class DisplayPreferenceRepository(context: Context) {
@@ -63,6 +67,8 @@ class DisplayPreferenceRepository(context: Context) {
             listDensity = AppListDensity.fromStoredValue(values[KEY_LIST_DENSITY]),
             textScale = AppTextScale.fromStoredValue(values[KEY_TEXT_SCALE]),
             videoLayout = AppVideoLayout.fromStoredValue(values[KEY_VIDEO_LAYOUT]),
+            lyricsTextSize = LyricsTextSize.fromStoredValue(values[KEY_LYRICS_TEXT_SIZE]),
+            showLyricsTranslation = values[KEY_SHOW_LYRICS_TRANSLATION] ?: true,
         )
     }
 
@@ -78,9 +84,19 @@ class DisplayPreferenceRepository(context: Context) {
         dataStore.edit { values -> values[KEY_VIDEO_LAYOUT] = layout.name }
     }
 
+    suspend fun saveLyricsTextSize(size: LyricsTextSize) {
+        dataStore.edit { values -> values[KEY_LYRICS_TEXT_SIZE] = size.name }
+    }
+
+    suspend fun saveShowLyricsTranslation(show: Boolean) {
+        dataStore.edit { values -> values[KEY_SHOW_LYRICS_TRANSLATION] = show }
+    }
+
     private companion object {
         val KEY_LIST_DENSITY = stringPreferencesKey("list_density")
         val KEY_TEXT_SCALE = stringPreferencesKey("text_scale")
         val KEY_VIDEO_LAYOUT = stringPreferencesKey("video_layout")
+        val KEY_LYRICS_TEXT_SIZE = stringPreferencesKey("lyrics_text_size")
+        val KEY_SHOW_LYRICS_TRANSLATION = booleanPreferencesKey("show_lyrics_translation")
     }
 }

@@ -234,6 +234,9 @@ import com.lonnnnnng.biu.data.local.AppTextScale
 import com.lonnnnnng.biu.data.local.AppThemeMode
 import com.lonnnnnng.biu.data.local.AppVideoLayout
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
+import com.lonnnnnng.biu.data.local.DownloadedMediaIndex
+import com.lonnnnnng.biu.data.local.DownloadedMediaPolicy
+import com.lonnnnnng.biu.data.local.DownloadedMediaStatus
 import com.lonnnnnng.biu.data.local.PlaybackHistoryEntity
 import com.lonnnnnng.biu.data.local.LocalAudio
 import com.lonnnnnng.biu.data.local.LocalAudioDirectory
@@ -243,7 +246,11 @@ import com.lonnnnnng.biu.data.local.LocalPlaylistEntity
 import com.lonnnnnng.biu.data.local.LocalPlaylistItemEntity
 import com.lonnnnnng.biu.data.local.VideoDownloadTaskEntity
 import com.lonnnnnng.biu.data.lyrics.LrcParser
+import com.lonnnnnng.biu.data.lyrics.LyricsDocument
+import com.lonnnnnng.biu.data.lyrics.LyricsOffsetPolicy
 import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
+import com.lonnnnnng.biu.data.lyrics.LyricsTextSize
+import com.lonnnnnng.biu.data.lyrics.lyricsCacheKey
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadStatus
@@ -327,6 +334,9 @@ private sealed interface PendingPlaylistAddition {
 @Composable
 fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
+    val downloadedMediaIndex = remember(uiState.audioDownloads, uiState.videoDownloads) {
+        DownloadedMediaPolicy.index(uiState.audioDownloads, uiState.videoDownloads)
+    }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val updateInstaller = remember(context.applicationContext) { AppUpdateInstaller(context.applicationContext) }
@@ -906,6 +916,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         ) {
             PlaybackQueue(
                 snapshot = playback,
+                queueExpansion = uiState.pageQueueExpansion,
                 onSelectQueueItem = { index ->
                     controller?.seekToDefaultPosition(index)
                     controller?.play()
@@ -986,6 +997,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         NowPlayingScreen(
             snapshot = playback,
             lyrics = uiState.lyrics,
+            lyricsTextSize = uiState.lyricsTextSize,
+            showLyricsTranslation = uiState.showLyricsTranslation,
+            queueExpansion = uiState.pageQueueExpansion,
             player = controller,
             controllerReady = controller != null,
             mediaModeSwitching = mediaModeSwitching,
@@ -1069,6 +1083,9 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             },
             onSearchLyrics = viewModel::searchLyrics,
             onSelectLyrics = viewModel::selectLyrics,
+            onLyricsOffsetChange = viewModel::setLyricsOffset,
+            onLyricsTextSizeChange = viewModel::selectLyricsTextSize,
+            onShowLyricsTranslationChange = viewModel::setShowLyricsTranslation,
         )
         return
     }
@@ -1135,6 +1152,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         bottomBar = {
             BiuBottomBar(
                 playback = playback,
+                queueExpansion = uiState.pageQueueExpansion,
                 controllerReady = controller != null,
                 selectedSection = uiState.section,
                 showNavigation = !isLandscape,
@@ -1156,6 +1174,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             val pageModifier = Modifier.fillMaxSize().widthIn(max = 840.dp)
             when (uiState.section) {
                 MainSection.RECOMMEND -> RecommendationScreen(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     videos = uiState.recommendations,
                     searchResults = uiState.searchResults,
                     searchCreators = uiState.searchCreators,
@@ -1227,6 +1246,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     modifier = pageModifier,
                 )
                 MainSection.DYNAMIC -> DynamicFeedScreen(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     state = uiState.dynamicFeed,
                     accountLoggedIn = uiState.account.isLoggedIn,
                     resolvingBvid = uiState.resolvingBvid,
@@ -1239,6 +1259,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     modifier = pageModifier,
                 )
                 MainSection.ACCOUNT -> AccountScreen(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     state = uiState,
                     localAudioPermissionGranted = localAudioPermissionGranted,
                     onLogin = { showLogin = true },
@@ -1347,6 +1368,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     if (showCreatorCenter) {
         // long: UP 主搜索与首页范围都覆盖在推荐页之上，关闭后保留列表位置和筛选状态，不打断首页浏览上下文。
         CreatorCenterScreen(
+            downloadedMediaIndex = downloadedMediaIndex,
             state = uiState.creatorCenter,
             selectedCreators = uiState.selectedCreators,
             sourceDraft = uiState.creatorSourceDraft,
@@ -1753,6 +1775,7 @@ private fun DisplaySettingsSheet(
 @Composable
 private fun BiuBottomBar(
     playback: PlaybackSnapshot,
+    queueExpansion: PageQueueExpansionUiState?,
     controllerReady: Boolean,
     selectedSection: MainSection,
     showNavigation: Boolean,
@@ -1768,6 +1791,7 @@ private fun BiuBottomBar(
         if (playback.mediaId.isNotBlank()) {
             MiniPlayer(
                 snapshot = playback,
+                queueExpansion = queueExpansion,
                 controllerReady = controllerReady,
                 onPrevious = onPrevious,
                 onToggle = onToggle,
@@ -1842,6 +1866,7 @@ private fun MainSection.icon(): ImageVector = when (this) {
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun RecommendationScreen(
+    downloadedMediaIndex: DownloadedMediaIndex,
     videos: List<BilibiliVideo>,
     searchResults: List<BilibiliVideo>,
     searchCreators: List<BilibiliCreator>,
@@ -2053,6 +2078,7 @@ private fun RecommendationScreen(
                             )
                         } else {
                             VideoList(
+                                downloadedMediaIndex = downloadedMediaIndex,
                                 videos = searchResults,
                                 resolvingBvid = resolvingBvid,
                                 videoLayout = videoLayout,
@@ -2133,6 +2159,7 @@ private fun RecommendationScreen(
                 )
             } else {
                 VideoList(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     videos = recommendationVideos,
                     resolvingBvid = resolvingBvid,
                     videoLayout = videoLayout,
@@ -2488,6 +2515,7 @@ private fun SearchPlaylistRow(
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun DynamicFeedScreen(
+    downloadedMediaIndex: DownloadedMediaIndex,
     state: DynamicFeedUiState,
     accountLoggedIn: Boolean,
     resolvingBvid: String?,
@@ -2538,6 +2566,7 @@ private fun DynamicFeedScreen(
                 items(state.items, key = BilibiliDynamicItem::id) { item ->
                     DynamicFeedItem(
                         item = item,
+                        downloadStatus = downloadedMediaIndex.status(item.video.bvid),
                         resolving = resolvingBvid == item.video.bvid,
                         mutating = item.id in state.mutatingIds,
                         onPlay = { onPlay(item.video) },
@@ -2564,6 +2593,7 @@ private fun DynamicFeedScreen(
 @Composable
 private fun DynamicFeedItem(
     item: BilibiliDynamicItem,
+    downloadStatus: DownloadedMediaStatus?,
     resolving: Boolean,
     mutating: Boolean,
     onPlay: () -> Unit,
@@ -2619,6 +2649,14 @@ private fun DynamicFeedItem(
                         .padding(horizontal = 4.dp, vertical = 1.dp),
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            downloadStatus?.let { status ->
+                DownloadedMediaBadge(
+                    status = status,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(3.dp),
                 )
             }
             if (resolving) {
@@ -2941,6 +2979,7 @@ internal fun CompactSearchField(
 
 @Composable
 private fun AccountScreen(
+    downloadedMediaIndex: DownloadedMediaIndex,
     state: BiuUiState,
     localAudioPermissionGranted: Boolean,
     onLogin: () -> Unit,
@@ -3003,6 +3042,7 @@ private fun AccountScreen(
         } else {
             when (activeLibrarySection) {
                 AccountLibrarySection.FAVORITES -> FavoriteLibrary(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     createdFolders = state.createdFavoriteFolders,
                     collectedFolders = state.collectedFavoriteFolders,
                     selectedFolder = state.selectedFavoriteFolder,
@@ -3026,6 +3066,7 @@ private fun AccountScreen(
                 AccountLibrarySection.ONLINE_HISTORY,
                 AccountLibrarySection.LOCAL_HISTORY,
                 -> HistoryList(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     onlineVideos = state.libraryVideos,
                     localHistory = state.localHistory,
                     accountLoggedIn = state.account.isLoggedIn,
@@ -3049,6 +3090,7 @@ private fun AccountScreen(
                     modifier = Modifier.weight(1f),
                 )
                 AccountLibrarySection.PLAYLISTS -> LocalPlaylistLibrary(
+                    downloadedMediaIndex = downloadedMediaIndex,
                     playlists = state.localPlaylists,
                     selectedPlaylist = state.selectedLocalPlaylist,
                     items = state.localPlaylistItems,
@@ -3187,6 +3229,7 @@ private fun AccountLibraryNavigation(
 
 @Composable
 private fun LocalPlaylistLibrary(
+    downloadedMediaIndex: DownloadedMediaIndex,
     playlists: List<LocalPlaylistEntity>,
     selectedPlaylist: LocalPlaylistEntity?,
     items: List<LocalPlaylistItemEntity>,
@@ -3276,7 +3319,11 @@ private fun LocalPlaylistLibrary(
                 IconButton(
                     onClick = { onPlay(0) },
                     enabled = !loading && items.any { item ->
-                        availability[item.mediaId]?.preventsPlayback != true
+                        LocalPlaylistPlaybackPolicy.canPlay(
+                            availability = availability[item.mediaId],
+                            hasDownloadedCopy = item.bvid != null && item.cid != null &&
+                                downloadedMediaIndex.status(item.bvid, item.cid) != null,
+                        )
                     },
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = "播放整个歌单")
@@ -3352,11 +3399,20 @@ private fun LocalPlaylistLibrary(
                 itemsIndexed(items, key = { _, item -> item.mediaId }) { index, item ->
                     val itemAvailability = availability[item.mediaId]
                         ?: LocalPlaylistItemAvailability.CHECKING
+                    val downloadStatus = if (item.bvid != null && item.cid != null) {
+                        downloadedMediaIndex.status(item.bvid, item.cid)
+                    } else {
+                        null
+                    }
+                    val canPlay = LocalPlaylistPlaybackPolicy.canPlay(
+                        availability = itemAvailability,
+                        hasDownloadedCopy = downloadStatus != null,
+                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(
-                                enabled = !loading && !itemAvailability.preventsPlayback,
+                                enabled = !loading && canPlay,
                             ) { onPlay(index) }
                             .padding(horizontal = 16.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -3393,7 +3449,29 @@ private fun LocalPlaylistLibrary(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            if (itemAvailability != LocalPlaylistItemAvailability.AVAILABLE) {
+                            if (downloadStatus != null) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = when (downloadStatus) {
+                                            DownloadedMediaStatus.AUDIO -> Icons.Rounded.MusicNote
+                                            DownloadedMediaStatus.VIDEO -> Icons.Rounded.Movie
+                                            DownloadedMediaStatus.AUDIO_AND_VIDEO -> Icons.Rounded.Download
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(12.dp),
+                                    )
+                                    Text(
+                                        downloadStatus.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            } else if (itemAvailability != LocalPlaylistItemAvailability.AVAILABLE) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -3877,6 +3955,7 @@ private fun FavoriteFolderNameDialog(
 
 @Composable
 private fun FavoriteLibrary(
+    downloadedMediaIndex: DownloadedMediaIndex,
     createdFolders: List<BilibiliFavoriteFolder>,
     collectedFolders: List<BilibiliFavoriteFolder>,
     selectedFolder: BilibiliFavoriteFolder?,
@@ -4003,6 +4082,7 @@ private fun FavoriteLibrary(
                 }
             }
             LibraryVideoList(
+                downloadedMediaIndex = downloadedMediaIndex,
                 videos = videos,
                 resolvingBvid = resolvingBvid,
                 loading = loading,
@@ -4199,6 +4279,7 @@ private fun FavoriteFolderRow(
 
 @Composable
 private fun LibraryVideoList(
+    downloadedMediaIndex: DownloadedMediaIndex,
     videos: List<BilibiliLibraryVideo>,
     resolvingBvid: String?,
     loading: Boolean,
@@ -4251,6 +4332,7 @@ private fun LibraryVideoList(
                 Box(modifier = Modifier.weight(1f)) {
                     LibraryVideoRow(
                         item = item,
+                        downloadStatus = downloadedMediaIndex.status(item.video.bvid),
                         resolving = resolvingBvid == item.video.bvid,
                         enabled = resolvingBvid == null && !mutating,
                         onClick = { onPlay(item.video) },
@@ -4284,6 +4366,7 @@ private fun LibraryVideoList(
 
 @Composable
 private fun HistoryList(
+    downloadedMediaIndex: DownloadedMediaIndex,
     onlineVideos: List<BilibiliLibraryVideo>,
     localHistory: List<PlaybackHistoryEntity>,
     accountLoggedIn: Boolean,
@@ -4517,6 +4600,7 @@ private fun HistoryList(
                                 Box(modifier = Modifier.weight(1f)) {
                                     LibraryVideoRow(
                                         item = entry.value,
+                                        downloadStatus = downloadedMediaIndex.status(entry.value.video.bvid),
                                         resolving = resolvingBvid == entry.value.video.bvid,
                                         enabled = resolvingBvid == null && !mutating,
                                         onClick = { onPlay(entry.value.video) },
@@ -4541,6 +4625,7 @@ private fun HistoryList(
                         is UnifiedHistoryItem.Local -> {
                             LocalHistoryRow(
                                 item = entry.value,
+                                downloadStatus = downloadedMediaIndex.status(entry.value.bvid, entry.value.cid),
                                 resolvingBvid = resolvingBvid,
                                 onClick = { onPlayLocal(entry.value) },
                             )
@@ -4577,6 +4662,7 @@ private enum class HistoryClearScope(val label: String) {
 @Composable
 private fun LocalHistoryRow(
     item: PlaybackHistoryEntity,
+    downloadStatus: DownloadedMediaStatus? = null,
     resolvingBvid: String?,
     onClick: () -> Unit,
 ) {
@@ -4589,15 +4675,27 @@ private fun LocalHistoryRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
     ) {
-        AsyncImage(
-            model = item.artworkUrl,
-            contentDescription = item.title,
+        Box(
             modifier = Modifier
                 .size(width = listMetrics.mediaThumbnailWidth, height = listMetrics.mediaThumbnailHeight)
                 .clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentScale = ContentScale.Crop,
-        )
+        ) {
+            AsyncImage(
+                model = item.artworkUrl,
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            downloadStatus?.let { status ->
+                DownloadedMediaBadge(
+                    status = status,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(3.dp),
+                )
+            }
+        }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
             Text(
@@ -4783,6 +4881,7 @@ private fun OnlineHistoryList(
 @Composable
 private fun LibraryVideoRow(
     item: BilibiliLibraryVideo,
+    downloadStatus: DownloadedMediaStatus? = null,
     resolving: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -4798,9 +4897,7 @@ private fun LibraryVideoRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(listMetrics.mediaRowSpacing),
     ) {
-        AsyncImage(
-            model = video.coverUrl,
-            contentDescription = video.title,
+        Box(
             modifier = Modifier
                 .size(
                     width = listMetrics.mediaThumbnailWidth,
@@ -4808,8 +4905,22 @@ private fun LibraryVideoRow(
                 )
                 .clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentScale = ContentScale.Crop,
-        )
+        ) {
+            AsyncImage(
+                model = video.coverUrl,
+                contentDescription = video.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            downloadStatus?.let { status ->
+                DownloadedMediaBadge(
+                    status = status,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(3.dp),
+                )
+            }
+        }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             Text(
                 video.title,
@@ -5019,6 +5130,7 @@ private fun ListLoadingFooter(
 
 @Composable
 private fun VideoList(
+    downloadedMediaIndex: DownloadedMediaIndex,
     videos: List<BilibiliVideo>,
     resolvingBvid: String?,
     videoLayout: AppVideoLayout,
@@ -5034,6 +5146,7 @@ private fun VideoList(
 ) {
     when (videoLayout) {
         AppVideoLayout.LIST -> VideoRowList(
+            downloadedMediaIndex = downloadedMediaIndex,
             videos = videos,
             resolvingBvid = resolvingBvid,
             onPlay = onPlay,
@@ -5046,6 +5159,7 @@ private fun VideoList(
             modifier = modifier,
         )
         AppVideoLayout.GRID -> VideoGrid(
+            downloadedMediaIndex = downloadedMediaIndex,
             videos = videos,
             resolvingBvid = resolvingBvid,
             onPlay = onPlay,
@@ -5062,6 +5176,7 @@ private fun VideoList(
 
 @Composable
 private fun VideoRowList(
+    downloadedMediaIndex: DownloadedMediaIndex,
     videos: List<BilibiliVideo>,
     resolvingBvid: String?,
     onPlay: (BilibiliVideo) -> Unit,
@@ -5092,6 +5207,7 @@ private fun VideoRowList(
         items(videos, key = BilibiliVideo::bvid) { video ->
             VideoRow(
                 video = video,
+                downloadStatus = downloadedMediaIndex.status(video.bvid),
                 resolving = resolvingBvid == video.bvid,
                 enabled = resolvingBvid == null,
                 onClick = { onPlay(video) },
@@ -5111,6 +5227,7 @@ private fun VideoRowList(
 
 @Composable
 private fun VideoGrid(
+    downloadedMediaIndex: DownloadedMediaIndex,
     videos: List<BilibiliVideo>,
     resolvingBvid: String?,
     onPlay: (BilibiliVideo) -> Unit,
@@ -5148,6 +5265,7 @@ private fun VideoGrid(
             gridItems(items = videos, key = BilibiliVideo::bvid) { video ->
                 VideoGridCard(
                     video = video,
+                    downloadStatus = downloadedMediaIndex.status(video.bvid),
                     resolving = resolvingBvid == video.bvid,
                     enabled = resolvingBvid == null,
                     onClick = { onPlay(video) },
@@ -5169,6 +5287,7 @@ private fun VideoGrid(
 @Composable
 private fun VideoGridCard(
     video: BilibiliVideo,
+    downloadStatus: DownloadedMediaStatus?,
     resolving: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -5204,6 +5323,14 @@ private fun VideoGridCard(
                         .padding(horizontal = 5.dp, vertical = 2.dp),
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            downloadStatus?.let { status ->
+                DownloadedMediaBadge(
+                    status = status,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(4.dp),
                 )
             }
             IconButton(
@@ -5293,6 +5420,7 @@ private fun VideoGridCard(
 @Composable
 internal fun VideoRow(
     video: BilibiliVideo,
+    downloadStatus: DownloadedMediaStatus? = null,
     resolving: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -5333,6 +5461,14 @@ internal fun VideoRow(
                         .padding(horizontal = 5.dp, vertical = 2.dp),
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            downloadStatus?.let { status ->
+                DownloadedMediaBadge(
+                    status = status,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(3.dp),
                 )
             }
         }
@@ -5399,6 +5535,34 @@ private fun PlayAffordance(contentDescription: String) {
                     modifier = Modifier.size(20.dp),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun DownloadedMediaBadge(
+    status: DownloadedMediaStatus,
+    modifier: Modifier = Modifier,
+) {
+    val icon = when (status) {
+        DownloadedMediaStatus.AUDIO -> Icons.Rounded.MusicNote
+        DownloadedMediaStatus.VIDEO -> Icons.Rounded.Movie
+        DownloadedMediaStatus.AUDIO_AND_VIDEO -> Icons.Rounded.Download
+    }
+    // long: 下载状态不能只靠颜色区分；缩略图上的黑色半透明标签同时提供图标、文字和 TalkBack 语义，亮暗主题都保持可读。
+    Surface(
+        modifier = modifier.semantics { contentDescription = status.label },
+        shape = RoundedCornerShape(4.dp),
+        color = Color.Black.copy(alpha = 0.76f),
+        contentColor = Color.White,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(11.dp))
+            Text(status.label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
         }
     }
 }
@@ -5723,7 +5887,7 @@ private fun MultiPageSelectionSheet(
             ) {
                 Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (loading) "正在建立播放队列" else "全部从头播放")
+                Text(if (loading) "正在解析首 P" else "全部从头播放")
             }
             lastPlayed?.let { history ->
                 val resumeIndex = selection.detail.pages.indexOfFirst { page -> page.cid == history.cid }
@@ -5805,7 +5969,7 @@ private fun MultiPageSelectionSheet(
                                     },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("从此 P 开始") },
+                                    text = { Text("从 P${page.page} 开始播放") },
                                     onClick = {
                                         pageMenuCid = null
                                         onPlayFromPage(index)
@@ -5842,6 +6006,7 @@ private fun MultiPageSelectionSheet(
 @Composable
 private fun MiniPlayer(
     snapshot: PlaybackSnapshot,
+    queueExpansion: PageQueueExpansionUiState?,
     controllerReady: Boolean,
     onPrevious: () -> Unit,
     onToggle: () -> Unit,
@@ -5865,8 +6030,12 @@ private fun MiniPlayer(
         progress.positionMs
     }
     // long: 多 P 优先展示当前分集名称；单 P 没有 subtitle 时保留原来的作者和音质信息。
-    val secondaryText = snapshot.pageTitle
+    val baseSecondaryText = snapshot.pageTitle
         ?: listOf(snapshot.artist, snapshot.quality).filter(String::isNotBlank).joinToString(" · ")
+    val secondaryText = listOfNotNull(
+        baseSecondaryText.takeIf(String::isNotBlank),
+        queueExpansion?.let { progress -> "队列 ${progress.resolvedCount}/${progress.totalCount}" },
+    ).joinToString(" · ")
 
     Column(
         modifier = Modifier
@@ -5944,8 +6113,15 @@ private fun MiniPlayer(
                 ) {
                     Icon(
                         Icons.AutoMirrored.Rounded.QueueMusic,
-                        contentDescription = "播放列表，共 ${snapshot.queueItems.size} 首",
+                        contentDescription = queueExpansion?.let { progress ->
+                            "${progress.label}，当前播放列表共 ${snapshot.queueItems.size} 首"
+                        } ?: "播放列表，共 ${snapshot.queueItems.size} 首",
                         modifier = Modifier.size(25.dp),
+                        tint = if (queueExpansion == null) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
                     )
                 }
             }
@@ -6014,6 +6190,9 @@ private fun MiniPlayer(
 private fun NowPlayingScreen(
     snapshot: PlaybackSnapshot,
     lyrics: LyricsUiState,
+    lyricsTextSize: LyricsTextSize,
+    showLyricsTranslation: Boolean,
+    queueExpansion: PageQueueExpansionUiState?,
     player: Player?,
     controllerReady: Boolean,
     mediaModeSwitching: Boolean,
@@ -6046,12 +6225,18 @@ private fun NowPlayingScreen(
     onPrepareLyrics: () -> Unit,
     onSearchLyrics: (String) -> Unit,
     onSelectLyrics: (LyricsSearchResult) -> Unit,
+    onLyricsOffsetChange: (Long) -> Unit,
+    onLyricsTextSizeChange: (LyricsTextSize) -> Unit,
+    onShowLyricsTranslationChange: (Boolean) -> Unit,
 ) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var showQueue by remember { mutableStateOf(false) }
     var showLyrics by rememberSaveable { mutableStateOf(false) }
     var showLyricsSearch by remember { mutableStateOf(false) }
+    var showLyricsSettings by remember { mutableStateOf(false) }
+    var lyricsOpenRequested by remember { mutableStateOf(false) }
     var showSleepTimer by remember { mutableStateOf(false) }
+    val expectedLyricsCacheKey = lyricsCacheKey(snapshot.bilibiliSource, snapshot.mediaId)
     val lyricsDefaults = lyricsSearchDefaults(snapshot.title, snapshot.pageTitle, snapshot.artist)
     val defaultLyricsQuery = listOf(lyricsDefaults.trackName, lyricsDefaults.artistName)
         .map(String::trim)
@@ -6065,6 +6250,30 @@ private fun NowPlayingScreen(
         // long: 切换曲目后必须回到封面并关闭旧搜索框，防止上一首歌词在用户尚未手动确认时显示到新曲目。
         showLyrics = false
         showLyricsSearch = false
+        showLyricsSettings = false
+        lyricsOpenRequested = false
+    }
+    LaunchedEffect(
+        lyricsOpenRequested,
+        expectedLyricsCacheKey,
+        lyrics.cacheKey,
+        lyrics.status,
+        lyrics.document,
+    ) {
+        if (!lyricsOpenRequested) return@LaunchedEffect
+        when (LyricsEntryPolicy.destination(expectedLyricsCacheKey, lyrics)) {
+            LyricsEntryDestination.WAIT_FOR_CACHE -> Unit
+            LyricsEntryDestination.SHOW_LYRICS -> {
+                // long: 命中 Room 缓存后一步进入歌词，不再让用户重复确认已经选择过的歌曲名和歌手。
+                lyricsOpenRequested = false
+                showLyrics = true
+            }
+            LyricsEntryDestination.SHOW_SEARCH -> {
+                // long: 只有缓存缺失或不可用才进入手动搜索确认，第三方请求仍需用户在弹层内再次点击搜索。
+                lyricsOpenRequested = false
+                showLyricsSearch = true
+            }
+        }
     }
     if (confirmClearQueue) {
         AlertDialog(
@@ -6092,6 +6301,7 @@ private fun NowPlayingScreen(
         ) {
             PlaybackQueue(
                 snapshot = snapshot,
+                queueExpansion = queueExpansion,
                 onSelectQueueItem = onSelectQueueItem,
                 onMoveQueueItemNext = onMoveQueueItemNext,
                 onMoveQueueItem = onMoveQueueItem,
@@ -6127,6 +6337,27 @@ private fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 360.dp, max = 640.dp),
+            )
+        }
+    }
+    if (showLyricsSettings) {
+        ModalBottomSheet(
+            onDismissRequest = { showLyricsSettings = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            LyricsSettingsPanel(
+                document = lyrics.document,
+                textSize = lyricsTextSize,
+                showTranslation = showLyricsTranslation,
+                onOffsetChange = onLyricsOffsetChange,
+                onTextSizeChange = onLyricsTextSizeChange,
+                onShowTranslationChange = onShowLyricsTranslationChange,
+                onSearchAgain = {
+                    showLyricsSettings = false
+                    onPrepareLyrics()
+                    showLyricsSearch = true
+                },
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
@@ -6233,7 +6464,9 @@ private fun NowPlayingScreen(
                         ) {
                             if (mediaModeSwitching) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(22.dp),
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .semantics { contentDescription = "正在切换播放模式" },
                                     strokeWidth = 2.dp,
                                 )
                             } else {
@@ -6260,27 +6493,33 @@ private fun NowPlayingScreen(
                                     showLyrics = false
                                 } else {
                                     // long: 第三方歌词请求只能由用户从这里主动发起，打开播放页和切歌都不会自动访问 LRCLIB。
+                                    lyricsOpenRequested = true
                                     onPrepareLyrics()
-                                    showLyricsSearch = true
                                 }
                             },
                         ) {
-                            Icon(
-                                if (showLyrics) Icons.Rounded.Album else Icons.Rounded.Lyrics,
-                                contentDescription = if (showLyrics) "显示封面" else "搜索歌词",
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
+                            if (lyricsOpenRequested && lyrics.cacheKey == expectedLyricsCacheKey) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .semantics { contentDescription = "正在读取歌词缓存" },
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Icon(
+                                    if (showLyrics) Icons.Rounded.Album else Icons.Rounded.Lyrics,
+                                    contentDescription = if (showLyrics) "显示封面" else "显示歌词",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                         }
                         if (showLyrics) {
                             IconButton(
-                                onClick = {
-                                    onPrepareLyrics()
-                                    showLyricsSearch = true
-                                },
+                                onClick = { showLyricsSettings = true },
                             ) {
                                 Icon(
-                                    Icons.Rounded.Search,
-                                    contentDescription = if (lyrics.document == null) "搜索歌词" else "重新搜索歌词",
+                                    Icons.Rounded.Tune,
+                                    contentDescription = "歌词显示设置",
                                 )
                             }
                         }
@@ -6316,6 +6555,9 @@ private fun NowPlayingScreen(
             NowPlayingDetails(
                 snapshot = snapshot,
                 lyrics = lyrics,
+                lyricsTextSize = lyricsTextSize,
+                showLyricsTranslation = showLyricsTranslation,
+                queueExpansion = queueExpansion,
                 showLyrics = showLyrics,
                 controllerReady = controllerReady,
                 onPrevious = onPrevious,
@@ -7089,6 +7331,9 @@ private fun VideoQualityMenuButton(
 private fun NowPlayingDetails(
     snapshot: PlaybackSnapshot,
     lyrics: LyricsUiState,
+    lyricsTextSize: LyricsTextSize,
+    showLyricsTranslation: Boolean,
+    queueExpansion: PageQueueExpansionUiState?,
     showLyrics: Boolean,
     controllerReady: Boolean,
     onPrevious: () -> Unit,
@@ -7131,6 +7376,7 @@ private fun NowPlayingDetails(
             downloadEnabled = snapshot.downloadRequest != null,
             onDownload = onDownload,
             onShowQueue = onShowQueue,
+            queueExpansion = queueExpansion,
             onValueChange = { value ->
                 isDragging = true
                 dragFraction = value
@@ -7152,6 +7398,8 @@ private fun NowPlayingDetails(
                 NowPlayingLyrics(
                     state = lyrics,
                     positionMs = snapshot.positionMs,
+                    textSize = lyricsTextSize,
+                    showTranslation = showLyricsTranslation,
                     modifier = Modifier.size(300.dp, 240.dp),
                 )
             } else {
@@ -7169,6 +7417,8 @@ private fun NowPlayingDetails(
                 NowPlayingLyrics(
                     state = lyrics,
                     positionMs = snapshot.positionMs,
+                    textSize = lyricsTextSize,
+                    showTranslation = showLyricsTranslation,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(300.dp),
@@ -7355,11 +7605,13 @@ private fun NowPlayingArtwork(snapshot: PlaybackSnapshot, size: androidx.compose
 private fun NowPlayingLyrics(
     state: LyricsUiState,
     positionMs: Long,
+    textSize: LyricsTextSize,
+    showTranslation: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val document = state.document
     val lines = document?.lines.orEmpty()
-    val currentIndex = LrcParser.currentLineIndex(lines, positionMs)
+    val currentIndex = LrcParser.currentLineIndex(lines, positionMs, document?.offsetMs ?: 0L)
     val listState = rememberLazyListState()
     // long: 只在当前歌词行发生变化时滚动，不跟随每次进度 tick 重启动画，保证用户阅读和手动滚动不会持续抖动。
     LaunchedEffect(document?.cacheKey, currentIndex) {
@@ -7388,20 +7640,45 @@ private fun NowPlayingLyrics(
                     key = { index, line -> "${line.startTimeMs}:$index" },
                 ) { index, line ->
                     val isCurrent = index == currentIndex
-                    Text(
-                        text = line.text,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = if (isCurrent) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        style = if (isCurrent) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics {
+                                if (isCurrent) stateDescription = "当前歌词"
+                            },
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        val baseStyle = if (isCurrent) {
                             MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                         } else {
                             MaterialTheme.typography.bodyMedium
-                        },
-                    )
+                        }
+                        Text(
+                            text = line.text,
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (isCurrent) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            style = baseStyle.copy(fontSize = baseStyle.fontSize * textSize.multiplier),
+                        )
+                        if (showTranslation && !line.translation.isNullOrBlank()) {
+                            val translationStyle = MaterialTheme.typography.bodySmall
+                            Text(
+                                text = line.translation,
+                                modifier = Modifier.fillMaxWidth(),
+                                color = if (isCurrent) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                style = translationStyle.copy(
+                                    fontSize = translationStyle.fontSize * textSize.multiplier,
+                                ),
+                            )
+                        }
+                    }
                 }
             }
             LyricsLoadStatus.EMPTY -> LyricsStatusMessage("暂未找到同步歌词")
@@ -7419,6 +7696,141 @@ private fun LyricsStatusMessage(message: String) {
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+@Composable
+private fun LyricsSettingsPanel(
+    document: LyricsDocument?,
+    textSize: LyricsTextSize,
+    showTranslation: Boolean,
+    onOffsetChange: (Long) -> Unit,
+    onTextSizeChange: (LyricsTextSize) -> Unit,
+    onShowTranslationChange: (Boolean) -> Unit,
+    onSearchAgain: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val offsetMs = document?.offsetMs ?: 0L
+    val hasTranslation = document?.lines?.any { line -> !line.translation.isNullOrBlank() } == true
+    Column(
+        modifier = modifier.padding(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("歌词显示", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    formatLyricsOffset(offsetMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Text(
+            "时间校准",
+            modifier = Modifier.padding(horizontal = 20.dp),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilledTonalButton(
+                onClick = {
+                    onOffsetChange(LyricsOffsetPolicy.adjust(offsetMs, -LyricsOffsetPolicy.STEP_MS))
+                },
+                enabled = document != null && offsetMs > LyricsOffsetPolicy.MIN_OFFSET_MS,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) { Text("晚 0.5 秒", maxLines = 1) }
+            TextButton(
+                onClick = { onOffsetChange(0L) },
+                enabled = document != null && offsetMs != 0L,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp),
+            ) { Text("重置") }
+            FilledTonalButton(
+                onClick = {
+                    onOffsetChange(LyricsOffsetPolicy.adjust(offsetMs, LyricsOffsetPolicy.STEP_MS))
+                },
+                enabled = document != null && offsetMs < LyricsOffsetPolicy.MAX_OFFSET_MS,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+            ) { Text("早 0.5 秒", maxLines = 1) }
+        }
+        Text(
+            "字号",
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LyricsTextSize.entries.forEach { size ->
+                FilterChip(
+                    selected = textSize == size,
+                    onClick = { onTextSizeChange(size) },
+                    label = { Text(size.label) },
+                    leadingIcon = if (textSize == size) {
+                        { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("显示翻译", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (hasTranslation) "同步显示相同时间戳中的翻译歌词" else "当前歌词不包含独立翻译",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = showTranslation && hasTranslation,
+                onCheckedChange = onShowTranslationChange,
+                enabled = hasTranslation,
+                modifier = Modifier.semantics {
+                    contentDescription = if (hasTranslation) "显示翻译歌词" else "当前歌词不包含翻译"
+                },
+            )
+        }
+        TextButton(
+            onClick = onSearchAgain,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .padding(horizontal = 16.dp),
+        ) {
+            Icon(Icons.Rounded.Search, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("重新搜索歌词")
+        }
+    }
 }
 
 @Composable
@@ -7544,6 +7956,7 @@ private fun NowPlayingControls(
     downloadEnabled: Boolean,
     onDownload: () -> Unit,
     onShowQueue: () -> Unit,
+    queueExpansion: PageQueueExpansionUiState?,
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: (Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -7571,7 +7984,10 @@ private fun NowPlayingControls(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                snapshot.pageTitle.orEmpty(),
+                listOfNotNull(
+                    snapshot.pageTitle?.takeIf(String::isNotBlank),
+                    queueExpansion?.let { progress -> "队列 ${progress.resolvedCount}/${progress.totalCount}" },
+                ).joinToString(" · "),
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -7592,7 +8008,7 @@ private fun NowPlayingControls(
             IconButton(onClick = onShowQueue) {
                 Icon(
                     Icons.AutoMirrored.Rounded.QueueMusic,
-                    contentDescription = "打开播放列表",
+                    contentDescription = queueExpansion?.let { "${it.label}，打开播放列表" } ?: "打开播放列表",
                     tint = MaterialTheme.colorScheme.primary,
                 )
             }
@@ -7688,6 +8104,7 @@ private fun NowPlayingControls(
 @Composable
 private fun PlaybackQueue(
     snapshot: PlaybackSnapshot,
+    queueExpansion: PageQueueExpansionUiState?,
     onSelectQueueItem: (Int) -> Unit,
     onMoveQueueItemNext: (PlaybackQueueItem) -> Unit,
     onMoveQueueItem: (PlaybackQueueItem, Int) -> Unit,
@@ -7737,10 +8154,19 @@ private fun PlaybackQueue(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text(
-                if (selectionMode) "已选 ${selectedIds.size} / ${snapshot.queueItems.size}" else "播放列表 · ${snapshot.queueItems.size}",
-                style = MaterialTheme.typography.titleMedium,
-            )
+            Column {
+                Text(
+                    if (selectionMode) "已选 ${selectedIds.size} / ${snapshot.queueItems.size}" else "播放列表 · ${snapshot.queueItems.size}",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                queueExpansion?.let { progress ->
+                    Text(
+                        progress.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             Spacer(Modifier.weight(1f))
             if (selectionMode) {
                 IconButton(
@@ -8499,6 +8925,16 @@ private fun formatDuration(totalSeconds: Int): String {
     val minutes = totalSeconds % 3600 / 60
     val seconds = totalSeconds % 60
     return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+}
+
+private fun formatLyricsOffset(offsetMs: Long): String {
+    if (offsetMs == 0L) return "歌词时间未调整"
+    val seconds = kotlin.math.abs(offsetMs) / 1_000.0
+    return if (offsetMs > 0L) {
+        "歌词提前 %.1f 秒".format(seconds)
+    } else {
+        "歌词延后 %.1f 秒".format(seconds)
+    }
 }
 
 private fun formatPublishedAt(epochSeconds: Long?): String {

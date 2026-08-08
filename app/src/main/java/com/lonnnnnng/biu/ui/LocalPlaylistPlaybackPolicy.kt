@@ -24,6 +24,14 @@ internal data class LocalPlaylistPlaybackPlan(
 )
 
 internal object LocalPlaylistPlaybackPolicy {
+    fun canPlay(
+        availability: LocalPlaylistItemAvailability?,
+        hasDownloadedCopy: Boolean,
+    ): Boolean {
+        // long: 线上稿件永久失效时，只要 MediaStore 仍有可读成品，歌单必须继续提供离线收听入口。
+        return availability?.preventsPlayback != true || hasDownloadedCopy
+    }
+
     fun plan(resolvedTracks: List<Track?>, requestedIndex: Int): LocalPlaylistPlaybackPlan? {
         if (requestedIndex !in resolvedTracks.indices) return null
         val indexedTracks = resolvedTracks.mapIndexedNotNull { index, track -> track?.let { index to it } }

@@ -81,6 +81,7 @@ import com.lonnnnnng.biu.data.bilibili.BilibiliCreatorRelation
 import com.lonnnnnng.biu.data.bilibili.BilibiliVideo
 import com.lonnnnnng.biu.data.local.CreatorGroupEntity
 import com.lonnnnnng.biu.data.local.CreatorCenterListSlot
+import com.lonnnnnng.biu.data.local.DownloadedMediaIndex
 import com.lonnnnnng.biu.data.local.PersistedListPosition
 import java.util.Locale
 import kotlinx.coroutines.FlowPreview
@@ -90,6 +91,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CreatorCenterScreen(
+    downloadedMediaIndex: DownloadedMediaIndex,
     state: CreatorCenterUiState,
     selectedCreators: List<BilibiliCreator>,
     sourceDraft: CreatorSourceDraftUiState,
@@ -208,6 +210,7 @@ internal fun CreatorCenterScreen(
                     )
                 } else {
                     CreatorProfile(
+                        downloadedMediaIndex = downloadedMediaIndex,
                         state = state,
                         sourceSelected = sourceDraft.creators.any { creator ->
                             creator.mid == state.selectedCreator.mid
@@ -892,6 +895,7 @@ private fun CreatorRow(
 
 @Composable
 private fun CreatorProfile(
+    downloadedMediaIndex: DownloadedMediaIndex,
     state: CreatorCenterUiState,
     sourceSelected: Boolean,
     groups: List<CreatorGroupEntity>,
@@ -919,6 +923,7 @@ private fun CreatorProfile(
     val creator = state.selectedCreator ?: return
     state.selectedCollection?.let { collection ->
         CreatorCollectionVideos(
+            downloadedMediaIndex = downloadedMediaIndex,
             collection = collection,
             videos = state.collectionVideos,
             loading = state.isCollectionVideosLoading,
@@ -1048,6 +1053,7 @@ private fun CreatorProfile(
         )
         when (state.profileTab) {
             CreatorProfileTab.WORKS -> CreatorWorks(
+                downloadedMediaIndex = downloadedMediaIndex,
                 state = state,
                 listPosition = state.position(CreatorCenterListSlot.WORKS),
                 onListPositionChanged = { position ->
@@ -1118,6 +1124,7 @@ private fun CreatorProfileTabs(
 
 @Composable
 private fun CreatorWorks(
+    downloadedMediaIndex: DownloadedMediaIndex,
     state: CreatorCenterUiState,
     listPosition: PersistedListPosition,
     onListPositionChanged: (PersistedListPosition) -> Unit,
@@ -1142,6 +1149,7 @@ private fun CreatorWorks(
         items(state.videos, key = BilibiliVideo::bvid) { video ->
             VideoRow(
                 video = video,
+                downloadStatus = downloadedMediaIndex.status(video.bvid),
                 resolving = resolvingBvid == video.bvid,
                 enabled = resolvingBvid == null,
                 onClick = { onPlay(video) },
@@ -1243,6 +1251,7 @@ private fun CreatorCollections(
 
 @Composable
 private fun CreatorCollectionVideos(
+    downloadedMediaIndex: DownloadedMediaIndex,
     collection: BilibiliCreatorCollection,
     videos: List<BilibiliVideo>,
     loading: Boolean,
@@ -1317,6 +1326,7 @@ private fun CreatorCollectionVideos(
                 items(videos, key = BilibiliVideo::bvid) { video ->
                     VideoRow(
                         video = video,
+                        downloadStatus = downloadedMediaIndex.status(video.bvid),
                         resolving = resolvingBvid == video.bvid,
                         enabled = resolvingBvid == null,
                         onClick = { onPlay(video) },

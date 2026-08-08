@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.lonnnnnng.biu.appContainer
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
 import com.lonnnnnng.biu.core.model.BilibiliTrackSource
+import com.lonnnnnng.biu.core.model.PlaybackMediaMode
 import com.lonnnnnng.biu.core.model.Track
 import com.lonnnnnng.biu.data.bilibili.AccountLibrarySection
 import com.lonnnnnng.biu.data.bilibili.BilibiliAccount
@@ -48,9 +49,12 @@ import com.lonnnnnng.biu.data.local.DownloadedMediaPolicy
 import com.lonnnnnng.biu.data.local.toTrack
 import com.lonnnnnng.biu.data.lyrics.LrcParser
 import com.lonnnnnng.biu.data.lyrics.LyricsDocument
+import com.lonnnnnng.biu.data.lyrics.LyricsOffsetPolicy
 import com.lonnnnnng.biu.data.lyrics.LyricsRateLimitedException
 import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
 import com.lonnnnnng.biu.data.lyrics.LyricsSource
+import com.lonnnnnng.biu.data.lyrics.LyricsTextSize
+import com.lonnnnnng.biu.data.lyrics.lyricsCacheKey
 import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.data.update.AppVersionPolicy
 import com.lonnnnnng.biu.download.AudioDownloadRequest
@@ -147,6 +151,20 @@ data class LyricsUiState(
     val errorMessage: String? = null,
     val searchErrorMessage: String? = null,
 )
+
+data class PageQueueExpansionUiState(
+    val queueId: Long,
+    val resolvedCount: Int,
+    val totalCount: Int,
+) {
+    init {
+        require(totalCount > 0) { "播放列表总数必须大于 0" }
+        require(resolvedCount in 1..totalCount) { "播放列表补齐进度越界" }
+    }
+
+    val label: String
+        get() = "正在补齐播放列表 $resolvedCount/$totalCount"
+}
 
 enum class CreatorCenterTab(val label: String) {
     SEARCH("用户搜索"),
@@ -260,10 +278,13 @@ data class BiuUiState(
     val localAudioDirectory: LocalAudioDirectory? = null,
     val pageSelection: VideoPageSelection? = null,
     val lyrics: LyricsUiState = LyricsUiState(),
+    val pageQueueExpansion: PageQueueExpansionUiState? = null,
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val listDensity: AppListDensity = AppListDensity.STANDARD,
     val textScale: AppTextScale = AppTextScale.STANDARD,
     val videoLayout: AppVideoLayout = AppVideoLayout.LIST,
+    val lyricsTextSize: LyricsTextSize = LyricsTextSize.STANDARD,
+    val showLyricsTranslation: Boolean = true,
     val reportPlayHistory: Boolean = true,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
     val sleepTimerDeadlineEpochMs: Long = 0L,
@@ -531,6 +552,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         listDensity = preferences.listDensity,
                         textScale = preferences.textScale,
                         videoLayout = preferences.videoLayout,
+                        lyricsTextSize = preferences.lyricsTextSize,
+                        showLyricsTranslation = preferences.showLyricsTranslation,
                     )
                 }
             }
@@ -729,7 +752,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             mutableState.update { it.copy(lyrics = LyricsUiState()) }
             return
         }
-        val cacheKey = source?.let { "${it.bvid}:${it.cid}" } ?: "media:$mediaId"
+        val cacheKey = lyricsCacheKey(source, mediaId)
         if (state.value.lyrics.cacheKey == cacheKey) {
             updateLyrics(cacheKey) { lyrics ->
                 lyrics.copy(
@@ -828,9 +851,18 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             trackName = result.trackName,
             artistName = result.artistName,
             isUserSelected = true,
+            // long: 重新选择歌词只替换内容来源，用户已经校准好的当前曲目偏移继续保留。
+            offsetMs = state.value.lyrics.document?.offsetMs ?: 0L,
         )
         lyricsLoadJob?.cancel()
         lyricsSaveJob?.cancel()
+        updateLyrics(cacheKey) { lyrics ->
+            lyrics.copy(
+                status = LyricsLoadStatus.LOADING,
+                errorMessage = null,
+                searchErrorMessage = null,
+            )
+        }
         lyricsSaveJob = viewModelScope.launch {
             try {
                 container.lyricsCacheRepository.save(document)
@@ -847,7 +879,41 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 throw cancelled
             } catch (error: Throwable) {
                 updateLyrics(cacheKey) { lyrics ->
-                    lyrics.copy(searchErrorMessage = error.userMessage("歌词保存失败"))
+                    lyrics.copy(
+                        status = LyricsLoadStatus.ERROR,
+                        errorMessage = error.userMessage("歌词保存失败"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun setLyricsOffset(offsetMs: Long) {
+        val currentLyrics = state.value.lyrics
+        val document = currentLyrics.document ?: return
+        val normalizedOffset = LyricsOffsetPolicy.normalize(offsetMs)
+        if (document.offsetMs == normalizedOffset) return
+        val cacheKey = currentLyrics.cacheKey
+        val updatedDocument = document.copy(offsetMs = normalizedOffset)
+        updateLyrics(cacheKey) { lyrics -> lyrics.copy(document = updatedDocument) }
+        lyricsSaveJob?.cancel()
+        lyricsSaveJob = viewModelScope.launch {
+            try {
+                container.lyricsCacheRepository.save(updatedDocument)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update { current ->
+                    val visible = current.lyrics
+                    if (visible.cacheKey != cacheKey || visible.document?.offsetMs != normalizedOffset) {
+                        current
+                    } else {
+                        // long: 偏移保存失败时仅回滚这次仍可见的修改，歌词本身继续展示且播放不受影响。
+                        current.copy(
+                            lyrics = visible.copy(document = document),
+                            message = error.userMessage("保存歌词偏移失败"),
+                        )
+                    }
                 }
             }
         }
@@ -2050,8 +2116,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     publishPlaybackRequest(tracks)
                 }
             } catch (error: Throwable) {
-                mutableState.update {
-                    it.copy(resolvingBvid = null, message = error.userMessage("播放地址解析失败"))
+                // long: 收藏夹、历史和推荐列表只有 bvid；网络断开时优先尝试该视频已经发布的本地副本，避免用户必须先进入下载页才能离线收听。
+                val localTracks = downloadedTracksForVideo(video.bvid, video)
+                if (localTracks.isNotEmpty()) {
+                    cancelPageQueueExpansion()
+                    publishPlaybackRequest(localTracks)
+                    mutableState.update { it.copy(message = "网络不可用，已切换到本地下载") }
+                } else {
+                    mutableState.update {
+                        it.copy(resolvingBvid = null, message = error.userMessage("播放地址解析失败"))
+                    }
                 }
             }
         }
@@ -2169,12 +2243,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     var failedPages = 0
                     detail.pages.indices.forEach { pageIndex ->
                         try {
-                            tracks += repository.resolveTrack(
-                                video = video,
-                                detail = detail,
-                                pageIndex = pageIndex,
-                                qualityPreference = AudioQualityPreference.HIGHEST,
-                            )
+                            tracks += resolvePageTrackWithLocal(video, detail, pageIndex)
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (_: Throwable) {
@@ -2245,16 +2314,16 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         pageQueueJob = viewModelScope.launch {
             var queueStarted = false
+            var queueId = 0L
+            val totalCount = if (includePrevious) {
+                selection.detail.pages.size
+            } else {
+                selection.detail.pages.size - startIndex
+            }
             try {
-                var queueId = 0L
                 ProgressivePageQueueLoader(
                     resolve = { pageIndex ->
-                        repository.resolveTrack(
-                            selection.video,
-                            selection.detail,
-                            pageIndex,
-                            AudioQualityPreference.HIGHEST,
-                        )
+                        resolvePageTrackWithLocal(selection.video, selection.detail, pageIndex)
                     },
                 ).load(
                     pageCount = selection.detail.pages.size,
@@ -2263,6 +2332,17 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     onSelected = { selectedTrack ->
                         queueId = publishPlaybackRequest(listOf(selectedTrack), startPositionMs = startPositionMs)
                         queueStarted = true
+                        if (totalCount > 1) {
+                            mutableState.update { current ->
+                                current.copy(
+                                    pageQueueExpansion = PageQueueExpansionUiState(
+                                        queueId = queueId,
+                                        resolvedCount = 1,
+                                        totalCount = totalCount,
+                                    ),
+                                )
+                            }
+                        }
                     },
                     onExpansion = { expansion ->
                         val command = PlaybackCommand.Expand(
@@ -2272,9 +2352,28 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         if (playbackQueueSnapshots.expand(queueId, command.placement, command.track) != null) {
                             mutablePlaybackCommands.send(command)
+                            mutableState.update { current ->
+                                val progress = current.pageQueueExpansion
+                                if (progress?.queueId != queueId) {
+                                    current
+                                } else {
+                                    current.copy(
+                                        pageQueueExpansion = progress.copy(
+                                            resolvedCount = (progress.resolvedCount + 1).coerceAtMost(progress.totalCount),
+                                        ),
+                                    )
+                                }
+                            }
                         }
                     },
                 )
+                mutableState.update { current ->
+                    if (current.pageQueueExpansion?.queueId == queueId) {
+                        current.copy(pageQueueExpansion = null)
+                    } else {
+                        current
+                    }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -2282,6 +2381,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         resolvingBvid = null,
                         isPageQueueLoading = false,
+                        pageQueueExpansion = null,
                         message = error.userMessage(
                             if (queueStarted) "部分分 P 加载失败，当前播放不受影响" else "分 P 播放地址解析失败",
                         ),
@@ -2319,12 +2419,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             try {
-                val track = repository.resolveTrack(
-                    selection.video,
-                    selection.detail,
-                    pageIndex,
-                    AudioQualityPreference.HIGHEST,
-                )
+                val track = resolvePageTrackWithLocal(selection.video, selection.detail, pageIndex)
                 when (action) {
                     SinglePageQueueAction.PLAY_ONLY -> publishPlaybackRequest(listOf(track))
                     SinglePageQueueAction.ADD_TO_QUEUE -> {
@@ -2365,12 +2460,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         mutableState.update { it.copy(message = null) }
         viewModelScope.launch {
             runCatching {
-                repository.resolveTrack(
-                    selection.video,
-                    selection.detail,
-                    pageIndex,
-                    AudioQualityPreference.HIGHEST,
-                )
+                resolvePageTrackWithLocal(selection.video, selection.detail, pageIndex)
             }.onSuccess { track ->
                 runCatching { container.localPlaylistRepository.addTrack(playlistId, track) }
                     .onSuccess {
@@ -2422,6 +2512,26 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         cancelPageQueueExpansion()
         mutableState.update { it.copy(resolvingBvid = history.bvid, message = null) }
         viewModelScope.launch {
+            val stored = Track(
+                id = history.mediaId,
+                title = history.title,
+                artist = history.artist,
+                streamUrl = "",
+                artworkUrl = history.artworkUrl,
+                source = history.source,
+            )
+            val local = DownloadedMediaPolicy.preferLocal(
+                stored,
+                state.value.audioDownloads,
+                state.value.videoDownloads,
+            )
+            if (local.streamUrl.isNotBlank()) {
+                publishPlaybackRequest(
+                    tracks = listOf(local),
+                    startPositionMs = PlaybackResumePolicy.startPositionMs(history.lastPositionMs, history.durationMs),
+                )
+                return@launch
+            }
             runCatching {
                 repository.resolveTrack(history.source, history.title, history.artist, history.artworkUrl)
             }.onSuccess { track ->
@@ -2429,13 +2539,68 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     tracks = listOf(track),
                     startPositionMs = PlaybackResumePolicy.startPositionMs(history.lastPositionMs, history.durationMs),
                 )
-            }
-                .onFailure { error ->
-                    mutableState.update {
-                        it.copy(resolvingBvid = null, message = error.userMessage("历史播放地址解析失败"))
-                    }
+            }.onFailure { error ->
+                mutableState.update {
+                    it.copy(resolvingBvid = null, message = error.userMessage("历史播放地址解析失败"))
                 }
+            }
         }
+    }
+
+    private suspend fun resolvePageTrackWithLocal(
+        video: BilibiliVideo,
+        detail: BilibiliVideoDetail,
+        pageIndex: Int,
+    ): Track {
+        val page = detail.pages.getOrNull(pageIndex) ?: error("分 P 索引无效")
+        return downloadedTracksForVideo(video.bvid, video)
+            .firstOrNull { track -> track.source?.cid == page.cid }
+            ?: repository.resolveTrack(
+                video,
+                detail,
+                pageIndex,
+                AudioQualityPreference.HIGHEST,
+            )
+    }
+
+    private fun downloadedTracksForVideo(
+        bvid: String,
+        video: BilibiliVideo,
+    ): List<Track> {
+        val audioByCid = state.value.audioDownloads
+            .filter { task ->
+                task.bvid == bvid &&
+                    task.downloadStatus == AudioDownloadStatus.COMPLETED &&
+                    !task.publishedUri.isNullOrBlank()
+            }
+            .associateBy(AudioDownloadTaskEntity::cid)
+        val videoByCid = state.value.videoDownloads
+            .filter { task ->
+                task.bvid == bvid &&
+                    task.downloadStatus == VideoDownloadStatus.COMPLETED &&
+                    !task.publishedUri.isNullOrBlank()
+            }
+            .associateBy(VideoDownloadTaskEntity::cid)
+        return (audioByCid.keys + videoByCid.keys)
+            .distinct()
+            .sorted()
+            .mapNotNull { cid ->
+                val audio = audioByCid[cid]
+                val videoTask = videoByCid[cid]
+                val uri = audio?.publishedUri ?: videoTask?.publishedUri ?: return@mapNotNull null
+                val isVideo = audio == null
+                Track(
+                    id = "$bvid:$cid",
+                    title = (audio?.title ?: videoTask?.title).orEmpty().ifBlank { video.title },
+                    artist = (audio?.artist ?: videoTask?.artist).orEmpty().ifBlank { video.author },
+                    streamUrl = uri,
+                    artworkUrl = audio?.artworkUrl ?: videoTask?.artworkUrl ?: video.coverUrl,
+                    qualityLabel = if (isVideo) "已下载视频" else "已下载",
+                    mimeType = if (isVideo) "video/mp4" else "audio/mp4",
+                    publishedAtEpochSeconds = video.publishedAtEpochSeconds,
+                    source = BilibiliTrackSource(bvid, cid, aid = video.aid),
+                )
+            }
     }
 
     fun selectThemeMode(mode: AppThemeMode) {
@@ -2521,6 +2686,40 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                                 message = error.userMessage("保存推荐布局失败"),
                             )
                         }
+                    }
+                }
+        }
+    }
+
+    fun selectLyricsTextSize(size: LyricsTextSize) {
+        val previousSize = state.value.lyricsTextSize
+        if (previousSize == size) return
+        mutableState.update { it.copy(lyricsTextSize = size) }
+        viewModelScope.launch {
+            runCatching { container.displayPreferenceRepository.saveLyricsTextSize(size) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        if (current.lyricsTextSize != size) current else current.copy(
+                            lyricsTextSize = previousSize,
+                            message = error.userMessage("保存歌词字号失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun setShowLyricsTranslation(show: Boolean) {
+        val previousValue = state.value.showLyricsTranslation
+        if (previousValue == show) return
+        mutableState.update { it.copy(showLyricsTranslation = show) }
+        viewModelScope.launch {
+            runCatching { container.displayPreferenceRepository.saveShowLyricsTranslation(show) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        if (current.showLyricsTranslation != show) current else current.copy(
+                            showLyricsTranslation = previousValue,
+                            message = error.userMessage("保存翻译歌词设置失败"),
+                        )
                     }
                 }
         }
@@ -2911,8 +3110,11 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         async {
                             semaphore.withPermit {
                                 val availability = knownAvailability[item.mediaId]
-                                if (availability?.preventsPlayback == true) {
-                                    Result.failure(LocalPlaylistItemUnavailableException(availability))
+                                if (!LocalPlaylistPlaybackPolicy.canPlay(availability, hasDownloadedCopy(item))) {
+                                    // long: canPlay 只有在明确的永久失效状态且没有本地副本时才会返回 false，此处必有具体状态可供 UI 反馈。
+                                    Result.failure(
+                                        LocalPlaylistItemUnavailableException(requireNotNull(availability)),
+                                    )
                                 } else {
                                     try {
                                         Result.success(resolveLocalPlaylistItem(item))
@@ -2999,7 +3201,17 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
         val stored = item.toStoredTrack()
         val source = stored.source
         return if (source != null) {
-            repository.resolveTrack(source, stored.title, stored.artist, stored.artworkUrl)
+            // long: 歌单中的分 P 已有 MediaStore 成品时直接离线起播，不能因为网络校验失败而阻断本地副本。
+            val local = DownloadedMediaPolicy.preferLocal(
+                stored,
+                state.value.audioDownloads,
+                state.value.videoDownloads,
+            )
+            if (local.streamUrl != stored.streamUrl) {
+                local
+            } else {
+                repository.resolveTrack(source, stored.title, stored.artist, stored.artworkUrl)
+            }
         } else {
             if (!isReadableLocalUri(stored.streamUrl)) {
                 throw LocalPlaylistItemUnavailableException(
@@ -3058,6 +3270,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 readable = isReadableLocalUri(item.streamUrl.orEmpty()),
             )
         }
+        if (hasDownloadedCopy(item)) return LocalPlaylistItemAvailability.AVAILABLE
         val detailResult = try {
             Result.success(repository.videoDetail(requireNotNull(item.bvid)))
         } catch (cancelled: CancellationException) {
@@ -3069,6 +3282,18 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
             detailResult = detailResult,
             cid = requireNotNull(item.cid),
         )
+    }
+
+    private fun hasDownloadedCopy(item: LocalPlaylistItemEntity): Boolean {
+        val bvid = item.bvid ?: return false
+        val cid = item.cid ?: return false
+        return DownloadedMediaPolicy.find(
+            bvid = bvid,
+            cid = cid,
+            mode = PlaybackMediaMode.AUDIO,
+            audioTasks = state.value.audioDownloads,
+            videoTasks = state.value.videoDownloads,
+        ) != null
     }
 
     private suspend fun isReadableLocalUri(uri: String): Boolean {
@@ -3799,6 +4024,7 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 resolvingBvid = null,
                 pageSelection = null,
                 isPageQueueLoading = false,
+                pageQueueExpansion = null,
                 // long: 切歌是高频操作，成功状态由播放器本身呈现，不再用 Snackbar 遮挡当前内容。
                 message = null,
             )
@@ -3839,6 +4065,9 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
     private fun cancelPageQueueExpansion() {
         pageQueueJob?.cancel()
         pageQueueJob = null
+        mutableState.update { current ->
+            if (current.pageQueueExpansion == null) current else current.copy(pageQueueExpansion = null)
+        }
     }
 
     private fun stopProgressiveQueueForUserEdit() {

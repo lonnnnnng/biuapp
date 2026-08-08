@@ -71,7 +71,7 @@ interface PlaybackHistoryDao {
         LocalPlaylistEntity::class,
         LocalPlaylistItemEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
@@ -293,6 +293,13 @@ object BiuDatabaseMigrations {
             )
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_playlist_items_playlistId_position` ON `local_playlist_items` (`playlistId`, `position`)")
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_local_playlist_items_bvid_cid` ON `local_playlist_items` (`bvid`, `cid`)")
+        }
+    }
+
+    val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 歌词偏移属于每首曲目的校准结果；只给既有缓存追加默认零偏移，所有歌词选择、历史、歌单和下载记录都必须原样保留。
+            db.execSQL("ALTER TABLE `lyrics_cache` ADD COLUMN `offsetMs` INTEGER NOT NULL DEFAULT 0")
         }
     }
 }

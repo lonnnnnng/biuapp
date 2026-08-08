@@ -80,6 +80,7 @@ class AppContainer(context: Context) {
         BiuDatabaseMigrations.MIGRATION_5_6,
         BiuDatabaseMigrations.MIGRATION_6_7,
         BiuDatabaseMigrations.MIGRATION_7_8,
+        BiuDatabaseMigrations.MIGRATION_8_9,
     ).build()
     val playbackHistoryRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
     val playbackQueueRepository = PlaybackQueueRepository(database.playbackQueueDao())

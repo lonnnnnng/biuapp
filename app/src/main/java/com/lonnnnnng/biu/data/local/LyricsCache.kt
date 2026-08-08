@@ -19,6 +19,7 @@ data class LyricsCacheEntity(
     val trackName: String?,
     val artistName: String?,
     val isUserSelected: Boolean,
+    val offsetMs: Long,
     val updatedAtEpochMs: Long,
 )
 
@@ -61,6 +62,7 @@ class LyricsCacheRepository(
             trackName = entity.trackName,
             artistName = entity.artistName,
             isUserSelected = entity.isUserSelected,
+            offsetMs = entity.offsetMs,
         )
     }
 
@@ -77,6 +79,7 @@ class LyricsCacheRepository(
                 trackName = document.trackName,
                 artistName = document.artistName,
                 isUserSelected = document.isUserSelected,
+                offsetMs = document.offsetMs,
                 updatedAtEpochMs = nowEpochMs(),
             ),
         )

@@ -1,5 +1,6 @@
 package com.lonnnnnng.biu.data.local
 
+import com.lonnnnnng.biu.data.lyrics.LyricsTextSize
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -53,5 +54,14 @@ class DisplayPreferencesPolicyTest {
     @Test
     fun invalidVideoLayoutFallsBackToList() {
         assertEquals(AppVideoLayout.LIST, AppVideoLayout.fromStoredValue("UNSUPPORTED"))
+    }
+
+    @Test
+    fun lyricsTextSizeDefaultsToStandardAndRestoresSupportedValues() {
+        assertEquals(LyricsTextSize.STANDARD, LyricsTextSize.fromStoredValue(null))
+        LyricsTextSize.entries.forEach { size ->
+            assertEquals(size, LyricsTextSize.fromStoredValue(size.name))
+        }
+        assertEquals(LyricsTextSize.STANDARD, LyricsTextSize.fromStoredValue("UNSUPPORTED"))
     }
 }

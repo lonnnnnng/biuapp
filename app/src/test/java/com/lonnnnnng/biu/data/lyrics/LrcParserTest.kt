@@ -40,4 +40,32 @@ class LrcParserTest {
         assertEquals(1, LrcParser.currentLineIndex(lyrics, positionMs = 2_400L, offsetMs = -300L))
         assertEquals(2, LrcParser.currentLineIndex(lyrics, positionMs = 9_000L))
     }
+
+    @Test
+    fun `相同时间戳的双语内容合并为原文和翻译`() {
+        val lyrics = LrcParser.parse(
+            """
+            [00:01.00]Hello world
+            [00:01.00]你好，世界
+            [00:02.00]Same line
+            [00:02.00]Same line
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                LyricsLine(1_000L, "Hello world", "你好，世界"),
+                LyricsLine(2_000L, "Same line"),
+            ),
+            lyrics,
+        )
+    }
+
+    @Test
+    fun `歌词偏移限制在正负十秒`() {
+        assertEquals(500L, LyricsOffsetPolicy.adjust(0L, LyricsOffsetPolicy.STEP_MS))
+        assertEquals(-500L, LyricsOffsetPolicy.adjust(0L, -LyricsOffsetPolicy.STEP_MS))
+        assertEquals(10_000L, LyricsOffsetPolicy.adjust(9_800L, LyricsOffsetPolicy.STEP_MS))
+        assertEquals(-10_000L, LyricsOffsetPolicy.adjust(-9_800L, -LyricsOffsetPolicy.STEP_MS))
+    }
 }

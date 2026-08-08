@@ -11,6 +11,35 @@ import org.junit.Test
 
 class LocalPlaylistPlaybackPolicyTest {
     @Test
+    fun `线上失效但存在本地副本时仍允许播放`() {
+        assertEquals(
+            true,
+            LocalPlaylistPlaybackPolicy.canPlay(
+                availability = LocalPlaylistItemAvailability.VIDEO_UNAVAILABLE,
+                hasDownloadedCopy = true,
+            ),
+        )
+        assertEquals(
+            false,
+            LocalPlaylistPlaybackPolicy.canPlay(
+                availability = LocalPlaylistItemAvailability.PAGE_UNAVAILABLE,
+                hasDownloadedCopy = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `临时检查失败不阻断播放入口`() {
+        assertEquals(
+            true,
+            LocalPlaylistPlaybackPolicy.canPlay(
+                availability = LocalPlaylistItemAvailability.ERROR,
+                hasDownloadedCopy = false,
+            ),
+        )
+    }
+
+    @Test
     fun `歌单开头失效时跳到下一首并保留其余可用曲目顺序`() {
         val second = track("second")
         val third = track("third")
