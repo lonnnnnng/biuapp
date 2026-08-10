@@ -48,6 +48,7 @@ import com.lonnnnnng.biu.core.model.withVideoPlaybackStreams
 import com.lonnnnnng.biu.data.bilibili.BilibiliApiException
 import com.lonnnnnng.biu.data.bilibili.DashVideoCodecPreference
 import com.lonnnnnng.biu.data.local.PlaybackQueueRecord
+import com.lonnnnnng.biu.widget.PlaybackWidgetProvider
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
@@ -65,6 +66,9 @@ import kotlinx.coroutines.sync.withLock
 class PlaybackService : MediaSessionService() {
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
+    private val fadeController = PlaybackFadeController(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+    private val loudnessController = PlaybackLoudnessController()
+    private var volumeBalanceMode = VolumeBalanceMode.OFF
     private val endEventClock = PlaybackEndEventClock()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var refreshInFlight = false
@@ -143,6 +147,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val playerListener = object : Player.Listener {
+        override fun onEvents(player: Player, events: Player.Events) {
+            PlaybackWidgetProvider.updateAll(this@PlaybackService, player)
+        }
+
         @UnstableApi
         override fun onPositionDiscontinuity(
             oldPosition: Player.PositionInfo,
@@ -189,6 +197,10 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
             schedulePlaybackPreferencesPersistence()
+        }
+
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            loudnessController.apply(volumeBalanceMode, audioSessionId)
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -299,7 +311,8 @@ class PlaybackService : MediaSessionService() {
         val exoPlayer = createExoPlayer()
 
         player = exoPlayer
-        mediaSession = MediaSession.Builder(this, exoPlayer)
+        PlaybackWidgetProvider.updateAll(this, exoPlayer)
+        mediaSession = MediaSession.Builder(this, FadingPlaybackPlayer(exoPlayer, fadeController))
             // long: 系统通知和厂商灵动岛只会读取 MediaSession 的页面入口；显式不可变 PendingIntent 既能回到现有任务，也不会把启动目标暴露给外部篡改。
             .setSessionActivity(createSessionActivityPendingIntent())
             .setCallback(sessionCallback)
@@ -342,6 +355,7 @@ class PlaybackService : MediaSessionService() {
                 setHandleAudioBecomingNoisy(true)
                 repeatMode = Player.REPEAT_MODE_OFF
                 addListener(playerListener)
+                fadeController.bind(this)
             }
     }
 
@@ -386,7 +400,10 @@ class PlaybackService : MediaSessionService() {
         sleepTimerJob = null
         serviceScope.cancel()
         player?.removeListener(playerListener)
+        PlaybackWidgetProvider.updateAll(this, null)
         mediaSession?.release()
+        loudnessController.release()
+        fadeController.cancel()
         player?.release()
         mediaSession = null
         player = null
@@ -462,7 +479,7 @@ class PlaybackService : MediaSessionService() {
         failedPlayer.removeListener(playerListener)
         val sessionSwapError = runCatching {
             // long: MediaSession 保持不变，系统锁屏控件与现有 MediaController 无需重连；只替换已被 DEAD_OBJECT 污染的底层 Player。
-            activeSession.setPlayer(replacementPlayer)
+            activeSession.setPlayer(FadingPlaybackPlayer(replacementPlayer, fadeController))
         }.exceptionOrNull()
         if (sessionSwapError != null) {
             replacementPlayer.removeListener(playerListener)
@@ -504,6 +521,7 @@ class PlaybackService : MediaSessionService() {
                 persistCurrentProgress()
                 persistPlaybackQueueNow()
                 val activePlayer = player
+                PlaybackWidgetProvider.updateAll(this@PlaybackService, activePlayer)
                 activePlayer?.currentMediaItem?.let { mediaItem ->
                     reportPlaybackHeartbeat(
                         mediaItem = mediaItem,
@@ -900,6 +918,9 @@ class PlaybackService : MediaSessionService() {
         serviceScope.launch {
             appContainer.playbackPreferenceRepository.preferences.collect { preferences ->
                 reportPlayHistoryEnabled = preferences.reportPlayHistory
+                fadeController.setEnabled(preferences.fadeEnabled, player)
+                volumeBalanceMode = preferences.volumeBalanceMode
+                loudnessController.apply(preferences.volumeBalanceMode, player?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET)
                 if (!preferences.reportPlayHistory) {
                     heartbeatMutex.withLock { activeHeartbeatSession = null }
                 }

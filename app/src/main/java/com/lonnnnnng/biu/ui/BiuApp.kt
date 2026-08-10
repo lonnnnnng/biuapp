@@ -261,6 +261,7 @@ import com.lonnnnnng.biu.playback.PlaybackSessionCommands
 import com.lonnnnnng.biu.playback.PlaybackSpeedPolicy
 import com.lonnnnnng.biu.playback.SleepTimerMode
 import com.lonnnnnng.biu.playback.SleepTimerPolicy
+import com.lonnnnnng.biu.playback.VolumeBalanceMode
 import com.lonnnnnng.biu.playback.applyPlaybackMode
 import java.time.Instant
 import java.time.ZoneId
@@ -348,6 +349,7 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var showThemeMenu by remember { mutableStateOf(false) }
     var showAccountMenu by remember { mutableStateOf(false) }
     var showDisplaySettings by rememberSaveable { mutableStateOf(false) }
+    var showPlaybackSettings by rememberSaveable { mutableStateOf(false) }
     var showCreatorCenter by rememberSaveable { mutableStateOf(false) }
     var showQuickQueue by rememberSaveable { mutableStateOf(false) }
     var confirmClearQuickQueue by remember { mutableStateOf(false) }
@@ -1034,6 +1036,10 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                     showAccountMenu = false
                     showDisplaySettings = true
                 },
+                onOpenPlaybackSettings = {
+                    showAccountMenu = false
+                    showPlaybackSettings = true
+                },
                 onLogin = {
                     showAccountMenu = false
                     showLogin = true
@@ -1327,6 +1333,15 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
             onVideoLayoutSelected = viewModel::selectVideoLayout,
         )
     }
+    if (showPlaybackSettings) {
+        PlaybackExperienceSheet(
+            fadeEnabled = uiState.fadeEnabled,
+            volumeBalanceMode = uiState.volumeBalanceMode,
+            onDismiss = { showPlaybackSettings = false },
+            onFadeEnabledChange = viewModel::setFadeEnabled,
+            onVolumeBalanceModeSelected = viewModel::setVolumeBalanceMode,
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1347,6 +1362,7 @@ private fun BiuTopBar(
     onShowAccountMenu: () -> Unit,
     onDismissAccountMenu: () -> Unit,
     onOpenDisplaySettings: () -> Unit,
+    onOpenPlaybackSettings: () -> Unit,
     onLogin: () -> Unit,
     onRefreshAccount: () -> Unit,
     onLogout: () -> Unit,
@@ -1422,6 +1438,7 @@ private fun BiuTopBar(
                         isAccountLoading = isAccountLoading,
                         onDismiss = onDismissAccountMenu,
                         onOpenDisplaySettings = onOpenDisplaySettings,
+                        onOpenPlaybackSettings = onOpenPlaybackSettings,
                         onLogin = onLogin,
                         onRefresh = onRefreshAccount,
                         onLogout = onLogout,
@@ -1440,6 +1457,7 @@ private fun AccountDropdownMenu(
     isAccountLoading: Boolean,
     onDismiss: () -> Unit,
     onOpenDisplaySettings: () -> Unit,
+    onOpenPlaybackSettings: () -> Unit,
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
@@ -1510,6 +1528,11 @@ private fun AccountDropdownMenu(
             text = { Text("界面显示") },
             leadingIcon = { Icon(Icons.Rounded.Tune, contentDescription = null) },
             onClick = onOpenDisplaySettings,
+        )
+        DropdownMenuItem(
+            text = { Text("播放体验") },
+            leadingIcon = { Icon(Icons.Rounded.MusicNote, contentDescription = null) },
+            onClick = onOpenPlaybackSettings,
         )
         DropdownMenuItem(
             text = { Text(if (isAccountLoading) "刷新中" else "刷新") },
@@ -1615,6 +1638,86 @@ private fun DisplaySettingsSheet(
                     }
                     Text(
                         "网格仅用于推荐和搜索结果，保留播放、收藏与继续加载。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaybackExperienceSheet(
+    fadeEnabled: Boolean,
+    volumeBalanceMode: VolumeBalanceMode,
+    onDismiss: () -> Unit,
+    onFadeEnabledChange: (Boolean) -> Unit,
+    onVolumeBalanceModeSelected: (VolumeBalanceMode) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        modifier = Modifier.widthIn(max = 840.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 24.dp),
+        ) {
+            BiuSheetHeader(title = "播放体验", onClose = onDismiss)
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("淡入淡出", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "播放、暂停和切歌时使用短音量过渡，减少突然起停带来的听感跳变。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = fadeEnabled, onCheckedChange = onFadeEnabledChange)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("音量平衡", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "收窄不同 UP 主和视频之间的响度差异。较强档位会保留更少的动态范围。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    VolumeBalanceMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = volumeBalanceMode == mode,
+                            onClick = { onVolumeBalanceModeSelected(mode) },
+                            label = {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 2.dp),
+                                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                                ) {
+                                    Text(mode.label)
+                                    Text(
+                                        mode.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Text(
+                        "系统音频效果不可用时会自动保持原始声音，不会中断播放。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

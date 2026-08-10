@@ -49,6 +49,8 @@ data class PlaybackPreferences(
     val reportPlayHistory: Boolean = true,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
     val sleepTimerDeadlineEpochMs: Long = 0L,
+    val fadeEnabled: Boolean = true,
+    val volumeBalanceMode: VolumeBalanceMode = VolumeBalanceMode.OFF,
 )
 
 object SleepTimerPolicy {
@@ -104,6 +106,8 @@ class PlaybackPreferenceRepository(context: Context) {
                 ?.let { stored -> SleepTimerMode.entries.firstOrNull { it.name == stored } }
                 ?: SleepTimerMode.OFF,
             sleepTimerDeadlineEpochMs = values[KEY_SLEEP_TIMER_DEADLINE_EPOCH_MS] ?: 0L,
+            fadeEnabled = values[KEY_FADE_ENABLED] ?: true,
+            volumeBalanceMode = VolumeBalanceMode.fromStoredValue(values[KEY_VOLUME_BALANCE_MODE]),
         )
     }
 
@@ -130,12 +134,22 @@ class PlaybackPreferenceRepository(context: Context) {
 
     suspend fun clearSleepTimer() = saveSleepTimer(SleepTimerMode.OFF)
 
+    suspend fun saveFadeEnabled(enabled: Boolean) {
+        dataStore.edit { values -> values[KEY_FADE_ENABLED] = enabled }
+    }
+
+    suspend fun saveVolumeBalanceMode(mode: VolumeBalanceMode) {
+        dataStore.edit { values -> values[KEY_VOLUME_BALANCE_MODE] = mode.name }
+    }
+
     private companion object {
         val KEY_MODE = stringPreferencesKey("mode")
         val KEY_SPEED = floatPreferencesKey("speed")
         val KEY_REPORT_PLAY_HISTORY = booleanPreferencesKey("report_play_history")
         val KEY_SLEEP_TIMER_MODE = stringPreferencesKey("sleep_timer_mode")
         val KEY_SLEEP_TIMER_DEADLINE_EPOCH_MS = longPreferencesKey("sleep_timer_deadline_epoch_ms")
+        val KEY_FADE_ENABLED = booleanPreferencesKey("fade_enabled")
+        val KEY_VOLUME_BALANCE_MODE = stringPreferencesKey("volume_balance_mode")
     }
 }
 

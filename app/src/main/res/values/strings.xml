@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Biu</string>
+    <string name="playback_widget_name">Biu 播放器</string>
+    <string name="playback_widget_description">显示当前歌曲、播放进度和常用控制</string>
 </resources>

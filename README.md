@@ -32,7 +32,7 @@
 | 整理 | 收藏夹、视频合集、在线历史、本地历史和本地歌单统一进入音乐库 |
 | 收听 | 默认提取 Bilibili 音频轨，支持队列、倍速、循环、进度拖动和睡眠定时 |
 | 离线 | 音频、当前分 P 视频和收藏夹批量下载，支持断点、暂停、恢复和失败重试 |
-| 控制 | 后台、锁屏、通知栏、耳机和蓝牙媒体按键共享同一播放状态 |
+| 控制 | 后台、锁屏、通知栏、桌面小组件、耳机和蓝牙媒体按键共享同一播放状态 |
 | 对照 | 单 P 与多 P 都按“可播放曲目”处理，歌词、历史、队列和下载不会混淆 |
 
 ## 核心能力
@@ -60,6 +60,7 @@
 
 - 默认模式只加载音频轨，优先使用最高可用音质，不提供省流量档位；当前轨不可用时自动降级。
 - 播放队列支持顺序、列表循环、随机、单曲循环，`0.5x`–`2.0x` 七档倍速，设为下一首、移动、批量移除、清空和保存为本地歌单。
+- 当前源码新增可关闭的播放/暂停/切歌淡入淡出，以及关闭、轻柔、标准、明显四档音量平衡；系统音频效果不可用时自动保持原始声音。
 - 点击底部迷你播放栏进入全屏播放页；播放列表默认收起，从进度条右上方按钮打开底部可滚动弹层。
 - 切换到视频后，竖屏使用贴齐屏幕的 16:9 小窗，横屏进入沉浸式全屏；两种形态都支持播放/暂停、上一首/下一首、进度拖动、倍速、实际可用画质和方向切换。
 - 视频画面支持横向滑动快进/快退，拖动期间预览目标时间，抬手后统一 seek，降低误触和频繁请求。
@@ -99,6 +100,7 @@ BiuApp 使用 `bvid + cid` 作为曲目稳定身份，而不是只使用主视�
 - 支持亮色、暗色和跟随系统三种主题，状态栏、导航栏与系统手势区同步适配。
 - 应用字号提供小号/标准/大号，媒体列表提供标准/紧凑密度；推荐和搜索结果可以切换列表或自适应网格。
 - 播放、下载状态不只依赖颜色表达，关键图标提供内容描述并保留可用触控区域。
+- 桌面播放小组件根据宽度切换紧凑/展开布局，显示封面、当前曲目或分 P、UP 主与进度，并提供上一首、播放/暂停、下一首和返回应用。
 
 ## 从打开到连续收听
 
@@ -178,6 +180,7 @@ app/src/main/java/com/lonnnnnng/biu/
 ├── data/lyrics       LRCLIB 查询、LRC 解析和歌词缓存
 ├── playback          Media3 播放服务、MediaSession 与媒体状态
 ├── download          前台下载服务、断点传输、合并与 MediaStore 发布
+├── widget            RemoteViews 桌面播放小组件与 MediaSession 控制
 └── ui                Jetpack Compose 页面、ViewModel、主题和交互
 ```
 
@@ -189,7 +192,7 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 | --- | --- |
 | UI | Kotlin、Jetpack Compose、Material 3、响应式列表/网格、亮色/暗色/跟随系统 |
 | 网络 | OkHttp、Bilibili 专用请求头与 Cookie 隔离、WBI 签名、DASH 解析 |
-| 播放 | AndroidX Media3 / ExoPlayer、`MediaSessionService`、`MergingMediaSource` |
+| 播放 | AndroidX Media3 / ExoPlayer、`MediaSessionService`、`MergingMediaSource`、淡入淡出与系统音量平衡 |
 | 状态 | ViewModel + StateFlow；Room 保存历史、队列、歌单和下载任务；DataStore 保存轻量设置 |
 | 存储 | MediaStore、SAF 持久授权、应用私有临时文件 |
 | 下载 | 独立 `dataSync` 前台服务、Range 续传、音视频轨合并、失败恢复 |
@@ -203,6 +206,8 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 - 使用 Bilibili 账号、接口、内容和下载能力时，请遵守 Bilibili 平台协议、版权规则及所在地法律法规；项目不实现绕过会员、DRM 或风控限制的功能。
 
 ## 当前验证状态
+
+当前开发分支的 M24 改动已通过 `:app:testDebugUnitTest`、`:app:lintDebug` 和 `:app:assembleDebug`；尚未在用户指定设备上验证音量平衡实际听感、淡入淡出边界和桌面小组件 Launcher 兼容性，因此这些结论仍属于工程验证而非设备验收。
 
 `v0.1.20` 的功能改动基于上一版工程验证，本次按发布指令仅完成构建、签名和产物校验，未重新运行测试或设备验收。`v0.1.19` 已完成以下工程验证：
 
@@ -222,7 +227,8 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 - 不恢复 Bilibili 字幕接口作为歌词来源。
 - 不做设置导入/导出。
 - 不以评论、私信、图文社区浏览为主线。
-- 系统画中画、低功耗音频频谱、自定义下载目录、空间占用统计、封面下载、自定义主题色/字体和 Android Auto 仍待逐项评估。
+- 系统画中画、低功耗音频频谱、自定义下载目录、空间占用统计、封面下载和自定义主题色/字体仍待逐项评估。
+- Android Auto 已完成可行性、媒体树和权限边界评估，但当前尚未迁移为 `MediaLibraryService`，车机浏览与语音播放仍不可用。
 - 一键三连保留确认和风控提示；涉及真实扣币的不可逆场景需要单独授权验收。
 
 ## 项目文档
@@ -231,6 +237,7 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 - [开发里程碑](docs/development-roadmap.md)
 - [桌面端与 Android 功能迁移矩阵](docs/feature-migration-matrix.md)
 - [桌面端与 Android 功能差异审计](docs/desktop-android-feature-gap-audit.md)
+- [Android Auto 可行性评估](docs/android-auto-feasibility.md)
 - [技术方案](docs/technical-solution.md)
 - [UI 设计规范](docs/ui-design-system.md)
 - [安全与合规边界](docs/security-and-compliance.md)

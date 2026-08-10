@@ -69,6 +69,7 @@ import com.lonnnnnng.biu.download.VideoDownloadService
 import com.lonnnnnng.biu.download.VideoDownloadStatus
 import com.lonnnnnng.biu.playback.SleepTimerMode
 import com.lonnnnnng.biu.playback.SleepTimerPolicy
+import com.lonnnnnng.biu.playback.VolumeBalanceMode
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -286,6 +287,8 @@ data class BiuUiState(
     val reportPlayHistory: Boolean = true,
     val sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF,
     val sleepTimerDeadlineEpochMs: Long = 0L,
+    val fadeEnabled: Boolean = true,
+    val volumeBalanceMode: VolumeBalanceMode = VolumeBalanceMode.OFF,
     val isFeedLoading: Boolean = true,
     val isFeedLoadingMore: Boolean = false,
     val isCreatorConfigSaving: Boolean = false,
@@ -531,6 +534,8 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                         reportPlayHistory = preferences.reportPlayHistory,
                         sleepTimerMode = preferences.sleepTimerMode,
                         sleepTimerDeadlineEpochMs = preferences.sleepTimerDeadlineEpochMs,
+                        fadeEnabled = preferences.fadeEnabled,
+                        volumeBalanceMode = preferences.volumeBalanceMode,
                     )
                 }
             }
@@ -2727,6 +2732,40 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                 .onFailure { error ->
                     mutableState.update {
                         it.copy(reportPlayHistory = !enabled, message = error.userMessage("保存播放历史设置失败"))
+                    }
+                }
+        }
+    }
+
+    fun setFadeEnabled(enabled: Boolean) {
+        val previousValue = state.value.fadeEnabled
+        if (previousValue == enabled) return
+        mutableState.update { it.copy(fadeEnabled = enabled) }
+        viewModelScope.launch {
+            runCatching { container.playbackPreferenceRepository.saveFadeEnabled(enabled) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        if (current.fadeEnabled != enabled) current else current.copy(
+                            fadeEnabled = previousValue,
+                            message = error.userMessage("保存淡入淡出设置失败"),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun setVolumeBalanceMode(mode: VolumeBalanceMode) {
+        val previousMode = state.value.volumeBalanceMode
+        if (previousMode == mode) return
+        mutableState.update { it.copy(volumeBalanceMode = mode) }
+        viewModelScope.launch {
+            runCatching { container.playbackPreferenceRepository.saveVolumeBalanceMode(mode) }
+                .onFailure { error ->
+                    mutableState.update { current ->
+                        if (current.volumeBalanceMode != mode) current else current.copy(
+                            volumeBalanceMode = previousMode,
+                            message = error.userMessage("保存音量平衡设置失败"),
+                        )
                     }
                 }
         }

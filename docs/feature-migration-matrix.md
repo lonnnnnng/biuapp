@@ -13,8 +13,11 @@
 | DASH 视频播放 | Media3 `MergingMediaSource` + SessionCommand + 实际轨画质菜单 | M10.1 | 默认音频、竖屏小窗、横屏沉浸全屏、自动旋转控制、画质切换和有限解码恢复已实现并完成 Redmi 真机验收 |
 | 播放队列 | Media3 playlist + Room 镜像 | M1/M3/M7/M16/M18 | 完整队列、当前索引与进度持久化、进程重启恢复、设为下一首、单项/批量移除、清空、上下移动与长按拖动排序已完成；单个分 P 与 UP 主合集可追加且不打断当前歌曲，整条队列可保存为本地歌单 |
 | 播放模式与倍速 | Media3 repeat/shuffle/playback parameters + DataStore | M7 | 顺序、列表循环、随机、单曲循环及七档倍速已完成并持久化 |
+| 播放听感 | MediaSession 包装播放器 + `DynamicsProcessing` / `LoudnessEnhancer` + DataStore | M24 | 可关闭淡入淡出和四档音量平衡已实现；音频 Session 或 Player 重建后自动重绑，不支持效果的设备保持原始声音 |
 | 后台播放 | MediaSessionService | M1 | 已完成 |
 | 快捷键、任务栏 | 通知栏、锁屏、耳机、蓝牙 MediaSession | M1 | 已完成 |
+| 桌面播放小组件 | `AppWidgetProvider + RemoteViews + PlaybackPendingIntentBuilder` | M24 | 紧凑/展开布局、系统明暗资源、封面、当前 P/主标题、UP 主、进度、上一首/播放暂停/下一首和应用跳转已实现，待设备验收 |
+| Android Auto | `MediaLibraryService + MediaLibrarySession` 迁移方案 | M24 | 可行性、媒体树、权限边界和验收方案已完成；当前仍是 `MediaSessionService`，尚未向车机暴露可浏览媒体树 |
 | 全屏播放器 | Compose 音频 Now Playing + 小窗/沉浸式视频控制层 | M3/M10.1 | 音频封面/歌词、竖屏视频小窗与横屏视频全屏模式已完成 |
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |
 | 歌词 | LRCLIB 手动搜索、时间轴展示与 Room 缓存 | M10/M19 | 已完成；缓存一步直达、偏移、字号、同时间戳翻译和多 P 当前 P 名称语义已落地，冷启动恢复及无障碍回归已收口；当前真实歌词无独立翻译，真机验证禁用态，启用态由 JVM 双语解析测试覆盖 |
@@ -43,4 +46,5 @@
 - BiuApp 的主链路是“管理 UP 主来源 -> 发现歌曲 -> 曲目级整理 -> 连续收听 -> 离线收听”；默认音频，视频为手动切换的补充模式。
 - 后续阶段优先保证后台播放、锁屏控制、队列恢复、下载恢复和 Room 迁移稳定，不扩张为完整 Bilibili 社区客户端。
 - 播放磁盘缓存暂不引入；只有在容量统计、清理入口和稳定缓存键同时具备时，才重新评估与永久下载的边界。
+- Android Auto 已完成可行性评估，后续只有在明确车载需求和 DHU/真实车机环境后才迁移媒体服务。
 - 详细执行顺序、验收门槛和未完成项以 [`development-roadmap.md`](development-roadmap.md) 为准。
