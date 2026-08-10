@@ -18,9 +18,13 @@ import androidx.media3.common.Player
 import androidx.media3.session.PlaybackPendingIntentBuilder
 import com.lonnnnnng.biu.MainActivity
 import com.lonnnnnng.biu.R
+import com.lonnnnnng.biu.appContainer
+import com.lonnnnnng.biu.core.model.Track
+import com.lonnnnnng.biu.core.model.mediaText
 import com.lonnnnnng.biu.playback.PlaybackService
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,6 +36,10 @@ import okhttp3.Request
 class PlaybackWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
         appWidgetIds.forEach { widgetId -> render(context, manager, widgetId, latestSnapshot) }
+        if (appWidgetIds.isNotEmpty() && latestSnapshot.mediaId.isBlank()) {
+            val pendingResult = goAsync()
+            restoreSnapshot(context.applicationContext, pendingResult::finish)
+        }
     }
 
     override fun onAppWidgetOptionsChanged(
@@ -41,6 +49,10 @@ class PlaybackWidgetProvider : AppWidgetProvider() {
         newOptions: android.os.Bundle,
     ) {
         render(context, manager, appWidgetId, latestSnapshot)
+        if (latestSnapshot.mediaId.isBlank()) {
+            val pendingResult = goAsync()
+            restoreSnapshot(context.applicationContext, pendingResult::finish)
+        }
     }
 
     companion object {
@@ -64,6 +76,35 @@ class PlaybackWidgetProvider : AppWidgetProvider() {
             val applicationContext = context.applicationContext
             renderAll(applicationContext, snapshot)
             loadArtworkIfNeeded(applicationContext, snapshot)
+        }
+
+        private fun restoreSnapshot(context: Context, onFinished: () -> Unit) {
+            widgetScope.launch {
+                try {
+                    val queue = context.appContainer.playbackQueueRepository.load() ?: return@launch
+                    val track = queue.items[queue.currentIndex]
+                    val history = context.appContainer.playbackHistoryRepository.find(track.id)
+                    val restored = PlaybackWidgetSnapshot.from(
+                        track = track,
+                        positionMs = queue.currentPositionMs,
+                        durationMs = history?.durationMs ?: 0L,
+                    )
+                    withContext(Dispatchers.Main) {
+                        // long: 查询 Room 期间播放服务可能已恢复出更新的媒体项；只允许冷启动快照填补空状态，不能覆盖正在播放的曲目。
+                        if (latestSnapshot.mediaId.isBlank()) {
+                            latestSnapshot = restored
+                            renderAll(context, restored)
+                            loadArtworkIfNeeded(context, restored)
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    // long: 组件冷启动恢复只是展示回退；数据库暂不可读时保留默认状态，不能让桌面广播导致应用进程崩溃。
+                } finally {
+                    // long: Provider 回调返回后仍要等待 Room 恢复；完成 PendingResult 才允许系统结束这次组件广播。
+                    onFinished()
+                }
+            }
         }
 
         private fun renderAll(context: Context, snapshot: PlaybackWidgetSnapshot) {
@@ -189,7 +230,7 @@ class PlaybackWidgetProvider : AppWidgetProvider() {
     }
 }
 
-private data class PlaybackWidgetSnapshot(
+internal data class PlaybackWidgetSnapshot(
     val mediaId: String,
     val title: String,
     val artist: String,
@@ -216,11 +257,7 @@ private data class PlaybackWidgetSnapshot(
             val albumTitle = metadata.albumTitle?.toString().orEmpty()
             val artist = metadata.artist?.toString().orEmpty().ifBlank { "未知 UP 主" }
             val duration = player.duration
-            val progress = if (duration == C.TIME_UNSET || duration <= 0L) {
-                0
-            } else {
-                ((player.currentPosition.coerceIn(0L, duration) * 1_000L) / duration).toInt()
-            }
+            val progress = playbackWidgetProgressPermille(player.currentPosition, duration)
             return PlaybackWidgetSnapshot(
                 mediaId = item.mediaId,
                 title = title,
@@ -231,5 +268,27 @@ private data class PlaybackWidgetSnapshot(
                 isPlaying = player.isPlaying,
             )
         }
+
+        fun from(track: Track, positionMs: Long, durationMs: Long): PlaybackWidgetSnapshot {
+            val mediaText = track.mediaText()
+            return PlaybackWidgetSnapshot(
+                mediaId = track.id,
+                title = mediaText.title.ifBlank { "未知曲目" },
+                artist = track.artist.ifBlank { "未知 UP 主" },
+                contextLabel = mediaText.albumTitle
+                    ?.takeIf { it.isNotBlank() && it != mediaText.title }
+                    .orEmpty(),
+                artworkUrl = track.artworkUrl?.takeIf(String::isNotBlank),
+                progressPermille = playbackWidgetProgressPermille(positionMs, durationMs),
+                isPlaying = false,
+            )
+        }
     }
+}
+
+internal fun playbackWidgetProgressPermille(positionMs: Long, durationMs: Long): Int {
+    if (durationMs == C.TIME_UNSET || durationMs <= 0L) return 0
+    // long: Room 中的进度可能来自异常退出前的最后一次写入；恢复组件时夹在有效区间内，避免进度条越界或出现负值。
+    val ratio = positionMs.coerceIn(0L, durationMs).toDouble() / durationMs.toDouble()
+    return (ratio * 1_000.0).toInt().coerceIn(0, 1_000)
 }

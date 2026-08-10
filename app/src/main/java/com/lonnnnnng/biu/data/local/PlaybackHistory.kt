@@ -310,6 +310,8 @@ class PlaybackHistoryRepository(
 ) {
     val recent: Flow<List<PlaybackHistoryEntity>> = dao.observeRecent(100)
 
+    suspend fun find(mediaId: String): PlaybackHistoryEntity? = dao.find(mediaId)
+
     suspend fun recordStarted(mediaItem: MediaItem) {
         val source = mediaItem.bilibiliSource() ?: return
         val mediaId = mediaItem.mediaId.takeIf(String::isNotBlank) ?: "${source.bvid}:${source.cid}"
