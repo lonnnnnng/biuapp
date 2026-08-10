@@ -22,7 +22,7 @@
 
 </div>
 
-> 当前稳定版：**0.1.20**。BiuApp 的主线是“听歌”，视频播放是手动切换的补充模式；它不是完整的 Bilibili 社区客户端。
+> 当前稳定版：**0.1.21**。BiuApp 的主线是“听歌”，视频播放是手动切换的补充模式；它不是完整的 Bilibili 社区客户端。
 
 ## 你可以用它做什么
 
@@ -123,19 +123,19 @@ flowchart LR
 ### 从私有 Releases 安装正式 APK
 
 1. 使用具有仓库访问权限的 GitHub 账号打开[私有 Releases](https://github.com/lonnnnnng/biuapp/releases)。
-2. 下载当前稳定版 `BiuApp-v0.1.20.apk`，或选择最新版本中的同名 APK 资产。
+2. 下载当前稳定版 `BiuApp-v0.1.21.apk`，或选择最新版本中的同名 APK 资产。
 3. 在 Android 系统中允许当前安装来源后完成安装。
 
 由于仓库已经改为私有，BiuApp 不再内置 GitHub 版本检查、APK 下载或安装入口。后续升级由仓库成员从私有 Releases 手动下载安装。
 
 当前版本信息：
 
-- `versionName`：`0.1.20`
-- `versionCode`：`21`
+- `versionName`：`0.1.21`
+- `versionCode`：`22`
 - `applicationId`：`com.lonnnnnng.biu`
 - 最低版本：Android 8.0 / API 26
 - 目标版本：Android 16 / API 36
-- APK SHA-256：`5d990599a7f70a48f52ad44b9b8bf36c617f1885d049b69ac3e47e66f198732a`（仓库成员可在同一 Release 下载 `SHA256SUMS` 核对）
+- APK SHA-256：`0c283b2b0d9efa1e06f6003491d954ecae5b3bee6923f7735eb0e217b0c906dd`（仓库成员可在同一 Release 下载 `SHA256SUMS` 核对）
 
 浏览默认推荐和公开搜索不强制登录；关注列表、收藏夹、在线历史和账号互动需要通过 Bilibili H5 登录建立账号态。通知权限用于媒体控制和下载进度；读取本地音乐与选择 SAF 目录均在用户主动使用对应功能时请求。
 
@@ -207,9 +207,9 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 
 ## 当前验证状态
 
-当前开发分支的 M24 改动已通过 `:app:testDebugUnitTest`、`:app:lintDebug` 和 `:app:assembleDebug`；尚未在用户指定设备上验证音量平衡实际听感、淡入淡出边界和桌面小组件 Launcher 兼容性，因此这些结论仍属于工程验证而非设备验收。
+`0.1.21` 已通过 Redmi Note 8 Pro 真机 `wsvwypiz7xwslvl7` 验收：账号态、音频后台播放、淡入淡出与四档音量平衡设置恢复、4×2 桌面小组件添加与真实状态展示、上一首/播放暂停/下一首控制、点击内容回到应用，以及 Biu 进程为空时由小组件冷启动并从 Room 恢复当前曲目均已验证。播放过程中遇到一次 CDN TLS 读取超时，服务自动重新解析并恢复播放；最终 MediaSession 为 `STOPPED`、`error=null`，`logcat -b crash` 未发现 BiuApp 崩溃。独立小组件缩放回调未覆盖，4×2 布局已正常添加和显示。
 
-`v0.1.20` 的功能改动基于上一版工程验证，本次按发布指令仅完成构建、签名和产物校验，未重新运行测试或设备验收。`v0.1.19` 已完成以下工程验证：
+本次发布同时完成 `:app:testDebugUnitTest`、`:app:lintDebug`、Debug/Release 构建、正式证书签名、APK 对齐、签名校验和私有 GitHub Release 资产复核。`v0.1.20` 及更早版本的历史证据保持不变：
 
 - JVM 单元测试、Android Lint、Debug/Release APK 构建。
 - 真机验证：Bilibili 登录、推荐与搜索、DASH 音频播放、后台播放、通知栏/锁屏媒体控制、账号音乐库、主题与显示密度。

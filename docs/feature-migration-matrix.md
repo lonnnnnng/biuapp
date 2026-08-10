@@ -16,7 +16,7 @@
 | 播放听感 | MediaSession 包装播放器 + `DynamicsProcessing` / `LoudnessEnhancer` + DataStore | M24 | 可关闭淡入淡出和四档音量平衡已实现；音频 Session 或 Player 重建后自动重绑，不支持效果的设备保持原始声音 |
 | 后台播放 | MediaSessionService | M1 | 已完成 |
 | 快捷键、任务栏 | 通知栏、锁屏、耳机、蓝牙 MediaSession | M1 | 已完成 |
-| 桌面播放小组件 | `AppWidgetProvider + RemoteViews + PlaybackPendingIntentBuilder` | M24 | 紧凑/展开布局、系统明暗资源、封面、当前 P/主标题、UP 主、进度、上一首/播放暂停/下一首和应用跳转已实现，待设备验收 |
+| 桌面播放小组件 | `AppWidgetProvider + RemoteViews + PlaybackPendingIntentBuilder` | M24 | 紧凑/展开布局、系统明暗资源、封面、当前 P/主标题、UP 主、进度、上一首/播放暂停/下一首和应用跳转已实现；Redmi `wsvwypiz7xwslvl7` 已验收 4×2 添加、显示、控制、跳转和进程冷启动恢复，独立缩放回调未覆盖 |
 | Android Auto | `MediaLibraryService + MediaLibrarySession` 迁移方案 | M24 | 可行性、媒体树、权限边界和验收方案已完成；当前仍是 `MediaSessionService`，尚未向车机暴露可浏览媒体树 |
 | 全屏播放器 | Compose 音频 Now Playing + 小窗/沉浸式视频控制层 | M3/M10.1 | 音频封面/歌词、竖屏视频小窗与横屏视频全屏模式已完成 |
 | mini 播放器 | 应用底部迷你播放栏；视频场景可选画中画 | M1/M4 | 音频迷你栏已完成 |

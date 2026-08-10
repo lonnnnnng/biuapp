@@ -395,6 +395,8 @@
 - `0.1.17` 正式 APK 使用历史 BiuApp 证书签名，`versionCode=18`、`versionName=0.1.17`，SHA-256 为 `6bb9cd66abf394ed6404f29011e493a11099b42dd230bb7d9f0ea54665d8d14b`。
 - `0.1.18` 正式 APK 继续使用同一历史证书签名，`versionCode=19`、`versionName=0.1.18`，SHA-256 为 `c81b55d11be8fad359daf919d6542d75e9a6e0c07721d169ba698fe9ccb9dcb9`。
 - `0.1.19` 正式 APK 收录 M15-M19 音乐库、合集、统一搜索与历史、队列、离线播放和歌词交互收口，继续使用同一历史证书签名；`versionCode=20`、`versionName=0.1.19`，SHA-256 为 `e821e9f45948a1f7a8405304a97966177ecbdc9a308cc32a9dd5653167293106`。
+- `0.1.20` 正式 APK 移除私有仓库场景下不可用的在线更新，并修复通知栏和厂商灵动岛媒体卡片的应用跳转；`versionCode=21`、`versionName=0.1.20`，SHA-256 为 `5d990599a7f70a48f52ad44b9b8bf36c617f1885d049b69ac3e47e66f198732a`。
+- `0.1.21` 正式 APK 收录 M24 听感增强、桌面播放小组件和进程冷启动恢复，继续使用同一历史证书签名；`versionCode=22`、`versionName=0.1.21`，SHA-256 为 `0c283b2b0d9efa1e06f6003491d954ecae5b3bee6923f7735eb0e217b0c906dd`。
 
 ### M14：正式版质量
 
@@ -533,7 +535,7 @@ Redmi 真机证据：`wsvwypiz7xwslvl7` 定向覆盖安装后，临时选择“�
 
 ### M24：音量统一、淡入淡出、小组件与 Android Auto 评估
 
-优先级：P1/P2。状态：实现和工程构建完成，等待指定设备验收（2026-08-10）。M21-M23 暂不推进。
+优先级：P1/P2。状态：已完成工程门禁、正式包校验和 Redmi 真机验收（2026-08-10）。M21-M23 暂不推进。
 
 - [x] 新增 `FadingPlaybackPlayer`，让 MediaSession 发出的播放、暂停、上一首和下一首命令统一使用短音量过渡；内部恢复链路继续直接控制 ExoPlayer，避免自愈和切流等待动画。
 - [x] 新增可关闭的淡入淡出设置，默认开启并通过 DataStore 跨进程恢复。
@@ -546,7 +548,7 @@ Redmi 真机证据：`wsvwypiz7xwslvl7` 定向覆盖安装后，临时选择“�
 
 完成标准：全量单测、Lint 和 Debug 构建通过；指定设备验证淡入淡出开关、四档音量平衡、小组件添加/缩放/控制/跳转、后台和进程恢复；Android Auto 本阶段以 [`android-auto-feasibility.md`](android-auto-feasibility.md) 文档收口，不启用车载 Manifest。
 
-当前工程证据：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 已通过；Lint 报告无错误。设备验收未执行，不能把音量平衡实际听感、小组件 Launcher 兼容性或进程退出后的控制行为标记为已验证。
+当前证据：`./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease` 已通过，Lint 报告无错误；正式 APK 已通过 16 KiB 页对齐、v2/v3 签名、版本和历史证书校验。Redmi `wsvwypiz7xwslvl7` 已验证账号态与 Room 数据保留、在线后台播放、淡入淡出和音量平衡设置跨重启恢复、Pixel Launcher 添加 4×2 小组件、真实封面/标题/UP 主/进度展示、三项媒体控制、点击内容跳转，以及 Biu 进程为空时由小组件冷启动并恢复当前曲目。一次 CDN TLS 读取超时后服务自动重新解析并恢复连续播放，最终 MediaSession `error=null`，crash buffer 无 BiuApp 崩溃。独立缩放回调未覆盖，4×2 布局已正常添加和显示。
 
 ### 明确不做或不优先
 
@@ -565,12 +567,12 @@ Redmi 真机证据：`wsvwypiz7xwslvl7` 定向覆盖安装后，临时选择“�
 4. M18 优化发现、搜索、队列和连续收听效率。
 5. M19 完成歌词和播放交互打磨。
 6. M20 中的能力逐项评估，只有收益明确时才进入实现。
-7. M24 收口听感和桌面播放入口；Android Auto 在明确车载需求后再按独立方案实施。
+7. M24 已收口听感和桌面播放入口；Android Auto 在明确车载需求后再按独立方案实施。
 
 ### 下一轮执行清单（冻结）
 
 1. M15-M19 进入回归维护，后续改动不得新增第二套内容来源、播放队列、下载索引或歌词状态模型。
-2. M24 的音量平衡、淡入淡出和桌面小组件进入回归收口；Android Auto 已完成评估但不在本阶段迁移服务基类。
+2. M24 的音量平衡、淡入淡出和桌面小组件进入回归维护；Android Auto 已完成评估但不在本阶段迁移服务基类。
 3. M14 正式版质量继续作为横向门槛，下一阶段优先补崩溃、耗电、后台限制、隐私、签名和发布流水线专项验证。
 4. 只提交 Android 仓库，使用中文提交说明；桌面端保持只读，用户未明确要求时不推送、不发版。
 

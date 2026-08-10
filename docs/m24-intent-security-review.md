@@ -47,4 +47,4 @@
 
 1. `:app:lintDebug` 通过，未发现导出组件或 PendingIntent 安全错误。
 2. `:app:testDebugUnitTest` 与 `:app:assembleDebug` 通过。
-3. 设备验收时仍需检查 Launcher 添加/缩放、三项控制、内容跳转，以及应用进程退出后的显式服务唤起。
+3. Redmi `wsvwypiz7xwslvl7` 已验证 Launcher 添加 4×2 小组件、封面/标题/UP 主/进度显示、上一首/播放暂停/下一首控制、内容跳转，以及 Biu 进程为空时由显式服务唤起并从 Room 恢复当前曲目；独立缩放回调未覆盖。
