@@ -11,7 +11,8 @@
 
 - 仅 Bilibili 域名请求附加 Bilibili `Referer`、`Origin`、User-Agent 和 Cookie。
 - 登录 WebView 禁止第三方 Cookie，只允许导航到 HTTPS 的 `bilibili.com` 主域及子域。
-- 第三方歌词、更新和图片请求使用独立客户端，禁止共享登录 Cookie。
+- 第三方歌词和图片请求不得共享 Bilibili 登录 Cookie。
+- 系统媒体通知使用指向 `MainActivity` 的显式不可变 `PendingIntent`，避免通知宿主篡改启动目标。
 - HTTPS 证书校验保持系统默认，不实现忽略证书错误的调试后门。
 
 ## 下载与存储

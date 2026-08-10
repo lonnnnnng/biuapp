@@ -55,8 +55,6 @@ import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
 import com.lonnnnnng.biu.data.lyrics.LyricsSource
 import com.lonnnnnng.biu.data.lyrics.LyricsTextSize
 import com.lonnnnnng.biu.data.lyrics.lyricsCacheKey
-import com.lonnnnnng.biu.data.update.AppUpdate
-import com.lonnnnnng.biu.data.update.AppVersionPolicy
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadService
 import com.lonnnnnng.biu.download.AudioDownloadStatus
@@ -304,8 +302,6 @@ data class BiuUiState(
     val isPageQueueLoading: Boolean = false,
     val isLocalAudioLoading: Boolean = false,
     val isLocalPlaylistLoading: Boolean = false,
-    val availableUpdate: AppUpdate? = null,
-    val isUpdateChecking: Boolean = false,
     val resolvingBvid: String? = null,
     val message: String? = null,
 )
@@ -397,7 +393,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
         }
-        checkForUpdate(manual = false)
         refreshAccount()
         viewModelScope.launch {
             container.creatorSelectionRepository.selected.collect { selectedCreators ->
@@ -2797,41 +2792,6 @@ class BiuViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
         }
-    }
-
-    fun checkForUpdate(manual: Boolean = true) {
-        if (state.value.isUpdateChecking) return
-        mutableState.update { it.copy(isUpdateChecking = true, message = null) }
-        viewModelScope.launch {
-            runCatching { container.appUpdateRepository.latestRelease() }
-                .onSuccess { update ->
-                    val currentVersion = getApplication<Application>().packageManager
-                        .getPackageInfo(getApplication<Application>().packageName, 0)
-                        .versionName
-                        .orEmpty()
-                    val hasUpdate = AppVersionPolicy.isNewer(update.version, currentVersion)
-                    mutableState.update {
-                        it.copy(
-                            isUpdateChecking = false,
-                            availableUpdate = update.takeIf { hasUpdate },
-                            message = if (manual && !hasUpdate) "已是最新版本（$currentVersion）" else null,
-                        )
-                    }
-                }
-                .onFailure { error ->
-                    // long: 启动时的自动检查失败保持静默，避免网络波动干扰用户进入首页；手动检查才明确反馈。
-                    mutableState.update {
-                        it.copy(
-                            isUpdateChecking = false,
-                            message = if (manual) error.userMessage("检查更新失败") else null,
-                        )
-                    }
-                }
-        }
-    }
-
-    fun dismissUpdate() {
-        mutableState.update { it.copy(availableUpdate = null) }
     }
 
     fun loadLibrary(section: AccountLibrarySection) {

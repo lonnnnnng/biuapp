@@ -2,14 +2,12 @@ package com.lonnnnnng.biu.ui
 
 import android.Manifest
 import android.content.ComponentName
-import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
@@ -107,7 +105,6 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SmartDisplay
-import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.Tune
@@ -251,7 +248,6 @@ import com.lonnnnnng.biu.data.lyrics.LyricsOffsetPolicy
 import com.lonnnnnng.biu.data.lyrics.LyricsSearchResult
 import com.lonnnnnng.biu.data.lyrics.LyricsTextSize
 import com.lonnnnnng.biu.data.lyrics.lyricsCacheKey
-import com.lonnnnnng.biu.data.update.AppUpdate
 import com.lonnnnnng.biu.download.AudioDownloadRequest
 import com.lonnnnnng.biu.download.AudioDownloadStatus
 import com.lonnnnnng.biu.download.DownloadNetworkPreference
@@ -266,7 +262,6 @@ import com.lonnnnnng.biu.playback.PlaybackSpeedPolicy
 import com.lonnnnnng.biu.playback.SleepTimerMode
 import com.lonnnnnng.biu.playback.SleepTimerPolicy
 import com.lonnnnnng.biu.playback.applyPlaybackMode
-import com.lonnnnnng.biu.update.AppUpdateInstaller
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -339,7 +334,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val updateInstaller = remember(context.applicationContext) { AppUpdateInstaller(context.applicationContext) }
     val localAudioPermission = LocalMediaPermissionPolicy.permissionFor()
     var localAudioPermissionGranted by remember {
         mutableStateOf(
@@ -367,26 +361,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     var mediaModeSwitching by remember { mutableStateOf(false) }
     var playbackErrorEventId by remember { mutableLongStateOf(0L) }
     var playbackErrorCode by remember { mutableStateOf<Int?>(null) }
-    var activeUpdateDownloadId by rememberSaveable {
-        mutableLongStateOf(updateInstaller.pendingDownloadId())
-    }
-    var pendingInstallDownloadId by rememberSaveable { mutableLongStateOf(-1L) }
-
-    val installPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) {
-        val downloadId = pendingInstallDownloadId
-        if (downloadId < 0L) return@rememberLauncherForActivityResult
-        when (val result = updateInstaller.installDownloaded(downloadId)) {
-            AppUpdateInstaller.InstallResult.Started -> pendingInstallDownloadId = -1L
-            AppUpdateInstaller.InstallResult.PermissionRequired -> coroutineScope.launch {
-                snackbarHostState.showSnackbar("请允许 BiuApp 安装未知来源应用后重试")
-            }
-            is AppUpdateInstaller.InstallResult.Failed -> coroutineScope.launch {
-                snackbarHostState.showSnackbar(result.message)
-            }
-        }
-    }
     val localAudioPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -536,53 +510,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
         }
         onPauseOrDispose { }
     }
-    val installDownloadedUpdate: (Long) -> Unit = { downloadId ->
-        when (val result = updateInstaller.installDownloaded(downloadId)) {
-            AppUpdateInstaller.InstallResult.Started -> pendingInstallDownloadId = -1L
-            AppUpdateInstaller.InstallResult.PermissionRequired -> {
-                pendingInstallDownloadId = downloadId
-                // long: 未获安装权限时只打开当前 App 的系统授权页，返回后继续同一个下载任务的安装。
-                installPermissionLauncher.launch(
-                    Intent(
-                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:${context.packageName}"),
-                    ),
-                )
-            }
-            is AppUpdateInstaller.InstallResult.Failed -> coroutineScope.launch {
-                snackbarHostState.showSnackbar(result.message)
-            }
-        }
-    }
-
-    LaunchedEffect(activeUpdateDownloadId) {
-        val downloadId = activeUpdateDownloadId
-        if (downloadId < 0L) return@LaunchedEffect
-        // long: 轮询系统下载状态可避免开放广播被伪造；任务 ID 已持久化，进程重启后也能继续进入安装流程。
-        while (true) {
-            when (val downloadState = updateInstaller.downloadState(downloadId)) {
-                AppUpdateInstaller.DownloadState.Pending -> delay(1_000)
-                AppUpdateInstaller.DownloadState.Successful -> {
-                    activeUpdateDownloadId = -1L
-                    installDownloadedUpdate(downloadId)
-                    break
-                }
-                AppUpdateInstaller.DownloadState.Missing -> {
-                    updateInstaller.clearPendingDownload(downloadId)
-                    activeUpdateDownloadId = -1L
-                    snackbarHostState.showSnackbar("找不到更新包下载任务，请重新下载")
-                    break
-                }
-                is AppUpdateInstaller.DownloadState.Failed -> {
-                    updateInstaller.clearPendingDownload(downloadId)
-                    activeUpdateDownloadId = -1L
-                    snackbarHostState.showSnackbar(downloadState.message)
-                    break
-                }
-            }
-        }
-    }
-
     DisposableEffect(controller) {
         fun publishSnapshot() {
             playback = controller?.let { activeController ->
@@ -775,28 +702,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     LaunchedEffect(showLogin, uiState.account.isLoggedIn) {
         // long: 账号接口确认登录成功后立即退出 WebView，避免 H5 的 XHR 登录停留在原表单页面。
         if (showLogin && uiState.account.isLoggedIn) showLogin = false
-    }
-
-    uiState.availableUpdate?.let { update ->
-        AppUpdateDialog(
-            update = update,
-            onDismiss = viewModel::dismissUpdate,
-            onDownload = {
-                runCatching { updateInstaller.enqueue(update) }
-                    .onSuccess { downloadId ->
-                        activeUpdateDownloadId = downloadId
-                        viewModel.dismissUpdate()
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar("更新包开始下载，完成后将打开系统安装界面")
-                        }
-                    }
-                    .onFailure { error ->
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar(error.message ?: "更新包下载启动失败")
-                        }
-                    }
-            },
-        )
     }
 
     if (showLogin) {
@@ -1108,7 +1013,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 account = uiState.account,
                 accountMenuExpanded = showAccountMenu,
                 isAccountLoading = uiState.isAccountLoading,
-                isUpdateChecking = uiState.isUpdateChecking,
                 isDynamicLoading = uiState.dynamicFeed.isLoading,
                 onOpenCreatorCenter = openCreatorCenter,
                 onRefreshDynamic = { viewModel.loadDynamicFeed(reset = true) },
@@ -1137,10 +1041,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
                 onRefreshAccount = {
                     showAccountMenu = false
                     viewModel.refreshAccount()
-                },
-                onCheckUpdate = {
-                    showAccountMenu = false
-                    viewModel.checkForUpdate()
                 },
                 onLogout = {
                     showAccountMenu = false
@@ -1429,36 +1329,6 @@ fun BiuApp(viewModel: BiuViewModel = viewModel()) {
     }
 }
 
-@Composable
-private fun AppUpdateDialog(
-    update: AppUpdate,
-    onDismiss: () -> Unit,
-    onDownload: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Rounded.SystemUpdate, contentDescription = null) },
-        title = { Text("发现新版本 ${update.version}") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 320.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("更新内容", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    update.releaseNotes,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        confirmButton = { Button(onClick = onDownload) { Text("立即更新") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("稍后") } },
-    )
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BiuTopBar(
@@ -1468,7 +1338,6 @@ private fun BiuTopBar(
     account: BilibiliAccount,
     accountMenuExpanded: Boolean,
     isAccountLoading: Boolean,
-    isUpdateChecking: Boolean,
     isDynamicLoading: Boolean,
     onOpenCreatorCenter: () -> Unit,
     onRefreshDynamic: () -> Unit,
@@ -1480,7 +1349,6 @@ private fun BiuTopBar(
     onOpenDisplaySettings: () -> Unit,
     onLogin: () -> Unit,
     onRefreshAccount: () -> Unit,
-    onCheckUpdate: () -> Unit,
     onLogout: () -> Unit,
 ) {
     TopAppBar(
@@ -1552,12 +1420,10 @@ private fun BiuTopBar(
                         account = account,
                         expanded = accountMenuExpanded,
                         isAccountLoading = isAccountLoading,
-                        isUpdateChecking = isUpdateChecking,
                         onDismiss = onDismissAccountMenu,
                         onOpenDisplaySettings = onOpenDisplaySettings,
                         onLogin = onLogin,
                         onRefresh = onRefreshAccount,
-                        onCheckUpdate = onCheckUpdate,
                         onLogout = onLogout,
                     )
                 }
@@ -1572,12 +1438,10 @@ private fun AccountDropdownMenu(
     account: BilibiliAccount,
     expanded: Boolean,
     isAccountLoading: Boolean,
-    isUpdateChecking: Boolean,
     onDismiss: () -> Unit,
     onOpenDisplaySettings: () -> Unit,
     onLogin: () -> Unit,
     onRefresh: () -> Unit,
-    onCheckUpdate: () -> Unit,
     onLogout: () -> Unit,
 ) {
     DropdownMenu(
@@ -1658,18 +1522,6 @@ private fun AccountDropdownMenu(
             },
             enabled = !isAccountLoading,
             onClick = onRefresh,
-        )
-        DropdownMenuItem(
-            text = { Text(if (isUpdateChecking) "检查中" else "更新") },
-            leadingIcon = {
-                if (isUpdateChecking) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Rounded.SystemUpdate, contentDescription = null)
-                }
-            },
-            enabled = !isUpdateChecking,
-            onClick = onCheckUpdate,
         )
         if (account.isLoggedIn) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

@@ -41,6 +41,8 @@ com.lonnnnnng.biu
 
 UI 不直接请求 Bilibili，也不持有 `ExoPlayer`。所有播放命令通过 `MediaController` 发送到 `MediaSessionService`，这样 Activity 被回收后音乐仍可继续。
 
+`MediaSession` 设置指向 `MainActivity` 的显式不可变 `sessionActivity`。Media3 默认通知和厂商系统媒体入口点击时复用该 `PendingIntent` 回到现有应用任务，不开放可被通知宿主修改的组件、Action 或 Extra。
+
 ## 4. 播放链路
 
 ```text

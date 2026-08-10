@@ -27,7 +27,7 @@
 | 批量下载 | 收藏夹全量分页 + 分 P 独立任务 + Room FIFO + 网络约束 | M5 | 音频/视频批量选择、失败重试和仅非计费网络等待恢复已完成 |
 | 系统托盘 | Android 无对应能力 | - | 不迁移 |
 | 桌面窗口控制 | Android Activity/系统返回栈 | - | 平台替代 |
-| Electron 自动更新 | GitHub Release + DownloadManager + 系统安装器 | M6 | 已完成首版 |
+| Electron 自动更新 | 私有 Releases 手动下载安装 | M6 | 仓库私有化后已移除应用内版本检查、APK 下载和系统安装入口 |
 
 ## 不能机械复制的实现
 

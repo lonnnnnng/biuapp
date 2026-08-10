@@ -1,5 +1,7 @@
 package com.lonnnnnng.biu.playback
 
+import android.app.PendingIntent
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.net.Uri
@@ -28,6 +30,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import com.lonnnnnng.biu.appContainer
+import com.lonnnnnng.biu.MainActivity
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import com.lonnnnnng.biu.core.model.AudioQualityPreference
@@ -297,11 +300,25 @@ class PlaybackService : MediaSessionService() {
 
         player = exoPlayer
         mediaSession = MediaSession.Builder(this, exoPlayer)
+            // long: 系统通知和厂商灵动岛只会读取 MediaSession 的页面入口；显式不可变 PendingIntent 既能回到现有任务，也不会把启动目标暴露给外部篡改。
+            .setSessionActivity(createSessionActivityPendingIntent())
             .setCallback(sessionCallback)
             .build()
         restorePlaybackPreferences()
         observePlaybackPreferences()
         restorePlaybackQueue()
+    }
+
+    private fun createSessionActivityPendingIntent(): PendingIntent {
+        val sessionActivityIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        return PendingIntent.getActivity(
+            this,
+            SESSION_ACTIVITY_REQUEST_CODE,
+            sessionActivityIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     @UnstableApi
@@ -1221,3 +1238,4 @@ private const val PLAYBACK_PREFERENCES_PERSIST_DEBOUNCE_MS = 200L
 private const val CODEC_SERVICE_RECOVERY_DELAY_MS = 350L
 private const val MAX_CAUSE_CHAIN_DEPTH = 32
 private const val MTK_DEFAULT_VIDEO_MAX_QUALITY_ID = 64
+private const val SESSION_ACTIVITY_REQUEST_CODE = 1001

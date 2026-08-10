@@ -9,21 +9,20 @@
 </p>
 
 <p>
-  <a href="https://github.com/lonnnnnng/biuapp/releases"><img src="https://img.shields.io/github/v/release/lonnnnnng/biuapp?display_name=tag&amp;sort=semver&amp;color=3DDC84" alt="Latest Release"></a>
   <a href="https://developer.android.com/about/versions/oreo"><img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&amp;logoColor=white" alt="Android 8.0+"></a>
   <a href="https://kotlinlang.org/"><img src="https://img.shields.io/badge/Kotlin-Compose-7F52FF?logo=kotlin&amp;logoColor=white" alt="Kotlin Compose"></a>
   <a href="https://github.com/lonnnnnng/biu/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange" alt="PolyForm Noncommercial License"></a>
 </p>
 
 <p>
-  <a href="https://github.com/lonnnnnng/biuapp/releases/latest">下载最新版</a> ·
+  <a href="https://github.com/lonnnnnng/biuapp/releases">私有 Releases</a> ·
   <a href="CHANGELOG.md">查看版本记录</a> ·
   <a href="https://github.com/lonnnnnng/biuapp/issues">提交问题</a>
 </p>
 
 </div>
 
-> 当前稳定版：**0.1.19**。BiuApp 的主线是“听歌”，视频播放是手动切换的补充模式；它不是完整的 Bilibili 社区客户端。
+> 当前稳定版：**0.1.20**。BiuApp 的主线是“听歌”，视频播放是手动切换的补充模式；它不是完整的 Bilibili 社区客户端。
 
 ## 你可以用它做什么
 
@@ -64,7 +63,7 @@
 - 点击底部迷你播放栏进入全屏播放页；播放列表默认收起，从进度条右上方按钮打开底部可滚动弹层。
 - 切换到视频后，竖屏使用贴齐屏幕的 16:9 小窗，横屏进入沉浸式全屏；两种形态都支持播放/暂停、上一首/下一首、进度拖动、倍速、实际可用画质和方向切换。
 - 视频画面支持横向滑动快进/快退，拖动期间预览目标时间，抬手后统一 seek，降低误触和频繁请求。
-- Media3 `MediaSessionService` 负责后台播放，锁屏和通知栏显示当前曲目；多 P 时显示当前 P 的标题。
+- Media3 `MediaSessionService` 负责后台播放，锁屏和通知栏显示当前曲目；多 P 时显示当前 P 的标题，点击系统媒体通知或厂商灵动岛可返回应用。
 
 ### 多 P：每个 P 都是一首独立曲目
 
@@ -95,12 +94,11 @@ BiuApp 使用 `bvid + cid` 作为曲目稳定身份，而不是只使用主视�
 - 多 P 使用当前 P 名称搜索和展示；单 P 使用资源标题。
 - 不使用 Bilibili 字幕接口作为歌词来源。
 
-### 界面与更新：为手机上的高频收听而设计
+### 界面与显示：为手机上的高频收听而设计
 
 - 支持亮色、暗色和跟随系统三种主题，状态栏、导航栏与系统手势区同步适配。
 - 应用字号提供小号/标准/大号，媒体列表提供标准/紧凑密度；推荐和搜索结果可以切换列表或自适应网格。
 - 播放、下载状态不只依赖颜色表达，关键图标提供内容描述并保留可用触控区域。
-- 内置 GitHub Release 更新检查，下载完成后交给 Android 系统安装器确认升级。
 
 ## 从打开到连续收听
 
@@ -120,22 +118,24 @@ flowchart LR
 
 ## 安装
 
-### 直接安装正式 APK
+### 从私有 Releases 安装正式 APK
 
-1. 打开 [GitHub Releases](https://github.com/lonnnnnng/biuapp/releases/latest)。
-2. 下载当前稳定版 [BiuApp-v0.1.19.apk](https://github.com/lonnnnnng/biuapp/releases/download/v0.1.19/BiuApp-v0.1.19.apk)，或选择最新版本中的同名 APK 资产。
+1. 使用具有仓库访问权限的 GitHub 账号打开[私有 Releases](https://github.com/lonnnnnng/biuapp/releases)。
+2. 下载当前稳定版 `BiuApp-v0.1.20.apk`，或选择最新版本中的同名 APK 资产。
 3. 在 Android 系统中允许当前安装来源后完成安装。
+
+由于仓库已经改为私有，BiuApp 不再内置 GitHub 版本检查、APK 下载或安装入口。后续升级由仓库成员从私有 Releases 手动下载安装。
 
 当前版本信息：
 
-- `versionName`：`0.1.19`
-- `versionCode`：`20`
+- `versionName`：`0.1.20`
+- `versionCode`：`21`
 - `applicationId`：`com.lonnnnnng.biu`
 - 最低版本：Android 8.0 / API 26
 - 目标版本：Android 16 / API 36
-- APK SHA-256：`e821e9f45948a1f7a8405304a97966177ecbdc9a308cc32a9dd5653167293106`（也可下载 [SHA256SUMS](https://github.com/lonnnnnng/biuapp/releases/download/v0.1.19/SHA256SUMS) 核对）
+- APK SHA-256：`5d990599a7f70a48f52ad44b9b8bf36c617f1885d049b69ac3e47e66f198732a`（仓库成员可在同一 Release 下载 `SHA256SUMS` 核对）
 
-浏览默认推荐和公开搜索不强制登录；关注列表、收藏夹、在线历史和账号互动需要通过 Bilibili H5 登录建立账号态。通知权限用于媒体控制和下载进度；读取本地音乐、选择 SAF 目录和安装应用更新均在用户主动使用对应功能时请求。
+浏览默认推荐和公开搜索不强制登录；关注列表、收藏夹、在线历史和账号互动需要通过 Bilibili H5 登录建立账号态。通知权限用于媒体控制和下载进度；读取本地音乐与选择 SAF 目录均在用户主动使用对应功能时请求。
 
 ## 本地开发与构建
 
@@ -178,7 +178,6 @@ app/src/main/java/com/lonnnnnng/biu/
 ├── data/lyrics       LRCLIB 查询、LRC 解析和歌词缓存
 ├── playback          Media3 播放服务、MediaSession 与媒体状态
 ├── download          前台下载服务、断点传输、合并与 MediaStore 发布
-├── update            GitHub Release 更新检查与系统安装流程
 └── ui                Jetpack Compose 页面、ViewModel、主题和交互
 ```
 
@@ -194,19 +193,18 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 | 状态 | ViewModel + StateFlow；Room 保存历史、队列、歌单和下载任务；DataStore 保存轻量设置 |
 | 存储 | MediaStore、SAF 持久授权、应用私有临时文件 |
 | 下载 | 独立 `dataSync` 前台服务、Range 续传、音视频轨合并、失败恢复 |
-| 更新 | GitHub Release 检查、系统下载服务和系统安装器 |
 
 ## 隐私、安全与合规
 
 - Cookie 和手机号属于敏感数据，不写入普通日志、Crash 报告、Room 或 DataStore；当前登录态由 WebView `CookieManager` 保存在应用沙箱中。
-- 只有 Bilibili 专用客户端会携带 Bilibili Cookie、Referer、Origin 和 User-Agent；LRCLIB、GitHub 更新和图片请求使用独立客户端，不共享登录凭据。
+- 只有 Bilibili 专用客户端会携带 Bilibili Cookie、Referer、Origin 和 User-Agent；LRCLIB 与图片请求不共享登录凭据。
 - 网络请求保持 HTTPS 和系统证书校验，不提供忽略证书错误或绕过风控的调试后门。
 - 下载文件通过 MediaStore 的 `IS_PENDING` 和相对目录发布，不扫描或上传用户的裸文件路径。
 - 使用 Bilibili 账号、接口、内容和下载能力时，请遵守 Bilibili 平台协议、版权规则及所在地法律法规；项目不实现绕过会员、DRM 或风控限制的功能。
 
 ## 当前验证状态
 
-`v0.1.19` 已完成以下工程验证：
+`v0.1.20` 的功能改动基于上一版工程验证，本次按发布指令仅完成构建、签名和产物校验，未重新运行测试或设备验收。`v0.1.19` 已完成以下工程验证：
 
 - JVM 单元测试、Android Lint、Debug/Release APK 构建。
 - 真机验证：Bilibili 登录、推荐与搜索、DASH 音频播放、后台播放、通知栏/锁屏媒体控制、账号音乐库、主题与显示密度。
