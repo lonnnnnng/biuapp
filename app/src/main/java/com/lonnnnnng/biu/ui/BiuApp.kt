@@ -2495,7 +2495,6 @@ private fun DynamicFeedScreen(
         return
     }
     val listState = rememberLazyListState()
-    val listMetrics = LocalBiuListDensity.current
     val shouldLoadMore by remember(listState, state.items.size, state.hasMore) {
         derivedStateOf {
             val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -2522,7 +2521,10 @@ private fun DynamicFeedScreen(
             )
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
-                items(state.items, key = BilibiliDynamicItem::id) { item ->
+                itemsIndexed(
+                    items = state.items,
+                    key = { _, item -> item.id },
+                ) { index, item ->
                     DynamicFeedItem(
                         item = item,
                         downloadStatus = downloadedMediaIndex.status(item.video.bvid),
@@ -2532,12 +2534,7 @@ private fun DynamicFeedScreen(
                         onLike = { onLike(item) },
                         onTriple = { onTriple(item) },
                     )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(
-                            start = 16.dp + listMetrics.dynamicThumbnailWidth + listMetrics.dynamicRowSpacing,
-                        ),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
+                    if (index < state.items.lastIndex) DynamicFeedSeparator()
                 }
                 if (state.isLoadingMore) {
                     item(key = "dynamic-loading-more") {
@@ -2547,6 +2544,17 @@ private fun DynamicFeedScreen(
             }
         }
     }
+}
+
+@Composable
+private fun DynamicFeedSeparator() {
+    // long: 动态是独立内容单元，使用全宽语义表面色分区，让亮暗主题下都能快速辨认条目边界。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainer),
+    )
 }
 
 @Composable
