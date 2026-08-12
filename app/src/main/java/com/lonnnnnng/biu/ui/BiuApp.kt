@@ -2088,6 +2088,8 @@ private fun RecommendationScreen(
                         },
                     )
                 }
+            } else if (recommendationLoading && recommendationVideos.isEmpty()) {
+                InitialLoadingState(label = "正在加载推荐")
             } else if (!recommendationLoading && recommendationVideos.isEmpty()) {
                 val canContinueDiscovery = !showingSearchResults && usingCreatorSources && recommendationHasMore
                 BiuEmptyState(
@@ -2508,7 +2510,9 @@ private fun DynamicFeedScreen(
         onRefresh = onRefresh,
         modifier = modifier.fillMaxSize(),
     ) {
-        if (!state.isLoading && state.items.isEmpty()) {
+        if (state.isLoading && state.items.isEmpty()) {
+            InitialLoadingState(label = "正在加载动态")
+        } else if (!state.isLoading && state.items.isEmpty()) {
             BiuEmptyState(
                 icon = Icons.Rounded.DynamicFeed,
                 title = "暂时没有视频动态",
@@ -2578,7 +2582,11 @@ private fun DynamicFeedItem(
     ) {
         Box(
             modifier = Modifier
-                .size(width = listMetrics.dynamicThumbnailWidth, height = itemHeight)
+                .size(
+                    width = listMetrics.dynamicThumbnailWidth,
+                    height = listMetrics.dynamicThumbnailWidth * 9f / 16f,
+                )
+                .align(Alignment.CenterVertically)
                 .clip(RoundedCornerShape(6.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .semantics {
@@ -5061,6 +5069,32 @@ internal fun BiuEmptyState(
 }
 
 @Composable
+private fun InitialLoadingState(
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    // long: 首屏网络请求需要一个稳定的中央信号，避免空列表与“没有内容”状态混淆。
+    Column(
+        modifier = modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier
+                .size(28.dp)
+                .semantics { contentDescription = label },
+            strokeWidth = 2.5.dp,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun ListLoadingFooter(
     label: String = "正在加载更多",
     modifier: Modifier = Modifier,
@@ -5430,19 +5464,15 @@ internal fun VideoRow(
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 video.title,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                formatPublishedAt(video.publishedAtEpochSeconds),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                video.author.ifBlank { "未知 UP 主" },
+                listOf(
+                    video.author.ifBlank { "未知 UP 主" },
+                    formatPublishedAt(video.publishedAtEpochSeconds),
+                ).joinToString(" · "),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
@@ -7363,26 +7393,34 @@ private fun NowPlayingDetails(
             controls(Modifier.weight(1f))
         }
     } else {
-        Column(
-            modifier = modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+        BoxWithConstraints(
+            modifier = modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 8.dp),
         ) {
-            if (showLyrics) {
-                NowPlayingLyrics(
-                    state = lyrics,
-                    positionMs = snapshot.positionMs,
-                    textSize = lyricsTextSize,
-                    showTranslation = showLyricsTranslation,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(300.dp),
-                )
-            } else {
-                NowPlayingArtwork(snapshot, 300.dp)
+            val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+            val artworkSize = minOf(300.dp, maxWidth, screenHeight * 0.36f)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Top,
+            ) {
+                if (showLyrics) {
+                    NowPlayingLyrics(
+                        state = lyrics,
+                        positionMs = snapshot.positionMs,
+                        textSize = lyricsTextSize,
+                        showTranslation = showLyricsTranslation,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(artworkSize),
+                    )
+                } else {
+                    NowPlayingArtwork(snapshot, artworkSize)
+                }
+                Spacer(Modifier.height(24.dp))
+                controls(Modifier.fillMaxWidth())
             }
-            Spacer(Modifier.height(24.dp))
-            controls(Modifier.fillMaxWidth())
         }
     }
 }
