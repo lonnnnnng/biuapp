@@ -398,6 +398,7 @@
 - `0.1.20` 正式 APK 移除私有仓库场景下不可用的在线更新，并修复通知栏和厂商灵动岛媒体卡片的应用跳转；`versionCode=21`、`versionName=0.1.20`，SHA-256 为 `5d990599a7f70a48f52ad44b9b8bf36c617f1885d049b69ac3e47e66f198732a`。
 - `0.1.21` 正式 APK 收录 M24 听感增强、桌面播放小组件和进程冷启动恢复，继续使用同一历史证书签名；`versionCode=22`、`versionName=0.1.21`，SHA-256 为 `0c283b2b0d9efa1e06f6003491d954ecae5b3bee6923f7735eb0e217b0c906dd`。
 - `0.1.22` 正式 APK 收录推荐、动态和播放详情 UI/UX 打磨，继续使用同一历史证书签名；`versionCode=23`、`versionName=0.1.22`，SHA-256 为 `1e2c0fafd24255e0066b519998a19813b6fb019ba8cef6e06981444ed53f8a44`。本版通过完整工程门禁，未追加设备 UI 验收。
+- `0.1.23` 正式 APK 修复锁屏 Doze 下多 P 自然结束后无法自动续播，继续使用同一历史证书签名；`versionCode=24`、`versionName=0.1.23`，SHA-256 为 `7a1ef08a694cb30334f11246f253ecf1ce83381dcb07e581cc0b58de460ebc52`。本版已通过完整工程门禁，并完成 Redmi Note 8 Pro 真机锁屏 Doze 连播验收。
 
 ### M14：正式版质量
 
