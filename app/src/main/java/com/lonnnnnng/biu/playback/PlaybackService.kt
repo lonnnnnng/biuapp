@@ -343,6 +343,8 @@ class PlaybackService : MediaSessionService() {
             .setMediaCodecSelector(mtkAvcSafeCodecSelector())
         return ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
+            // long: 锁屏后多 P 自然结束既要唤醒 CPU 准备下一媒体项，也要在老设备上保持 Wi-Fi 请求稳定；前台服务保进程不等于保播放线程和网络链路运行。
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
             .apply {
                 // long: 手机默认播放音频；禁用视频轨可避免合并 MP4 按视频缓冲阈值等待，视频模式切换时由服务重新启用。
