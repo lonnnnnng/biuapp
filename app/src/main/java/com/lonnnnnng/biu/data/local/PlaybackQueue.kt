@@ -16,6 +16,7 @@ data class PlaybackQueueStateEntity(
     @PrimaryKey val singletonId: Int = PLAYBACK_QUEUE_SINGLETON_ID,
     val currentIndex: Int,
     val currentPositionMs: Long,
+    val shouldResumePlayback: Boolean,
     val updatedAtEpochMs: Long,
 )
 
@@ -73,6 +74,7 @@ data class PlaybackQueueRecord(
     val items: List<Track>,
     val currentIndex: Int,
     val currentPositionMs: Long,
+    val shouldResumePlayback: Boolean = false,
 ) {
     init {
         require(items.isNotEmpty()) { "播放队列不能为空" }
@@ -89,6 +91,7 @@ class PlaybackQueueRepository(
             state = PlaybackQueueStateEntity(
                 currentIndex = queue.currentIndex,
                 currentPositionMs = queue.currentPositionMs.coerceAtLeast(0L),
+                shouldResumePlayback = queue.shouldResumePlayback,
                 updatedAtEpochMs = nowEpochMs(),
             ),
             items = queue.items.mapIndexed { index, track -> track.toEntity(index) },
@@ -105,6 +108,7 @@ class PlaybackQueueRepository(
             // long: Room 数据若因旧测试包或异常写入留下越界索引，恢复到最近有效项，不能让冷启动直接崩溃。
             currentIndex = state.currentIndex.coerceIn(tracks.indices),
             currentPositionMs = state.currentPositionMs.coerceAtLeast(0L),
+            shouldResumePlayback = state.shouldResumePlayback,
         )
     }
 

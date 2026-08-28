@@ -71,7 +71,7 @@ interface PlaybackHistoryDao {
         LocalPlaylistEntity::class,
         LocalPlaylistItemEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class BiuDatabase : RoomDatabase() {
@@ -300,6 +300,13 @@ object BiuDatabaseMigrations {
         override fun migrate(db: SupportSQLiteDatabase) {
             // long: 歌词偏移属于每首曲目的校准结果；只给既有缓存追加默认零偏移，所有歌词选择、历史、歌单和下载记录都必须原样保留。
             db.execSQL("ALTER TABLE `lyrics_cache` ADD COLUMN `offsetMs` INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
+    val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // long: 播放队列需要区分“进程异常退出前正在播放”和“用户主动暂停”，默认旧版本保持暂停，避免升级后误播。
+            db.execSQL("ALTER TABLE `playback_queue_state` ADD COLUMN `shouldResumePlayback` INTEGER NOT NULL DEFAULT 0")
         }
     }
 }

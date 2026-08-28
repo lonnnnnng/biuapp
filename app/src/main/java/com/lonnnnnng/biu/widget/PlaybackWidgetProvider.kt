@@ -181,6 +181,9 @@ class PlaybackWidgetProvider : AppWidgetProvider() {
                             withContext(Dispatchers.Main) { renderAll(context, latestSnapshot) }
                         }
                     }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    // long: 锁屏或网络切换时封面 CDN 可能暂时无法解析；组件封面只是展示增强，失败必须保留默认图，不能让后台协程终止整个播放进程。
                 } finally {
                     artworkLoads.remove(artworkUrl)
                 }

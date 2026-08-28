@@ -38,6 +38,7 @@ class PlaybackQueueRepositoryTest {
             ),
             currentIndex = 1,
             currentPositionMs = 12_345L,
+            shouldResumePlayback = true,
         )
 
         repository.replace(queue)
@@ -45,6 +46,7 @@ class PlaybackQueueRepositoryTest {
         val restored = requireNotNull(repository.load())
         assertEquals(queue.currentIndex, restored.currentIndex)
         assertEquals(queue.currentPositionMs, restored.currentPositionMs)
+        assertEquals(true, restored.shouldResumePlayback)
         assertEquals(queue.items.map(Track::id), restored.items.map(Track::id))
         assertEquals(AudioQualityPreference.HIGHEST, restored.items.first().source?.qualityPreference)
         assertEquals(8_800L, dao.state?.updatedAtEpochMs)
@@ -53,7 +55,7 @@ class PlaybackQueueRepositoryTest {
     @Test
     fun `损坏的索引和负进度恢复到安全范围`() = runBlocking {
         val dao = FakePlaybackQueueDao().apply {
-            state = PlaybackQueueStateEntity(currentIndex = 99, currentPositionMs = -50L, updatedAtEpochMs = 1L)
+            state = PlaybackQueueStateEntity(currentIndex = 99, currentPositionMs = -50L, shouldResumePlayback = true, updatedAtEpochMs = 1L)
             items += PlaybackQueueItemEntity(
                 position = 0,
                 mediaId = "local:1",
@@ -73,6 +75,7 @@ class PlaybackQueueRepositoryTest {
 
         assertEquals(0, restored?.currentIndex)
         assertEquals(0L, restored?.currentPositionMs)
+        assertEquals(true, restored?.shouldResumePlayback)
     }
 
     @Test

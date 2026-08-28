@@ -52,6 +52,7 @@ import com.lonnnnnng.biu.widget.PlaybackWidgetProvider
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -70,7 +71,14 @@ class PlaybackService : MediaSessionService() {
     private val loudnessController = PlaybackLoudnessController()
     private var volumeBalanceMode = VolumeBalanceMode.OFF
     private val endEventClock = PlaybackEndEventClock()
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() +
+            Dispatchers.Main.immediate +
+            CoroutineExceptionHandler { _, error ->
+                // long: 网络、数据库等后台播放辅助任务失败时只记录并保住媒体服务，不能因一个未捕获子协程异常杀掉整个播放进程。
+                Log.e(LOG_TAG, "Playback background task failed: type=${error::class.java.simpleName}", error)
+            },
+    )
     private var refreshInFlight = false
     private var mediaModeSwitchInFlight = false
     private var codecRecoveryInFlight = false
@@ -391,6 +399,12 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // long: 用户从最近任务划掉界面时，先把“是否应继续播放”落盘，确保系统稍后重建服务不会只恢复到暂停的下一 P。
+        persistPlaybackQueueNow()
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onDestroy() {
         stopProgressPersistence()
@@ -900,6 +914,10 @@ class PlaybackService : MediaSessionService() {
                     restored.currentPositionMs,
                 )
                 activePlayer.prepare()
+                if (restored.shouldResumePlayback) {
+                    // long: 只有上次进程退出前确实处于播放意图时才自动续播；用户主动暂停的队列必须保持暂停。
+                    activePlayer.play()
+                }
             } finally {
                 restoringPlaybackQueue = false
             }
@@ -1091,6 +1109,7 @@ class PlaybackService : MediaSessionService() {
                 items = tracks,
                 currentIndex = activePlayer.currentMediaItemIndex.coerceIn(tracks.indices),
                 currentPositionMs = activePlayer.currentPosition.coerceAtLeast(0L),
+                shouldResumePlayback = activePlayer.playWhenReady && activePlayer.playbackState != Player.STATE_ENDED,
             )
         }
         val generation = queuePersistenceGeneration.incrementAndGet()
