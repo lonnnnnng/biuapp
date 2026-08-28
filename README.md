@@ -135,7 +135,7 @@ flowchart LR
 - `applicationId`：`com.lonnnnnng.biu`
 - 最低版本：Android 8.0 / API 26
 - 目标版本：Android 16 / API 36
-- APK SHA-256：`7a1ef08a694cb30334f11246f253ecf1ce83381dcb07e581cc0b58de460ebc52`（仓库成员可在同一 Release 下载 `SHA256SUMS` 核对）
+- APK SHA-256：`13886e379d0623ee6bdd55a18b73c8bacb9ef1ed8adfa0719d8f9db40c08cec8`（仓库成员可在同一 Release 下载 `SHA256SUMS` 核对）
 
 浏览默认推荐和公开搜索不强制登录；关注列表、收藏夹、在线历史和账号互动需要通过 Bilibili H5 登录建立账号态。通知权限用于媒体控制和下载进度；读取本地音乐与选择 SAF 目录均在用户主动使用对应功能时请求。
 
