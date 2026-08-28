@@ -90,6 +90,8 @@ class PlaybackService : MediaSessionService() {
     private var queuePersistenceJob: Job? = null
     private var playbackPreferencesPersistenceJob: Job? = null
     private var sleepTimerJob: Job? = null
+    // long: playWhenReady 会因音频焦点和厂商媒体控件短暂变化，单独保存用户的持续播放意图供转场恢复使用。
+    private var wantsPlayback = false
     private var sleepTimerMode: SleepTimerMode = SleepTimerMode.OFF
     private var reportPlayHistoryEnabled = true
     private var activeHeartbeatSession: ActiveHeartbeatSession? = null
@@ -235,6 +237,24 @@ class PlaybackService : MediaSessionService() {
                         durationMs = player?.duration ?: C.TIME_UNSET,
                     )
                 }
+            }
+            ensurePlaybackAfterTransition(mediaItem)
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (
+                reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST ||
+                    reason == Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE
+            ) {
+                wantsPlayback = playWhenReady
+            }
+            persistPlaybackQueueNow()
+        }
+
+        override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+            if (playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE && wantsPlayback) {
+                // long: 音频焦点恢复后厂商播放器可能只解除抑制而不重新触发播放，主动补一次播放确保锁屏续播。
+                player?.play()
             }
         }
 
@@ -474,7 +494,7 @@ class PlaybackService : MediaSessionService() {
                     snapshot.currentIndex,
                     snapshot.currentPositionMs,
                 )
-                playWhenReady = snapshot.playWhenReady
+                playWhenReady = snapshot.wantsPlayback
             }
         }.getOrElse { recoveryError ->
             player = failedPlayer
@@ -814,7 +834,7 @@ class PlaybackService : MediaSessionService() {
         }
         activePlayer.prepare()
         // long: 暂停状态切视频只预加载画面，不得因为媒体源重建而擅自开始播放。
-        if (target.playWhenReady) activePlayer.play() else activePlayer.pause()
+        if (target.wantsPlayback) activePlayer.play() else activePlayer.pause()
     }
 
     private fun setVideoTrackEnabled(activePlayer: ExoPlayer?, enabled: Boolean) {
@@ -874,6 +894,24 @@ class PlaybackService : MediaSessionService() {
         persistProgress(mediaItem, activePlayer.currentPosition, activePlayer.duration)
     }
 
+    private fun ensurePlaybackAfterTransition(mediaItem: MediaItem?) {
+        val activePlayer = player ?: return
+        if (!wantsPlayback || mediaItem == null || isMediaReplacementInFlight) return
+        activePlayer.play()
+        serviceScope.launch {
+            delay(220L)
+            if (
+                wantsPlayback &&
+                    player === activePlayer &&
+                    activePlayer.currentMediaItem?.mediaId == mediaItem.mediaId &&
+                    !activePlayer.isPlaying
+            ) {
+                // long: 某些设备在自动切 P 的首个回调阶段仍处于缓冲态，延迟重试可覆盖该短暂窗口。
+                activePlayer.play()
+            }
+        }
+    }
+
     private fun durationForMediaItem(mediaItemIndex: Int, fallbackPositionMs: Long): Long {
         val timeline = player?.currentTimeline
         val timelineDurationMs = if (timeline != null && mediaItemIndex in 0 until timeline.windowCount) {
@@ -916,6 +954,7 @@ class PlaybackService : MediaSessionService() {
                 activePlayer.prepare()
                 if (restored.shouldResumePlayback) {
                     // long: 只有上次进程退出前确实处于播放意图时才自动续播；用户主动暂停的队列必须保持暂停。
+                    wantsPlayback = true
                     activePlayer.play()
                 }
             } finally {
@@ -1109,7 +1148,7 @@ class PlaybackService : MediaSessionService() {
                 items = tracks,
                 currentIndex = activePlayer.currentMediaItemIndex.coerceIn(tracks.indices),
                 currentPositionMs = activePlayer.currentPosition.coerceAtLeast(0L),
-                shouldResumePlayback = activePlayer.playWhenReady && activePlayer.playbackState != Player.STATE_ENDED,
+                shouldResumePlayback = wantsPlayback && activePlayer.playbackState != Player.STATE_ENDED,
             )
         }
         val generation = queuePersistenceGeneration.incrementAndGet()
@@ -1202,7 +1241,7 @@ private data class PlaybackMediaSwitchTarget(
     val bvid: String,
     val cid: Long,
     val positionMs: Long,
-    val playWhenReady: Boolean,
+    val wantsPlayback: Boolean,
 ) {
     fun matches(player: ExoPlayer): Boolean {
         val currentItem = player.currentMediaItem ?: return false
@@ -1221,7 +1260,7 @@ private data class PlaybackMediaSwitchTarget(
                 bvid = bvid,
                 cid = cid,
                 positionMs = player.currentPosition.coerceAtLeast(0L),
-                playWhenReady = player.playWhenReady,
+                wantsPlayback = player.playWhenReady,
             )
         }
     }
@@ -1231,7 +1270,7 @@ private data class PlaybackPlayerRecoverySnapshot(
     val mediaItems: List<MediaItem>,
     val currentIndex: Int,
     val currentPositionMs: Long,
-    val playWhenReady: Boolean,
+    val wantsPlayback: Boolean,
     val repeatMode: Int,
     val shuffleModeEnabled: Boolean,
     val playbackParameters: PlaybackParameters,
@@ -1252,7 +1291,7 @@ private data class PlaybackPlayerRecoverySnapshot(
                             ?.let(positionMs::coerceAtMost)
                             ?: positionMs
                     },
-                playWhenReady = player.playWhenReady,
+                wantsPlayback = player.playWhenReady,
                 repeatMode = player.repeatMode,
                 shuffleModeEnabled = player.shuffleModeEnabled,
                 playbackParameters = player.playbackParameters,

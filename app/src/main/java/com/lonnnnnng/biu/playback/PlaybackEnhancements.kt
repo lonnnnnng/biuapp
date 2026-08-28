@@ -114,17 +114,25 @@ class PlaybackFadeController(private val scope: CoroutineScope) {
     fun skip(player: ExoPlayer, action: () -> Unit) {
         fadeJob?.cancel()
         fadeJob = null
-        if (!enabled || (!player.isPlaying && !player.playWhenReady)) {
+        if (!enabled) {
             action()
+            player.volume = 1f
+            player.play()
+            return
+        }
+        if (!player.isPlaying && !player.playWhenReady) {
+            // long: 上一曲/下一曲是明确的播放操作，即使原曲暂停，切换后的分 P 也必须立即开始播放。
+            action()
+            player.volume = 0f
+            player.play()
+            fadeTo(player, 1f, PlaybackFadePolicy.FADE_IN_DURATION_MS)
             return
         }
         fadeTo(player, 0f, PlaybackFadePolicy.FADE_OUT_DURATION_MS) {
             action()
-            if (player.playWhenReady) {
-                fadeTo(player, 1f, PlaybackFadePolicy.FADE_IN_DURATION_MS)
-            } else {
-                player.volume = 1f
-            }
+            // long: 切歌本身代表继续播放，不能依赖切换前的 playWhenReady；系统控件可能在转场期间短暂清零它。
+            player.play()
+            fadeTo(player, 1f, PlaybackFadePolicy.FADE_IN_DURATION_MS)
         }
     }
 
