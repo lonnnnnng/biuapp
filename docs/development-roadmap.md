@@ -401,6 +401,7 @@
 - `0.1.23` 正式 APK 修复锁屏 Doze 下多 P 自然结束后无法自动续播，继续使用同一历史证书签名；`versionCode=24`、`versionName=0.1.23`，SHA-256 为 `7a1ef08a694cb30334f11246f253ecf1ce83381dcb07e581cc0b58de460ebc52`。本版已通过完整工程门禁，并完成 Redmi Note 8 Pro 真机锁屏 Doze 连播验收。
 - `0.1.24` 正式 APK 修复播放小组件封面 CDN 域名解析异常导致后台进程退出的问题；继续使用同一历史证书签名，`versionCode=25`、`versionName=0.1.24`，SHA-256 为 `13886e379d0623ee6bdd55a18b73c8bacb9ef1ed8adfa0719d8f9db40c08cec8`。本版已通过完整工程门禁，并在 Redmi Note 8 Pro 上确认进程保持存活、播放服务保持前台及无新增崩溃。
 - `0.1.25` 收录多 P 锁屏、灵动岛自动续播和应用内切歌立即播放修复，继续使用同一历史证书签名，`versionCode=26`、`versionName=0.1.25`，SHA-256 为 `a34f3b4bfcc9e0bd91b985a3174a582cb34fb6d756a490f95317477a5c065282`。工程门禁已通过，完整真机锁屏长时验收待发布后执行。
+- `0.1.26` 正式 APK 启用 R8 代码收缩与资源收缩，安装包从约 18MB 减至约 3.5MB；因历史证书口令遗失，本版起使用新生成的 BiuApp 正式证书签名（RSA 4096，有效期 30 年，证书 SHA-256 指纹 `bacacaed7a93cb6dc00fbd21092914242ccdd8e25ec595a55b8d66327927eeb0`），覆盖安装旧版需先卸载；`versionCode=27`、`versionName=0.1.26`，SHA-256 为 `22e49173db8587b3e315bd9f822206dda724708f409fdf7d5d0d4f462bcfdee7`。本版已通过完整工程门禁和 Redmi Note 8 Pro 真机冒烟验收。
 
 ### M14：正式版质量
 

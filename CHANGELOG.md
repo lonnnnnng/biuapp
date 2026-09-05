@@ -1,5 +1,12 @@
 # Biu Android 版本记录
 
+## 0.1.26 - 2026-09-05
+
+- release 构建启用 R8 代码收缩与资源收缩（`isMinifyEnabled` + `isShrinkResources`），正式安装包从约 18MB 减至约 3.5MB。
+- 收缩收益主要来自移除未使用的 `material-icons-extended` 图标类和完整的 Compose/Kotlin 标准库代码；dex 由 4 个收缩为 1 个。
+- Room、Media3、OkHttp、Coil、DataStore 均通过 AAR 自带 R8 consumer 规则，未新增任何 keep 规则。
+- 已通过 JVM 单元测试与 Redmi Note 8 Pro 真机冒烟测试：minified release 包安装启动正常，主界面停留无崩溃，crash buffer 无记录。
+
 ## 0.1.25 - 2026-08-28
 
 - 修复从锁屏、灵动岛或其他媒体应用切回后，多 P 音频播放结束切换到下一 P 时停在 0 秒的问题。

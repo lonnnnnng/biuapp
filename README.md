@@ -207,6 +207,8 @@ UI 只通过 ViewModel/StateFlow 发出业务意图，不直接持有 ExoPlayer�
 
 ## 当前验证状态
 
+`0.1.26` release 构建启用 R8 代码收缩与资源收缩，正式包从约 18MB 减至约 3.5MB，dex 收缩为 1 个；JVM 单元测试与 Redmi Note 8 Pro 真机冒烟验收通过（正式签名包安装启动、主界面停留、crash buffer 无记录）。因历史签名证书口令遗失，本版起改用新生成的 BiuApp 正式证书（RSA 4096，证书 SHA-256 指纹 `bacacaed7a93cb6dc00fbd21092914242ccdd8e25ec595a55b8d66327927eeb0`），覆盖安装旧版需先卸载。
+
 `0.1.25` 已针对 Redmi Note 8 Pro 真机 `wsvwypiz7xwslvl7` 的锁屏多 P 播放链路完成代码修复：服务层区分用户播放意图与瞬时音频焦点状态，媒体项转场后主动补播并延迟重试；应用内上一曲/下一曲无论原状态均立即播放。工程门禁已通过，待真机完成完整锁屏与灵动岛长时验收。
 
 `0.1.21` 已通过 Redmi Note 8 Pro 真机 `wsvwypiz7xwslvl7` 验收：账号态、音频后台播放、淡入淡出与四档音量平衡设置恢复、4×2 桌面小组件添加与真实状态展示、三项媒体控制、点击内容回到应用，以及 Biu 进程为空时由小组件冷启动并从 Room 恢复当前曲目均已验证。播放过程中一次 CDN TLS 读取超时由服务自动恢复，最终 MediaSession `error=null`，crash buffer 无 BiuApp 崩溃。
