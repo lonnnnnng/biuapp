@@ -99,6 +99,9 @@ class PlaybackService : MediaSessionService() {
     private val queuePersistenceGeneration = AtomicLong(0L)
     private val queuePersistenceMutex = Mutex()
     private var restoringPlaybackQueue = false
+    private var lastTimelineMediaIds: List<String> = emptyList()
+    private var lastTimelineCurrentIndex: Int = C.INDEX_UNSET
+    private var naturallyEndedMediaId: String? = null
     private lateinit var mediaSourceFactory: DefaultMediaSourceFactory
     // long: Redmi 的 MTK HEVC 在正常解码和资源 flush 两条路径都已确认会原生崩溃；AVC 硬解配合 Player 自愈是当前真机可持续出画面的路径。
     private val videoCodecPreference = DashVideoCodecPreference.AVC
@@ -194,7 +197,17 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val activePlayer = player
+            val mediaIds = activePlayer?.let { exoPlayer ->
+                (0 until exoPlayer.mediaItemCount).map { index -> exoPlayer.getMediaItemAt(index).mediaId }
+            }.orEmpty()
+            val isQueueAppend = isQueueAppend(activePlayer, mediaIds)
             schedulePlaybackQueuePersistence()
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED && isQueueAppend) {
+                ensurePlaybackAfterPlaylistChanged()
+            }
+            lastTimelineMediaIds = mediaIds
+            lastTimelineCurrentIndex = activePlayer?.currentMediaItemIndex ?: C.INDEX_UNSET
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
@@ -214,6 +227,9 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+                naturallyEndedMediaId = null
+            }
             mediaItem?.let { item ->
                 // long: 合并 MP4 只用于音频播放时不应创建无用视频解码器；切到视频模式再恢复视频轨选择。
                 setVideoTrackEnabled(player, item.playbackMediaMode() == PlaybackMediaMode.VIDEO)
@@ -247,6 +263,7 @@ class PlaybackService : MediaSessionService() {
                     reason == Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE
             ) {
                 wantsPlayback = playWhenReady
+                if (playWhenReady) naturallyEndedMediaId = null
             }
             persistPlaybackQueueNow()
         }
@@ -294,6 +311,7 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
+                naturallyEndedMediaId = player?.currentMediaItem?.mediaId
                 stopProgressPersistence()
                 // long: 播放结束是一次性业务事件；递增 ID 可供后续自动续播层去重，不能依赖可重复的展示文案。
                 endEventClock.recordEnded()
@@ -475,7 +493,10 @@ class PlaybackService : MediaSessionService() {
         }
 
         codecRecoveryInFlight = true
-        val snapshot = PlaybackPlayerRecoverySnapshot.capture(failedPlayer)
+        val snapshot = PlaybackPlayerRecoverySnapshot.capture(
+            failedPlayer,
+            playbackIntent = wantsPlayback,
+        )
         if (snapshot == null) {
             codecRecoveryInFlight = false
             codecRecoveryPolicy.finishRecovery()
@@ -582,7 +603,13 @@ class PlaybackService : MediaSessionService() {
         if (isMediaReplacementInFlight || streamRecoveryAttempts >= PlaybackRetryPolicy.MAX_STREAM_RECOVERY_ATTEMPTS) return
 
         refreshInFlight = true
-        val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
+        val target = PlaybackMediaSwitchTarget.capture(
+            activePlayer,
+            currentItem,
+            source.bvid,
+            source.cid,
+            playbackIntent = wantsPlayback,
+        )
         serviceScope.launch {
             try {
                 if (!localFallbackAttempted) {
@@ -658,7 +685,13 @@ class PlaybackService : MediaSessionService() {
             currentUri?.let(Uri::parse)?.scheme == "content" &&
             currentItem.localConfiguration?.mimeType == "video/mp4"
         ) {
-            val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
+            val target = PlaybackMediaSwitchTarget.capture(
+                activePlayer,
+                currentItem,
+                source.bvid,
+                source.cid,
+                playbackIntent = wantsPlayback,
+            )
             val stream = if (mode == PlaybackMediaMode.VIDEO) {
                 PlaybackStreamMetadata.video(
                     audioUrl = currentUri,
@@ -726,7 +759,13 @@ class PlaybackService : MediaSessionService() {
         failureMessage: String,
     ): ListenableFuture<SessionResult> {
         mediaModeSwitchInFlight = true
-        val target = PlaybackMediaSwitchTarget.capture(activePlayer, currentItem, source.bvid, source.cid)
+        val target = PlaybackMediaSwitchTarget.capture(
+            activePlayer,
+            currentItem,
+            source.bvid,
+            source.cid,
+            playbackIntent = wantsPlayback,
+        )
         val future = SettableFuture.create<SessionResult>()
         serviceScope.launch {
             val result = runCatching {
@@ -834,7 +873,8 @@ class PlaybackService : MediaSessionService() {
         }
         activePlayer.prepare()
         // long: 暂停状态切视频只预加载画面，不得因为媒体源重建而擅自开始播放。
-        if (target.wantsPlayback) activePlayer.play() else activePlayer.pause()
+        // long: 地址刷新或音视频切换期间用户仍可能从锁屏暂停；以最新播放意图收口，避免异步完成后违背刚刚的暂停操作。
+        if (wantsPlayback) activePlayer.play() else activePlayer.pause()
     }
 
     private fun setVideoTrackEnabled(activePlayer: ExoPlayer?, enabled: Boolean) {
@@ -910,6 +950,35 @@ class PlaybackService : MediaSessionService() {
                 activePlayer.play()
             }
         }
+    }
+
+    private fun ensurePlaybackAfterPlaylistChanged() {
+        val activePlayer = player ?: return
+        if (
+            !wantsPlayback ||
+                isMediaReplacementInFlight ||
+                !activePlayer.hasNextMediaItem()
+        ) {
+            return
+        }
+        // long: 多 P 解析可能晚于当前 P 的自然结束；新 P 追加到已结束队列时不会触发媒体项转场，必须主动推进并恢复播放。
+        activePlayer.seekToNextMediaItem()
+        activePlayer.play()
+        naturallyEndedMediaId = null
+    }
+
+    private fun isQueueAppend(
+        activePlayer: ExoPlayer?,
+        mediaIds: List<String>,
+    ): Boolean {
+        if (activePlayer == null || lastTimelineMediaIds.isEmpty()) return false
+        if (naturallyEndedMediaId == null) return false
+        if (mediaIds.size <= lastTimelineMediaIds.size) return false
+        if (activePlayer.currentMediaItemIndex != lastTimelineCurrentIndex) return false
+        val previousCurrentId = lastTimelineMediaIds.getOrNull(lastTimelineCurrentIndex) ?: return false
+        return naturallyEndedMediaId == previousCurrentId &&
+            activePlayer.currentMediaItem?.mediaId == previousCurrentId &&
+            mediaIds.take(lastTimelineMediaIds.size) == lastTimelineMediaIds
     }
 
     private fun durationForMediaItem(mediaItemIndex: Int, fallbackPositionMs: Long): Long {
@@ -1253,14 +1322,20 @@ private data class PlaybackMediaSwitchTarget(
     }
 
     companion object {
-        fun capture(player: ExoPlayer, mediaItem: MediaItem, bvid: String, cid: Long): PlaybackMediaSwitchTarget {
+        fun capture(
+            player: ExoPlayer,
+            mediaItem: MediaItem,
+            bvid: String,
+            cid: Long,
+            playbackIntent: Boolean = player.playWhenReady,
+        ): PlaybackMediaSwitchTarget {
             return PlaybackMediaSwitchTarget(
                 mediaId = mediaItem.mediaId,
                 mediaIndex = player.currentMediaItemIndex,
                 bvid = bvid,
                 cid = cid,
                 positionMs = player.currentPosition.coerceAtLeast(0L),
-                wantsPlayback = player.playWhenReady,
+                wantsPlayback = playbackIntent,
             )
         }
     }
@@ -1277,7 +1352,10 @@ private data class PlaybackPlayerRecoverySnapshot(
     val volume: Float,
 ) {
     companion object {
-        fun capture(player: ExoPlayer): PlaybackPlayerRecoverySnapshot? {
+        fun capture(
+            player: ExoPlayer,
+            playbackIntent: Boolean = player.playWhenReady,
+        ): PlaybackPlayerRecoverySnapshot? {
             if (player.mediaItemCount == 0) return null
             val items = (0 until player.mediaItemCount).map(player::getMediaItemAt)
             return PlaybackPlayerRecoverySnapshot(
@@ -1291,7 +1369,7 @@ private data class PlaybackPlayerRecoverySnapshot(
                             ?.let(positionMs::coerceAtMost)
                             ?: positionMs
                     },
-                wantsPlayback = player.playWhenReady,
+                wantsPlayback = playbackIntent,
                 repeatMode = player.repeatMode,
                 shuffleModeEnabled = player.shuffleModeEnabled,
                 playbackParameters = player.playbackParameters,
