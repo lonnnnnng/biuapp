@@ -1021,11 +1021,9 @@ class PlaybackService : MediaSessionService() {
                     restored.currentPositionMs,
                 )
                 activePlayer.prepare()
-                if (restored.shouldResumePlayback) {
-                    // long: 只有上次进程退出前确实处于播放意图时才自动续播；用户主动暂停的队列必须保持暂停。
-                    wantsPlayback = true
-                    activePlayer.play()
-                }
+                // long: 冷启动只恢复队列和进度，不把上次的播放意图当成新的用户操作；首次发声必须由用户明确点击播放，避免打开应用或系统重建服务时突然出声。
+                wantsPlayback = false
+                activePlayer.pause()
             } finally {
                 restoringPlaybackQueue = false
             }
